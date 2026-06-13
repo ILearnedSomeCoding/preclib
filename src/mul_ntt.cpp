@@ -1,0 +1,314 @@
+#include"../prec.hpp"
+
+#include<vector>
+
+struct mont_ctx_t{
+    uint32_t mod;
+    uint32_t root;
+    uint32_t ninv;
+    uint32_t r2;
+    uint32_t one;
+};
+
+struct ntt_mod_plan_t{
+    mont_ctx_t c;
+    uint32_t inv_n;
+    std::vector<uint32_t> fwd_roots;
+    std::vector<uint32_t> inv_roots;
+};
+
+static const uint32_t NTT_MOD1 = 167772161u;
+static const uint32_t NTT_MOD2 = 469762049u;
+static const uint32_t NTT_MOD3 = 2013265921u;
+static const uint32_t NTT_ROOT1 = 3u;
+static const uint32_t NTT_ROOT2 = 3u;
+static const uint32_t NTT_ROOT3 = 31u;
+static const uint64_t NTT_DIGIT_MAX2 = 0xFFFFULL * 0xFFFFULL;
+
+static uint32_t mont_inv32(uint32_t a){
+    uint32_t x = 1;
+    for(int i = 0; i < 5; ++i) x *= 2 - a * x;
+    return (uint32_t)(0u - x);
+}
+
+static uint32_t mont_r2(uint32_t mod){
+    uint64_t r = 1;
+    for(int i = 0; i < 64; ++i) r = (r + r) % mod;
+    return (uint32_t)r;
+}
+
+static uint32_t mont_reduce(const mont_ctx_t &c, uint64_t x){
+    uint32_t m = (uint32_t)x * c.ninv;
+    uint64_t t = (x + (uint64_t)m * c.mod) >> 32;
+    if(t >= c.mod) t -= c.mod;
+    return (uint32_t)t;
+}
+
+static uint32_t mont_in(const mont_ctx_t &c, uint32_t x){
+    return mont_reduce(c, (uint64_t)(x % c.mod) * c.r2);
+}
+
+static uint32_t mont_mul(const mont_ctx_t &c, uint32_t a, uint32_t b){
+    return mont_reduce(c, (uint64_t)a * b);
+}
+
+static mont_ctx_t mont_make(uint32_t mod, uint32_t root){
+    mont_ctx_t c;
+    c.mod = mod;
+    c.root = root;
+    c.ninv = mont_inv32(mod);
+    c.r2 = mont_r2(mod);
+    c.one = mont_in(c, 1);
+    return c;
+}
+
+static uint32_t mont_pow(const mont_ctx_t &c, uint32_t a, uint64_t e){
+    uint32_t r = c.one;
+    uint32_t x = mont_in(c, a);
+    while(e){
+        if(e & 1) r = mont_mul(c, r, x);
+        e >>= 1;
+        if(e) x = mont_mul(c, x, x);
+    }
+    return r;
+}
+
+static void ntt_build_rev(std::vector<uint32_t> &rev, size_t n){
+    rev.resize(n);
+    size_t bits = 0;
+    while(((size_t)1 << bits) < n) ++bits;
+    rev[0] = 0;
+    for(size_t i = 1; i < n; ++i){
+        rev[i] = (rev[i >> 1] >> 1) | (uint32_t)((i & 1) << (bits - 1));
+    }
+}
+
+static void ntt_build_roots(std::vector<uint32_t> &roots, const mont_ctx_t &c, size_t n, int inv){
+    roots.resize(n);
+    if(n) roots[0] = c.one;
+    for(size_t len = 2; len <= n; len <<= 1){
+        size_t half = len >> 1;
+        uint64_t e = (c.mod - 1) / len;
+        if(inv) e = (uint64_t)c.mod - 1 - e;
+        uint32_t wlen = mont_pow(c, c.root, e);
+        uint32_t w = c.one;
+        for(size_t i = 0; i < half; ++i){
+            roots[half + i] = w;
+            w = mont_mul(c, w, wlen);
+        }
+    }
+}
+
+static ntt_mod_plan_t ntt_make_mod_plan(size_t n, uint32_t mod, uint32_t root){
+    ntt_mod_plan_t p;
+    p.c = mont_make(mod, root);
+    p.inv_n = mont_pow(p.c, (uint32_t)(n % mod), mod - 2);
+    ntt_build_roots(p.fwd_roots, p.c, n, 0);
+    ntt_build_roots(p.inv_roots, p.c, n, 1);
+    return p;
+}
+
+static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
+                const std::vector<uint32_t> &rev){
+    size_t n = a.size();
+    const mont_ctx_t &c = p.c;
+    const std::vector<uint32_t> &roots = inv ? p.inv_roots : p.fwd_roots;
+    uint32_t mod = c.mod;
+
+    for(size_t i = 1; i < n; ++i){
+        size_t j = rev[i];
+        if(i < j) std::swap(a[i], a[j]);
+    }
+
+    for(size_t len = 2; len <= n; len <<= 1){
+        size_t half = len >> 1;
+        for(size_t i = 0; i < n; i += len){
+            for(size_t j = 0; j < half; ++j){
+                uint32_t u = a[i + j];
+                uint32_t v = mont_mul(c, a[i + j + half], roots[half + j]);
+
+                uint32_t s = u + v;
+                if(s >= mod) s -= mod;
+                uint32_t d = u >= v ? u - v : u + mod - v;
+
+                a[i + j] = s;
+                a[i + j + half] = d;
+            }
+        }
+    }
+
+    if(inv){
+        uint32_t inv_n = p.inv_n;
+        for(size_t i = 0; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
+    }
+}
+
+static std::vector<uint32_t> ntt_digits(const precn_t &a){
+    std::vector<uint32_t> d;
+    d.reserve(a.rsiz * 2);
+    for(size_t i = 0; i < a.rsiz; ++i){
+        d.push_back(a.a[i] & 0xFFFFu);
+        d.push_back(a.a[i] >> 16);
+    }
+    while(!d.empty() && d.back() == 0) d.pop_back();
+    return d;
+}
+
+static void ntt_zero(std::vector<uint32_t> &a, size_t n){
+    a.resize(n);
+    memset(a.data(), 0, n * 4);
+}
+
+static void ntt_convolve_mod(const std::vector<uint32_t> &a,
+                             const std::vector<uint32_t> &b,
+                             size_t n,
+                             uint32_t mod,
+                             uint32_t root,
+                             const std::vector<uint32_t> &rev,
+                             std::vector<uint32_t> &out,
+                             std::vector<uint32_t> &scratch){
+    ntt_mod_plan_t p = ntt_make_mod_plan(n, mod, root);
+    ntt_zero(out, n);
+    ntt_zero(scratch, n);
+    for(size_t i = 0; i < a.size(); ++i) out[i] = mont_in(p.c, a[i]);
+    for(size_t i = 0; i < b.size(); ++i) scratch[i] = mont_in(p.c, b[i]);
+
+    ntt(out, 0, p, rev);
+    ntt(scratch, 0, p, rev);
+    for(size_t i = 0; i < n; ++i) out[i] = mont_mul(p.c, out[i], scratch[i]);
+    ntt(out, 1, p, rev);
+
+    for(size_t i = 0; i < n; ++i) out[i] = mont_reduce(p.c, out[i]);
+}
+
+static uint32_t mod_inv_u32(uint64_t a, uint32_t mod){
+    long long t = 0, nt = 1;
+    long long r = mod, nr = (long long)(a % mod);
+    while(nr){
+        long long q = r / nr;
+        long long ot = t;
+        t = nt;
+        nt = ot - q * nt;
+        long long orr = r;
+        r = nr;
+        nr = orr - q * nr;
+    }
+    if(t < 0) t += mod;
+    return (uint32_t)t;
+}
+
+static uint64_t ntt_crt2(uint32_t r1, uint32_t r2){
+    static uint32_t inv_m1_m2 = mod_inv_u32(NTT_MOD1, NTT_MOD2);
+    uint64_t x1 = r1;
+    uint64_t x1_m2 = x1 % NTT_MOD2;
+    uint64_t d2 = r2 >= x1_m2 ? r2 - x1_m2 : r2 + (uint64_t)NTT_MOD2 - x1_m2;
+    uint64_t t2 = d2 * inv_m1_m2 % NTT_MOD2;
+    return x1 + (uint64_t)NTT_MOD1 * t2;
+}
+
+static uint64_t ntt_crt3(uint32_t r1, uint32_t r2, uint32_t r3){
+    const uint64_t m1m2 = (uint64_t)NTT_MOD1 * NTT_MOD2;
+    static uint32_t inv_m1m2_m3 = mod_inv_u32(((uint64_t)NTT_MOD1 * NTT_MOD2) % NTT_MOD3, NTT_MOD3);
+
+    uint64_t x12 = ntt_crt2(r1, r2);
+    uint64_t t2 = (x12 - r1) / NTT_MOD1;
+    uint64_t x12_m3 = ((uint64_t)r1 % NTT_MOD3 + (uint64_t)(NTT_MOD1 % NTT_MOD3) * (t2 % NTT_MOD3) % NTT_MOD3) % NTT_MOD3;
+    uint64_t d3 = r3 >= x12_m3 ? r3 - x12_m3 : r3 + (uint64_t)NTT_MOD3 - x12_m3;
+    uint64_t t3 = d3 * inv_m1m2_m3 % NTT_MOD3;
+    return x12 + m1m2 * t3;
+}
+
+static void ntt_put_digit(precn_t &r, size_t id, uint32_t digit){
+    size_t limb = id >> 1;
+    if(limb >= r.asiz){
+        size_t old = r.asiz;
+        while(r.asiz <= limb) r.asiz <<= 1;
+        r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+        memset(r.a + old, 0, (r.asiz - old) * 4);
+    }
+    if(id & 1) r.a[limb] = (r.a[limb] & 0x0000FFFFu) | (digit << 16);
+    else r.a[limb] = (r.a[limb] & 0xFFFF0000u) | digit;
+    if(r.rsiz < limb + 1) r.rsiz = limb + 1;
+}
+
+static precn_t ntt_from_residues2(const std::vector<uint32_t> &r1,
+                                  const std::vector<uint32_t> &r2){
+    precn_t r;
+    r.asiz = r1.size() / 2 + 8;
+    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    memset(r.a, 0, r.asiz * 4);
+    r.rsiz = 0;
+
+    uint64_t carry = 0;
+    size_t digit_id = 0;
+    for(size_t i = 0; i < r1.size(); ++i, ++digit_id){
+        uint64_t cur = ntt_crt2(r1[i], r2[i]) + carry;
+        ntt_put_digit(r, digit_id, (uint32_t)(cur & 0xFFFFu));
+        carry = cur >> 16;
+    }
+    while(carry){
+        ntt_put_digit(r, digit_id++, (uint32_t)(carry & 0xFFFFu));
+        carry >>= 16;
+    }
+
+    while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
+static precn_t ntt_from_residues3(const std::vector<uint32_t> &r1,
+                                  const std::vector<uint32_t> &r2,
+                                  const std::vector<uint32_t> &r3){
+    precn_t r;
+    r.asiz = r1.size() / 2 + 8;
+    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    memset(r.a, 0, r.asiz * 4);
+    r.rsiz = 0;
+
+    uint64_t carry = 0;
+    size_t digit_id = 0;
+    for(size_t i = 0; i < r1.size(); ++i, ++digit_id){
+        uint64_t cur = ntt_crt3(r1[i], r2[i], r3[i]) + carry;
+        ntt_put_digit(r, digit_id, (uint32_t)(cur & 0xFFFFu));
+        carry = cur >> 16;
+    }
+    while(carry){
+        ntt_put_digit(r, digit_id++, (uint32_t)(carry & 0xFFFFu));
+        carry >>= 16;
+    }
+
+    while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
+static int ntt_two_mod_ok(size_t terms){
+    uint64_t m12 = (uint64_t)NTT_MOD1 * NTT_MOD2;
+    return terms <= (m12 - 1) / NTT_DIGIT_MAX2;
+}
+
+precn_t mul_ntt(const precn_t &a, const precn_t &b){
+    if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+
+    std::vector<uint32_t> da = ntt_digits(a);
+    std::vector<uint32_t> db = ntt_digits(b);
+    if(da.empty() || db.empty()) return precn_t();
+
+    size_t n = 1;
+    while(n < da.size() + db.size()) n <<= 1;
+    if(n > ((size_t)1 << 25)) return mul_fft(a, b);
+
+    std::vector<uint32_t> rev;
+    ntt_build_rev(rev, n);
+
+    std::vector<uint32_t> r1, r2, r3, scratch;
+    ntt_convolve_mod(da, db, n, NTT_MOD1, NTT_ROOT1, rev, r1, scratch);
+    ntt_convolve_mod(da, db, n, NTT_MOD2, NTT_ROOT2, rev, r2, scratch);
+
+    if(ntt_two_mod_ok(std::min(da.size(), db.size()))){
+        return ntt_from_residues2(r1, r2);
+    }
+
+    ntt_convolve_mod(da, db, n, NTT_MOD3, NTT_ROOT3, rev, r3, scratch);
+    return ntt_from_residues3(r1, r2, r3);
+}
