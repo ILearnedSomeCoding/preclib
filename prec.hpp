@@ -57,7 +57,13 @@ precn_t mul_u32(const precn_t &a, uint32_t b);
 precn_t precn_sqr(const precn_t &a);
 
 precn_t operator/(const precn_t &a, const precn_t &b);
+precn_t div_schoolbook(const precn_t &a, const precn_t &b);
+precn_t mod_schoolbook(const precn_t &a, const precn_t &b);
 precn_t div_u32(const precn_t &a, uint32_t b);
+precn_t precn_reciprocal_newton(const precn_t &b, size_t n);
+precn_t div_mulinv(const precn_t &a, const precn_t &b);
+precn_t mod_mulinv(const precn_t &a, const precn_t &b);
+precn_t div_newton(const precn_t &a, const precn_t &b);
 precn_t operator%(const precn_t &a, const precn_t &b);
 precn_t mod_u32(const precn_t &a, uint32_t b);
 

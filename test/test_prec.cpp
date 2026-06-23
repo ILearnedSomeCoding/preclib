@@ -42,25 +42,15 @@ static void expect_eq(const precn_t &a, const precn_t &b){
 }
 
 static void print_dec(const precn_t &a){
-    if(a.rsiz == 0){
+    std::vector<uint32_t> digits(a.rsiz * 10 + 1);
+    size_t n = 0;
+    precn_base_convert(a, 10, digits.data(), n);
+    if(n == 0){
         puts("0");
         return;
     }
 
-    std::vector<uint32_t> x(a.a, a.a + a.rsiz);
-    std::vector<char> out;
-    while(!x.empty()){
-        uint64_t rem = 0;
-        for(size_t i = x.size(); i > 0; --i){
-            uint64_t cur = (rem << 32) | x[i - 1];
-            x[i - 1] = (uint32_t)(cur / 10);
-            rem = cur % 10;
-        }
-        out.push_back((char)('0' + rem));
-        while(!x.empty() && x.back() == 0) x.pop_back();
-    }
-
-    for(size_t i = out.size(); i > 0; --i) putchar(out[i - 1]);
+    for(size_t i = n; i > 0; --i) putchar((char)('0' + digits[i - 1]));
     putchar('\n');
 }
 
@@ -79,6 +69,16 @@ static precn_t pattern(size_t n, uint32_t seed){
     return r;
 }
 
+static precn_t power_of_two(size_t bit){
+    precn_t r;
+    r.asiz = bit / 32 + 1;
+    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    memset(r.a, 0, r.asiz * 4);
+    r.a[bit / 32] = (uint32_t)1u << (bit % 32);
+    r.rsiz = r.asiz;
+    return r;
+}
+
 static void test_init(){
     expect(precn_t(), {});
     expect(precn_t(0), {});
@@ -86,6 +86,78 @@ static void test_init(){
     expect(precn_t(-7), {});
     expect(precn_t(0x100000000ULL), {0, 1});
     expect(precn_t(std::string("4294967296")), {0, 1});
+    expect(precn_t(std::string("12a34")), {1234});
+}
+
+static void test_compare_shift(){
+    precn_t z;
+    precn_t one(1);
+    precn_t two(2);
+    precn_t big = make_prec({0, 1});
+
+    assert(z == precn_t());
+    assert(one != two);
+    assert(one < two);
+    assert(two > one);
+    assert(one <= one);
+    assert(one >= one);
+    assert(big > make_prec({0xFFFFFFFFu}));
+
+    expect(one << 0, {1});
+    expect(one << 1, {2});
+    expect(one << 32, {0, 1});
+    expect(one << 65, {0, 0, 2});
+    expect(make_prec({0x80000000u}) << 1, {0, 1});
+    expect(make_prec({0xFFFFFFFFu}) << 4, {0xFFFFFFF0u, 15});
+
+    expect(make_prec({0, 1}) >> 0, {0, 1});
+    expect(make_prec({0, 1}) >> 1, {0x80000000u});
+    expect(make_prec({0, 0, 2}) >> 65, {1});
+    expect(make_prec({0xFFFFFFF0u, 15}) >> 4, {0xFFFFFFFFu});
+    expect(one >> 1, {});
+    expect(z << 100, {});
+    expect(z >> 100, {});
+}
+
+static void test_base_convert(){
+    size_t n = 99;
+    precn_base_convert(precn_t(), 10, nullptr, n);
+    assert(n == 0);
+    precn_base_convert(precn_t(123), 1, nullptr, n);
+    assert(n == 0);
+
+    precn_t h = make_prec({0x89ABCDEFu, 0x01234567u});
+    std::vector<uint32_t> out(128);
+    precn_base_convert(h, 16, out.data(), n);
+    std::vector<uint32_t> hex_expect = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+    assert(n == hex_expect.size());
+    for(size_t i = 0; i < n; ++i) assert(out[i] == hex_expect[i]);
+
+    uint32_t bases[] = {2u, 10u, 16u, 1000u, 1000000000u, 0xFFFFFFFFu};
+    precn_t a = pattern(96, 909);
+    for(size_t bi = 0; bi < sizeof(bases) / sizeof(bases[0]); ++bi){
+        uint32_t base = bases[bi];
+        precn_base_convert(a, base, nullptr, n);
+        out.assign(n + 1, 0);
+        precn_base_convert(a, base, out.data(), n);
+
+        precn_t r;
+        for(size_t i = n; i > 0; --i){
+            assert(out[i - 1] < base);
+            r = mul_u32(r, base) + precn_t(out[i - 1]);
+        }
+        expect_eq(r, a);
+    }
+
+    precn_t sparse(1);
+    for(size_t i = 0; i < 32; ++i) sparse = mul_u32(sparse, 1000000000u);
+    sparse = sparse + precn_t(12345);
+    precn_base_convert(sparse, 10, nullptr, n);
+    out.assign(n + 1, 0);
+    precn_base_convert(sparse, 10, out.data(), n);
+    precn_t r;
+    for(size_t i = n; i > 0; --i) r = mul_u32(r, 10) + precn_t(out[i - 1]);
+    expect_eq(r, sparse);
 }
 
 static void test_add_sub(){
@@ -118,6 +190,55 @@ static void test_mul_basic(){
 static void test_divexact(){
     expect(precn_divexact_2(make_prec({0, 2})), {0, 1});
     expect(precn_divexact_3(make_prec({3, 3})), {1, 1});
+}
+
+static void test_division(){
+    expect(div_u32(make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), 2),
+           {0xFFFFFFFFu, 0x7FFFFFFFu});
+    expect(div_u32(make_prec({123, 456}), 0), {});
+    expect(mod_u32(make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), 2), {1});
+    expect(mod_u32(make_prec({123, 456}), 0), {});
+    expect(precn_t(7) / precn_t(3), {2});
+    expect(precn_t(7) % precn_t(3), {1});
+    expect(precn_t(3) / precn_t(7), {});
+    expect(precn_t(3) % precn_t(7), {3});
+    expect(precn_t(9) / precn_t(9), {1});
+    expect(precn_t(9) % precn_t(9), {});
+    expect(precn_t(9) / precn_t(), {});
+    expect(precn_t(9) % precn_t(), {});
+
+    precn_t q1 = pattern(7, 501);
+    precn_t d1 = make_prec({0x89ABCDEFu, 1u});
+    precn_t p1 = mul_basic(q1, d1);
+    expect_eq(p1 / d1, q1);
+    expect_eq((p1 + (d1 - precn_t(1))) % d1, d1 - precn_t(1));
+    expect_eq((p1 + (d1 - precn_t(1))) / d1, q1);
+
+    precn_t q2 = pattern(9, 701);
+    precn_t d2 = make_prec({0x10203040u, 0xF1234567u});
+    precn_t p2 = mul_basic(q2, d2);
+    expect_eq(p2 / d2, q2);
+    expect_eq((p2 + (d2 - precn_t(1))) % d2, d2 - precn_t(1));
+    expect_eq((p2 + (d2 - precn_t(1))) / d2, q2);
+
+    expect(precn_reciprocal_newton(precn_t(3), 8), {85});
+    expect(precn_reciprocal_newton(precn_t(5), 3), {1});
+    expect(precn_reciprocal_newton(precn_t(9), 3), {});
+    expect(precn_reciprocal_newton(precn_t(), 128), {});
+    expect(div_newton(precn_t(7), precn_t(3)), {2});
+    expect(div_newton(precn_t(3), precn_t(7)), {});
+    expect(div_newton(precn_t(9), precn_t()), {});
+    expect_eq(div_mulinv(p1, d1), q1);
+    expect_eq(mod_mulinv(p1 + (d1 - precn_t(1)), d1), d1 - precn_t(1));
+    expect_eq(div_newton(p1, d1), q1);
+    expect_eq(div_newton(p1 + (d1 - precn_t(1)), d1), q1);
+    expect_eq(div_newton(p2, d2), q2);
+    expect_eq(div_newton(p2 + (d2 - precn_t(1)), d2), q2);
+
+    precn_t large_a = pattern(80, 811);
+    precn_t large_b = pattern(40, 821);
+    expect_eq(precn_reciprocal_newton(large_b, 4096), power_of_two(4096) / large_b);
+    expect_eq(div_newton(large_a, large_b), large_a / large_b);
 }
 
 typedef precn_t (*mul_fn_t)(const precn_t&, const precn_t&);
@@ -349,18 +470,86 @@ static void bench_unbalanced_sizes(){
     }
 }
 
-int main(){
+typedef precn_t (*div_fn_t)(const precn_t&, const precn_t&);
+
+static precn_t div_schoolbook_op(const precn_t &a, const precn_t &b){
+    return ::div_schoolbook(a, b);
+}
+
+static bench_mul_result_t bench_div_once(div_fn_t div, const precn_t &a, const precn_t &b, size_t reps){
+    clock_t start = clock();
+    clock_t end = start;
+    precn_t r;
+    for(size_t i = 0; i < reps; ++i){
+        precn_t t = div(a, b);
+        if(i + 1 == reps){
+            end = clock();
+            r = t;
+        }
+    }
+    return bench_mul_result_t{r, (double)(end - start) / CLOCKS_PER_SEC / reps};
+}
+
+static size_t bench_div_reps_for_n(size_t n){
+    if(n <= 5) return 100;
+    if(n <= 10) return 10;
+    return 1;
+}
+
+static void bench_div_sizes(){
+    puts("division timing");
+    printf("%-8s %-10s %-10s %-6s %-12s %-12s %-12s\n",
+           "n", "dividend", "divisor", "reps", "schoolbook", "mulinv", "result");
+
+    const size_t max_n = 18;
+    for(size_t n = 0; n <= max_n; ++n){
+        size_t limbs = (size_t)1 << n;
+        size_t reps = bench_div_reps_for_n(n);
+        precn_t divisor = pattern(limbs, (uint32_t)(12000 + n));
+        precn_t quotient = pattern(limbs, (uint32_t)(13000 + n));
+        precn_t dividend = divisor * quotient + (divisor - precn_t(1));
+
+        precn_t schoolbook;
+        double schoolbook_sec = 0.0;
+        bench_mul_result_t sr = bench_div_once(div_schoolbook_op, dividend, divisor, reps);
+        schoolbook = sr.v;
+        schoolbook_sec = sr.sec;
+        expect_eq_named("division schoolbook", schoolbook, quotient);
+
+        bench_mul_result_t nr = bench_div_once(div_mulinv, dividend, divisor, reps);
+        precn_t mulinv = nr.v;
+        expect_eq_named("division mulinv", mulinv, quotient);
+        expect_eq_named("mulinv/schoolbook", mulinv, schoolbook);
+
+        char label[16];
+        snprintf(label, sizeof(label), "2^%zu", n);
+        printf("%-8s %-10zu %-10zu %-6zu %-12.6f %-12.6f %-12zu\n",
+               label, dividend.rsiz, divisor.rsiz, reps, schoolbook_sec, nr.sec, mulinv.rsiz);
+        fflush(stdout);
+    }
+}
+
+int main(int argc, char **argv){
+    if(argc > 1 && strcmp(argv[1], "--division-timing") == 0){
+        bench_div_sizes();
+        return 0;
+    }
+
     clock_t start = clock();
     test_init();
+    test_compare_shift();
+    test_base_convert();
     test_add_sub();
     test_mul_u32();
     test_mul_basic();
     test_divexact();
+    test_division();
     test_repunit_1000();
     test_mul_algorithms();
     puts("ok");
     printf("time %.3f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);
     bench_mul_sizes();
     bench_unbalanced_sizes();
+    bench_div_sizes();
     return 0;
 }
