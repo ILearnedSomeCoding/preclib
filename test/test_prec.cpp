@@ -185,6 +185,8 @@ static void test_mul_basic(){
     expect_eq(mul_fft(a, b), a * b);
     expect(mul_ntt(make_prec({0xFFFFFFFFu}), make_prec({0xFFFFFFFFu})), {1, 0xFFFFFFFEu});
     expect_eq(mul_ntt(a, b), a * b);
+    expect(mul_ssa(make_prec({0xFFFFFFFFu}), make_prec({0xFFFFFFFFu})), {1, 0xFFFFFFFEu});
+    expect_eq(mul_ssa(a, b), a * b);
 }
 
 static void test_divexact(){
@@ -262,9 +264,10 @@ static bench_mul_result_t bench_mul_once(mul_fn_t mul, const precn_t &a, const p
     return bench_mul_result_t{r, (double)(end - start) / CLOCKS_PER_SEC / reps};
 }
 
-static size_t bench_reps_for_n(size_t n){
-    if(n <= 10) return 100;
-    if(n <= 15) return 10;
+static size_t bench_reps_for_limbs(size_t limbs){
+    if(limbs < 256) return 100000;
+    if(limbs <= 1024) return 100;
+    if(limbs <= 32768) return 10;
     return 1;
 }
 
@@ -329,6 +332,7 @@ static void expect_all_mul_eq(size_t an, size_t bn, uint32_t seed){
     expect_eq(mul_toom33(a, b), ref);
     expect_eq(mul_fft(a, b), ref);
     expect_eq(mul_ntt(a, b), ref);
+    if(an + bn <= 1024) expect_eq(mul_ssa(a, b), ref);
 }
 
 static void test_mul_algorithms(){
@@ -350,6 +354,8 @@ static void test_mul_algorithms(){
     expect_eq(mul_fft(large_a, wide_b), large_a * wide_b);
     expect_eq(mul_ntt(large_a, large_b), large_a * large_b);
     expect_eq(mul_ntt(large_a, wide_b), large_a * wide_b);
+    expect_eq(mul_ssa(large_a, large_b), large_a * large_b);
+    expect_eq(mul_ssa(large_a, wide_b), large_a * wide_b);
 
     size_t bases[] = {32, 128, 512, 2048};
     for(size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); ++i){
@@ -396,39 +402,44 @@ static void bench_balanced_size_row(const char *label, size_t limbs, size_t reps
     double ntt_sec = nr.sec;
     expect_eq_named(run_basic ? "ntt/basic" : "ntt/karatsuba", ntt, run_basic ? basic : kara);
 
+    bench_mul_result_t sr = bench_mul_once(mul_ssa, a, b, 1);
+    precn_t ssa = sr.v;
+    double ssa_sec = sr.sec;
+    expect_eq_named(run_basic ? "ssa/basic" : "ssa/karatsuba", ssa, run_basic ? basic : kara);
+
     if(run_basic){
-        printf("%-8s %-8zu %-6zu %-12.6f %-12.6f %-12.6f %-12.6f %-12.6f %-12zu\n",
-               label, limbs, reps, basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, basic.rsiz);
+        printf("%-8s %-8zu %-6zu %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
+               label, limbs, reps, basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, basic.rsiz);
     }else{
-        printf("%-8s %-8zu %-6zu %-12s %-12.6f %-12.6f %-12.6f %-12.6f %-12zu\n",
-               label, limbs, reps, "-", kara_sec, toom_sec, fft_sec, ntt_sec, kara.rsiz);
+        printf("%-8s %-8zu %-6zu %-15s %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
+               label, limbs, reps, "-", kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, kara.rsiz);
     }
 }
 
 static void bench_mul_sizes(){
     puts("mul timing");
-    printf("%-8s %-8s %-6s %-12s %-12s %-12s %-12s %-12s %-12s\n", "n", "limbs", "reps", "basic", "karatsuba", "toom", "fft", "ntt", "result");
+    printf("%-8s %-8s %-6s %-15s %-15s %-15s %-15s %-15s %-15s %-12s\n", "n", "limbs", "reps", "basic", "karatsuba", "toom", "fft", "ntt", "ssa", "result");
     const size_t basic_limit_n = 16;
     const size_t max_n = 20;
     const size_t small_extra_limit_n = 15;
     for(size_t n = 0; n <= max_n; ++n){
         size_t limbs = (size_t)1 << n;
-        size_t reps = bench_reps_for_n(n);
+        size_t reps = bench_reps_for_limbs(limbs);
         char label[16];
         snprintf(label, sizeof(label), "2^%zu", n);
         bench_balanced_size_row(label, limbs, reps, n <= basic_limit_n, (uint32_t)(100 + n));
 
         if(n > 0 && n <= small_extra_limit_n){
             snprintf(label, sizeof(label), "1.5*2^%zu", n);
-            bench_balanced_size_row(label, limbs + limbs / 2, reps, 1, (uint32_t)(9000 + n));
+            bench_balanced_size_row(label, limbs + limbs / 2, bench_reps_for_limbs(limbs + limbs / 2), 1, (uint32_t)(9000 + n));
         }
     }
 }
 
 static void bench_unbalanced_sizes(){
     puts("unbalanced mul timing");
-    printf("%-8s %-10s %-8s %-12s %-12s %-12s %-12s %-12s %-12s\n",
-           "ratio", "a", "b", "basic", "karatsuba", "toom", "fft", "ntt", "result");
+    printf("%-8s %-10s %-8s %-15s %-15s %-15s %-15s %-15s %-15s %-12s\n",
+           "ratio", "a", "b", "basic", "karatsuba", "toom", "fft", "ntt", "ssa", "result");
 
     const char *names[] = {"1.25x", "1.333x", "1.5x", "2x", "3x"};
     size_t bases[] = {640, 768, 1024, 1280, 1536, 2048, 2560, 4096, 8192, 16384};
@@ -464,8 +475,13 @@ static void bench_unbalanced_sizes(){
             double ntt_sec = (double)(clock() - start) / CLOCKS_PER_SEC;
             expect_eq(ntt, basic);
 
-            printf("%-8s %-10zu %-8zu %-12.6f %-12.6f %-12.6f %-12.6f %-12.6f %-12zu\n",
-                   names[i], base, bs[i], basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, basic.rsiz);
+            start = clock();
+            precn_t ssa = mul_ssa(a, b);
+            double ssa_sec = (double)(clock() - start) / CLOCKS_PER_SEC;
+            expect_eq(ssa, basic);
+
+            printf("%-8s %-10zu %-8zu %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
+                   names[i], base, bs[i], basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, basic.rsiz);
         }
     }
 }
@@ -490,21 +506,21 @@ static bench_mul_result_t bench_div_once(div_fn_t div, const precn_t &a, const p
     return bench_mul_result_t{r, (double)(end - start) / CLOCKS_PER_SEC / reps};
 }
 
-static size_t bench_div_reps_for_n(size_t n){
-    if(n <= 5) return 100;
-    if(n <= 10) return 10;
+static size_t bench_div_reps_for_limbs(size_t limbs){
+    if(limbs < 256) return 100000;
+    if(limbs <= 1024) return 10;
     return 1;
 }
 
 static void bench_div_sizes(){
     puts("division timing");
-    printf("%-8s %-10s %-10s %-6s %-12s %-12s %-12s\n",
+    printf("%-8s %-10s %-10s %-6s %-15s %-15s %-12s\n",
            "n", "dividend", "divisor", "reps", "schoolbook", "mulinv", "result");
 
     const size_t max_n = 18;
     for(size_t n = 0; n <= max_n; ++n){
         size_t limbs = (size_t)1 << n;
-        size_t reps = bench_div_reps_for_n(n);
+        size_t reps = bench_div_reps_for_limbs(limbs);
         precn_t divisor = pattern(limbs, (uint32_t)(12000 + n));
         precn_t quotient = pattern(limbs, (uint32_t)(13000 + n));
         precn_t dividend = divisor * quotient + (divisor - precn_t(1));
@@ -523,7 +539,7 @@ static void bench_div_sizes(){
 
         char label[16];
         snprintf(label, sizeof(label), "2^%zu", n);
-        printf("%-8s %-10zu %-10zu %-6zu %-12.6f %-12.6f %-12zu\n",
+        printf("%-8s %-10zu %-10zu %-6zu %-15.9f %-15.9f %-12zu\n",
                label, dividend.rsiz, divisor.rsiz, reps, schoolbook_sec, nr.sec, mulinv.rsiz);
         fflush(stdout);
     }
@@ -547,7 +563,7 @@ int main(int argc, char **argv){
     test_repunit_1000();
     test_mul_algorithms();
     puts("ok");
-    printf("time %.3f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);
+    printf("time %.9f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);
     bench_mul_sizes();
     bench_unbalanced_sizes();
     bench_div_sizes();

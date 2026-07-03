@@ -2,6 +2,8 @@
 
 #include<vector>
 
+#define DIV_MULINV_THRESHOLD 16384
+
 static int div_cmp(const precn_t &a, const precn_t &b){
     if(a.rsiz != b.rsiz) return a.rsiz < b.rsiz ? -1 : 1;
     for(size_t i = a.rsiz; i > 0; --i){
@@ -11,12 +13,16 @@ static int div_cmp(const precn_t &a, const precn_t &b){
 }
 
 static unsigned div_clz32(uint32_t x){
+#if defined(__clang__) || defined(__GNUC__)
+    return (unsigned)__builtin_clz(x);
+#else
     unsigned n = 0;
     while((x & 0x80000000u) == 0){
         x <<= 1;
         ++n;
     }
     return n;
+#endif
 }
 
 precn_t div_u32(const precn_t &a, uint32_t b){
@@ -74,8 +80,8 @@ static precn_t div_schoolbook_impl(const precn_t &a, const precn_t &b,
     std::vector<uint32_t> un(a.rsiz + 1, 0);
 
     if(shift == 0){
-        for(size_t i = 0; i < n; ++i) vn[i] = b.a[i];
-        for(size_t i = 0; i < a.rsiz; ++i) un[i] = a.a[i];
+        memcpy(vn.data(), b.a, n * 4);
+        memcpy(un.data(), a.a, a.rsiz * 4);
     }else{
         uint32_t carry = 0;
         for(size_t i = 0; i < n; ++i){
@@ -97,7 +103,6 @@ static precn_t div_schoolbook_impl(const precn_t &a, const precn_t &b,
     if(want_quotient){
         q.asiz = std::max<size_t>(m + 1, 1);
         q.a = (uint32_t*) realloc(q.a, q.asiz * 4);
-        memset(q.a, 0, q.asiz * 4);
         q.rsiz = m + 1;
     }
 
@@ -152,7 +157,7 @@ static precn_t div_schoolbook_impl(const precn_t &a, const precn_t &b,
         r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
         r.rsiz = n;
         if(shift == 0){
-            for(size_t i = 0; i < n; ++i) r.a[i] = un[i];
+            memcpy(r.a, un.data(), n * 4);
         }else{
             for(size_t i = 0; i < n; ++i){
                 r.a[i] = (un[i] >> shift) | (un[i + 1] << (32 - shift));
@@ -176,11 +181,11 @@ precn_t mod_schoolbook(const precn_t &a, const precn_t &b){
 }
 
 precn_t operator/(const precn_t &a, const precn_t &b){
-    if(b.rsiz >= 65536) return div_mulinv(a, b);
+    if(b.rsiz >= DIV_MULINV_THRESHOLD) return div_mulinv(a, b);
     return div_schoolbook(a, b);
 }
 
 precn_t operator%(const precn_t &a, const precn_t &b){
-    if(b.rsiz >= 65536) return mod_mulinv(a, b);
+    if(b.rsiz >= DIV_MULINV_THRESHOLD) return mod_mulinv(a, b);
     return mod_schoolbook(a, b);
 }

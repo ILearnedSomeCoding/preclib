@@ -48,11 +48,13 @@ precn_t precn_divexact_2(const precn_t &a);
 precn_t precn_divexact_3(const precn_t &a);
 precn_t mul_fft(const precn_t &a, const precn_t &b);
 precn_t mul_ntt(const precn_t &a, const precn_t &b);
+precn_t mul_ssa(const precn_t &a, const precn_t &b);
 
 precn_t operator+(const precn_t &a, const precn_t &b);
 precn_t operator-(const precn_t &a, const precn_t &b);
 
 precn_t operator*(const precn_t &a, const precn_t &b);
+void mul_into(precn_t &r, const precn_t &a, const precn_t &b);
 precn_t mul_u32(const precn_t &a, uint32_t b);
 precn_t precn_sqr(const precn_t &a);
 
