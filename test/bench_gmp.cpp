@@ -136,7 +136,7 @@ static void run_div(size_t max_pow){
 }
 
 int main(int argc, char **argv){
-    size_t max_pow = 14;
+    size_t max_pow = 22;
     if(argc >= 2) max_pow = (size_t)std::atoi(argv[1]);
 
     run_mul(max_pow);
