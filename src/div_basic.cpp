@@ -25,12 +25,65 @@ static unsigned div_clz32(uint32_t x){
 #endif
 }
 
-precn_t div_u32(const precn_t &a, uint32_t b){
-    if(a.rsiz == 0 || b == 0) return precn_t();
+static uint64_t div_submul_1(uint32_t *up, const uint32_t *vp, size_t n, uint32_t q){
+    if(q == 0) return 0;
 
-    precn_t q;
-    q.asiz = std::max<size_t>(a.rsiz, 1);
-    q.a = (uint32_t*) realloc(q.a, q.asiz * 4);
+    uint64_t borrow = 0;
+    for(size_t i = 0; i < n; ++i){
+        uint64_t prod = (uint64_t)vp[i] * q + borrow;
+        uint32_t low = (uint32_t)prod;
+        borrow = prod >> 32;
+
+        uint32_t old = up[i];
+        up[i] = old - low;
+        if(old < low) ++borrow;
+    }
+    return borrow;
+}
+
+static uint32_t div_add_n(uint32_t *up, const uint32_t *vp, size_t n){
+    uint64_t carry = 0;
+    for(size_t i = 0; i < n; ++i){
+        uint64_t sum = (uint64_t)up[i] + vp[i] + carry;
+        up[i] = (uint32_t)sum;
+        carry = sum >> 32;
+    }
+    return (uint32_t)carry;
+}
+
+static void div_reserve(precn_t &a, size_t n){
+    if(a.asiz >= n) return;
+    a.a = (uint32_t*) realloc(a.a, n * 4);
+    a.asiz = n;
+}
+
+static void div_zero(precn_t &a){
+    a.rsiz = 0;
+    if(a.asiz == 0){
+        a.asiz = 1;
+        a.a = (uint32_t*) malloc(4);
+    }
+    a.a[0] = 0;
+}
+
+static void div_norm(precn_t &a){
+    while(a.rsiz > 0 && a.a[a.rsiz - 1] == 0) --a.rsiz;
+    if(a.rsiz == 0) a.a[0] = 0;
+}
+
+static void div_u32_into_impl(precn_t &q, const precn_t &a, uint32_t b){
+    if(a.rsiz == 0 || b == 0){
+        div_zero(q);
+        return;
+    }
+    if(&q == &a){
+        precn_t t;
+        div_u32_into_impl(t, a, b);
+        q = t;
+        return;
+    }
+
+    div_reserve(q, std::max<size_t>(a.rsiz, 1));
     q.rsiz = a.rsiz;
 
     uint64_t rem = 0;
@@ -40,20 +93,36 @@ precn_t div_u32(const precn_t &a, uint32_t b){
         rem = cur % b;
     }
 
-    while(q.rsiz > 0 && q.a[q.rsiz - 1] == 0) --q.rsiz;
-    if(q.rsiz == 0) q.a[0] = 0;
-    return q;
+    div_norm(q);
 }
 
-precn_t mod_u32(const precn_t &a, uint32_t b){
-    if(a.rsiz == 0 || b == 0) return precn_t();
+static void mod_u32_into_impl(precn_t &r, const precn_t &a, uint32_t b){
+    if(a.rsiz == 0 || b == 0){
+        div_zero(r);
+        return;
+    }
 
     uint64_t rem = 0;
     for(size_t i = a.rsiz; i > 0; --i){
         uint64_t cur = (rem << 32) | a.a[i - 1];
         rem = cur % b;
     }
-    return precn_t((uint32_t)rem);
+
+    div_reserve(r, 1);
+    r.a[0] = (uint32_t)rem;
+    r.rsiz = rem ? 1 : 0;
+}
+
+precn_t div_u32(const precn_t &a, uint32_t b){
+    precn_t q;
+    div_u32_into_impl(q, a, b);
+    return q;
+}
+
+precn_t mod_u32(const precn_t &a, uint32_t b){
+    precn_t r;
+    mod_u32_into_impl(r, a, b);
+    return r;
 }
 
 static precn_t div_schoolbook_impl(const precn_t &a, const precn_t &b,
@@ -119,28 +188,13 @@ static precn_t div_schoolbook_impl(const precn_t &a, const precn_t &b,
             if(rhat >= base) break;
         }
 
-        uint64_t borrow = 0;
-        for(size_t i = 0; i < n; ++i){
-            uint64_t prod = qhat * vn[i] + borrow;
-            uint32_t low = (uint32_t)prod;
-            borrow = prod >> 32;
-
-            uint32_t old = un[j + i];
-            un[j + i] = old - low;
-            if(old < low) ++borrow;
-        }
+        uint64_t borrow = div_submul_1(un.data() + j, vn.data(), n, (uint32_t)qhat);
 
         uint32_t old_top = un[j + n];
         un[j + n] = old_top - (uint32_t)borrow;
         if(old_top < borrow){
             --qhat;
-            uint64_t carry = 0;
-            for(size_t i = 0; i < n; ++i){
-                uint64_t sum = (uint64_t)un[j + i] + vn[i] + carry;
-                un[j + i] = (uint32_t)sum;
-                carry = sum >> 32;
-            }
-            un[j + n] += (uint32_t)carry;
+            un[j + n] += div_add_n(un.data() + j, vn.data(), n);
         }
 
         if(want_quotient) q.a[j] = (uint32_t)qhat;
@@ -181,11 +235,49 @@ precn_t mod_schoolbook(const precn_t &a, const precn_t &b){
 }
 
 precn_t operator/(const precn_t &a, const precn_t &b){
-    if(b.rsiz >= DIV_MULINV_THRESHOLD) return div_mulinv(a, b);
-    return div_schoolbook(a, b);
+    precn_t q;
+    div_into(q, a, b);
+    return q;
 }
 
 precn_t operator%(const precn_t &a, const precn_t &b){
-    if(b.rsiz >= DIV_MULINV_THRESHOLD) return mod_mulinv(a, b);
-    return mod_schoolbook(a, b);
+    precn_t r;
+    mod_into(r, a, b);
+    return r;
+}
+
+void div_into(precn_t &q, const precn_t &a, const precn_t &b){
+    if(&q == &a || &q == &b){
+        precn_t t;
+        div_into(t, a, b);
+        q = t;
+        return;
+    }
+    if(a.rsiz == 0 || b.rsiz == 0){
+        div_zero(q);
+        return;
+    }
+    if(b.rsiz == 1){
+        div_u32_into_impl(q, a, b.a[0]);
+        return;
+    }
+    q = b.rsiz >= DIV_MULINV_THRESHOLD ? div_mulinv(a, b) : div_schoolbook(a, b);
+}
+
+void mod_into(precn_t &r, const precn_t &a, const precn_t &b){
+    if(&r == &a || &r == &b){
+        precn_t t;
+        mod_into(t, a, b);
+        r = t;
+        return;
+    }
+    if(a.rsiz == 0 || b.rsiz == 0){
+        div_zero(r);
+        return;
+    }
+    if(b.rsiz == 1){
+        mod_u32_into_impl(r, a, b.a[0]);
+        return;
+    }
+    r = b.rsiz >= DIV_MULINV_THRESHOLD ? mod_mulinv(a, b) : mod_schoolbook(a, b);
 }

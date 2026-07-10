@@ -12,6 +12,98 @@ static int newton_cmp(const precn_t &a, const precn_t &b){
     return 0;
 }
 
+static void newton_reserve(precn_t &a, size_t n){
+    if(a.asiz >= n) return;
+    a.a = (uint32_t*) realloc(a.a, n * 4);
+    a.asiz = n;
+}
+
+static void newton_norm(precn_t &a){
+    while(a.rsiz > 0 && a.a[a.rsiz - 1] == 0) --a.rsiz;
+    if(a.rsiz == 0) a.a[0] = 0;
+}
+
+static void newton_inc(precn_t &a){
+    newton_reserve(a, std::max<size_t>(a.rsiz + 1, 1));
+    uint64_t carry = 1;
+    size_t i = 0;
+    for(; i < a.rsiz && carry; ++i){
+        uint64_t s = (uint64_t)a.a[i] + carry;
+        a.a[i] = (uint32_t)s;
+        carry = s >> 32;
+    }
+    if(carry) a.a[a.rsiz++] = (uint32_t)carry;
+    if(a.rsiz == 0) a.rsiz = 1;
+    newton_norm(a);
+}
+
+static void newton_dec(precn_t &a){
+    size_t i = 0;
+    while(i < a.rsiz){
+        if(a.a[i]){
+            --a.a[i];
+            break;
+        }
+        a.a[i++] = 0xFFFFFFFFu;
+    }
+    newton_norm(a);
+}
+
+static void newton_add_inplace(precn_t &a, const precn_t &b){
+    size_t n = std::max(a.rsiz, b.rsiz);
+    newton_reserve(a, n + 1);
+    if(a.rsiz < n) memset(a.a + a.rsiz, 0, (n - a.rsiz) * 4);
+
+    uint64_t carry = 0;
+    for(size_t i = 0; i < n; ++i){
+        uint64_t s = (uint64_t)a.a[i] + (i < b.rsiz ? b.a[i] : 0) + carry;
+        a.a[i] = (uint32_t)s;
+        carry = s >> 32;
+    }
+    a.rsiz = n;
+    if(carry) a.a[a.rsiz++] = (uint32_t)carry;
+    newton_norm(a);
+}
+
+static void newton_sub_inplace_ge(precn_t &a, const precn_t &b){
+    uint64_t borrow = 0;
+    for(size_t i = 0; i < a.rsiz; ++i){
+        uint64_t av = a.a[i];
+        uint64_t sub = (i < b.rsiz ? b.a[i] : 0) + borrow;
+        if(av < sub){
+            a.a[i] = (uint32_t)((1ULL << 32) + av - sub);
+            borrow = 1;
+        }else{
+            a.a[i] = (uint32_t)(av - sub);
+            borrow = 0;
+        }
+    }
+    newton_norm(a);
+}
+
+static int newton_diff_ge(const precn_t &a, const precn_t &b, const precn_t &c){
+    // Return whether a - b >= c, without allocating a-b.  Caller guarantees a >= b.
+    size_t n = std::max(std::max(a.rsiz, b.rsiz), c.rsiz);
+    uint64_t borrow = 0;
+    int cmp = 0;
+    for(size_t i = 0; i < n; ++i){
+        uint64_t av = i < a.rsiz ? a.a[i] : 0;
+        uint64_t bv = i < b.rsiz ? b.a[i] : 0;
+        uint64_t cv = i < c.rsiz ? c.a[i] : 0;
+        uint64_t sub = bv + borrow;
+        uint64_t dv;
+        if(av < sub){
+            dv = (1ULL << 32) + av - sub;
+            borrow = 1;
+        }else{
+            dv = av - sub;
+            borrow = 0;
+        }
+        if(dv != cv) cmp = dv > cv ? 1 : -1;
+    }
+    return borrow == 0 && cmp >= 0;
+}
+
 static unsigned newton_limb_bits(uint32_t x){
     unsigned n = 0;
     while(x){
@@ -289,12 +381,12 @@ static precn_t div_mulinv_impl(const precn_t &a, const precn_t &b,
         // high-product estimate are truncated.  Correct until:
         //     product <= current < product + divisor
         while(newton_cmp(product, current) > 0){
-            estimate = estimate - precn_t(1);
-            product = product - divisor;
+            newton_dec(estimate);
+            newton_sub_inplace_ge(product, divisor);
         }
-        while(newton_cmp(product + divisor, current) <= 0){
-            estimate = estimate + precn_t(1);
-            product = product + divisor;
+        while(newton_diff_ge(current, product, divisor)){
+            newton_inc(estimate);
+            newton_add_inplace(product, divisor);
         }
 
         // current = divisor * estimate + remainder for this block.

@@ -208,6 +208,12 @@ static void test_division(){
     expect(precn_t(9) % precn_t(9), {});
     expect(precn_t(9) / precn_t(), {});
     expect(precn_t(9) % precn_t(), {});
+    precn_t into_q;
+    precn_t into_r;
+    div_into(into_q, make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), make_prec({2}));
+    mod_into(into_r, make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), make_prec({2}));
+    expect(into_q, {0xFFFFFFFFu, 0x7FFFFFFFu});
+    expect(into_r, {1});
 
     precn_t q1 = pattern(7, 501);
     precn_t d1 = make_prec({0x89ABCDEFu, 1u});
@@ -215,6 +221,12 @@ static void test_division(){
     expect_eq(p1 / d1, q1);
     expect_eq((p1 + (d1 - precn_t(1))) % d1, d1 - precn_t(1));
     expect_eq((p1 + (d1 - precn_t(1))) / d1, q1);
+    into_q = p1 + (d1 - precn_t(1));
+    div_into(into_q, into_q, d1);
+    expect_eq(into_q, q1);
+    into_r = p1 + (d1 - precn_t(1));
+    mod_into(into_r, into_r, d1);
+    expect_eq(into_r, d1 - precn_t(1));
 
     precn_t q2 = pattern(9, 701);
     precn_t d2 = make_prec({0x10203040u, 0xF1234567u});

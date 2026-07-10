@@ -68,7 +68,7 @@ static double bench_gmp_mul(const mpz_t a, const mpz_t b, int reps, mpz_t out){
 
 static double bench_prec_div(const precn_t &a, const precn_t &b, int reps, precn_t &out){
     double st = now_sec();
-    for(int i = 0; i < reps; ++i) out = a / b;
+    for(int i = 0; i < reps; ++i) div_into(out, a, b);
     return now_sec() - st;
 }
 

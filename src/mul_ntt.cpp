@@ -2,6 +2,13 @@
 
 #include<vector>
 
+#if defined(__AVX2__) || defined(_M_AVX2)
+#include<immintrin.h>
+#define PRECN_NTT_HAVE_AVX2 1
+#else
+#define PRECN_NTT_HAVE_AVX2 0
+#endif
+
 struct mont_ctx_t{
     uint32_t mod;
     uint32_t root;
@@ -13,29 +20,24 @@ struct mont_ctx_t{
 struct ntt_mod_plan_t{
     mont_ctx_t c;
     uint32_t inv_n;
-    std::vector<uint32_t> fwd_roots;
-    std::vector<uint32_t> inv_roots;
+    std::vector<uint32_t> roots;
 };
 
-static const uint32_t NTT_MOD1 = 167772161u;
-static const uint32_t NTT_MOD2 = 469762049u;
+static const size_t NTT_MAX_LIMBS = (size_t)1 << 24;
+static const size_t NTT_MAX_TRANSFORM = (size_t)1 << 26;
+static const uint32_t NTT_MOD1 = 469762049u;
+static const uint32_t NTT_MOD2 = 1811939329u;
 static const uint32_t NTT_MOD3 = 2013265921u;
 static const uint32_t NTT_ROOT1 = 3u;
-static const uint32_t NTT_ROOT2 = 3u;
+static const uint32_t NTT_ROOT2 = 13u;
 static const uint32_t NTT_ROOT3 = 31u;
 static const uint64_t NTT_DIGIT_MAX2 = 0xFFFFULL * 0xFFFFULL;
 
-static uint32_t mont_inv32(uint32_t a){
-    uint32_t x = 1;
-    for(int i = 0; i < 5; ++i) x *= 2 - a * x;
-    return (uint32_t)(0u - x);
-}
-
-static uint32_t mont_r2(uint32_t mod){
-    uint64_t r = 1;
-    for(int i = 0; i < 64; ++i) r = (r + r) % mod;
-    return (uint32_t)r;
-}
+static const mont_ctx_t NTT_CTX[] = {
+    {469762049u, 3u, 469762047u, 460175152u, 67108855u},
+    {1811939329u, 13u, 1811939327u, 959408210u, 671088638u},
+    {2013265921u, 31u, 2013265919u, 1172168163u, 268435454u},
+};
 
 static uint32_t mont_reduce(const mont_ctx_t &c, uint64_t x){
     uint32_t m = (uint32_t)x * c.ninv;
@@ -52,14 +54,45 @@ static uint32_t mont_mul(const mont_ctx_t &c, uint32_t a, uint32_t b){
     return mont_reduce(c, (uint64_t)a * b);
 }
 
+#if PRECN_NTT_HAVE_AVX2
+static __m256i ntt_load4_u32(const uint32_t *p){
+    return _mm256_cvtepu32_epi64(_mm_loadu_si128((const __m128i*)p));
+}
+
+static void ntt_store4_u32(uint32_t *p, __m256i x){
+    alignas(32) uint64_t t[4];
+    _mm256_store_si256((__m256i*)t, x);
+    p[0] = (uint32_t)t[0];
+    p[1] = (uint32_t)t[1];
+    p[2] = (uint32_t)t[2];
+    p[3] = (uint32_t)t[3];
+}
+
+static __m256i mont_reduce4(const mont_ctx_t &c, __m256i x){
+    __m256i ninv = _mm256_set1_epi64x((long long)c.ninv);
+    __m256i mod = _mm256_set1_epi64x((long long)c.mod);
+    __m256i m = _mm256_mul_epu32(x, ninv);
+    __m256i t = _mm256_srli_epi64(_mm256_add_epi64(x, _mm256_mul_epu32(m, mod)), 32);
+    __m256i ge = _mm256_cmpgt_epi64(t, _mm256_set1_epi64x((long long)c.mod - 1));
+    return _mm256_sub_epi64(t, _mm256_and_si256(ge, mod));
+}
+
+static __m256i mont_mul4(const mont_ctx_t &c, __m256i a, __m256i b){
+    return mont_reduce4(c, _mm256_mul_epu32(a, b));
+}
+
+static void mont_mul4_store(uint32_t *out, const uint32_t *a, const uint32_t *b,
+                            const mont_ctx_t &c){
+    ntt_store4_u32(out, mont_mul4(c, ntt_load4_u32(a), ntt_load4_u32(b)));
+}
+#endif
+
 static mont_ctx_t mont_make(uint32_t mod, uint32_t root){
-    mont_ctx_t c;
-    c.mod = mod;
-    c.root = root;
-    c.ninv = mont_inv32(mod);
-    c.r2 = mont_r2(mod);
-    c.one = mont_in(c, 1);
-    return c;
+    for(size_t i = 0; i < sizeof(NTT_CTX) / sizeof(NTT_CTX[0]); ++i){
+        if(NTT_CTX[i].mod == mod && NTT_CTX[i].root == root) return NTT_CTX[i];
+    }
+    fprintf(stderr, "mul_ntt tantrum: missing Montgomery constants for mod %u root %u\n", mod, root);
+    abort();
 }
 
 static uint32_t mont_pow(const mont_ctx_t &c, uint32_t a, uint64_t e){
@@ -103,8 +136,6 @@ static ntt_mod_plan_t ntt_make_mod_plan(size_t n, uint32_t mod, uint32_t root){
     ntt_mod_plan_t p;
     p.c = mont_make(mod, root);
     p.inv_n = mont_pow(p.c, (uint32_t)(n % mod), mod - 2);
-    ntt_build_roots(p.fwd_roots, p.c, n, 0);
-    ntt_build_roots(p.inv_roots, p.c, n, 1);
     return p;
 }
 
@@ -112,7 +143,7 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
                 const std::vector<uint32_t> &rev){
     size_t n = a.size();
     const mont_ctx_t &c = p.c;
-    const std::vector<uint32_t> &roots = inv ? p.inv_roots : p.fwd_roots;
+    const std::vector<uint32_t> &roots = p.roots;
     uint32_t mod = c.mod;
 
     for(size_t i = 1; i < n; ++i){
@@ -123,7 +154,33 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
     for(size_t len = 2; len <= n; len <<= 1){
         size_t half = len >> 1;
         for(size_t i = 0; i < n; i += len){
-            for(size_t j = 0; j < half; ++j){
+            size_t j = 0;
+#if PRECN_NTT_HAVE_AVX2
+            __m256i mod4 = _mm256_set1_epi64x((long long)mod);
+            __m256i modm1 = _mm256_set1_epi64x((long long)mod - 1);
+            __m256i all = _mm256_cmpeq_epi64(mod4, mod4);
+            for(; j + 3 < half; j += 4){
+                uint32_t *lo = a.data() + i + j;
+                uint32_t *hi = lo + half;
+                __m256i u = ntt_load4_u32(lo);
+                __m256i v = mont_mul4(c, ntt_load4_u32(hi), ntt_load4_u32(roots.data() + half + j));
+
+                __m256i s = _mm256_add_epi64(u, v);
+                __m256i s_ge = _mm256_cmpgt_epi64(s, modm1);
+                s = _mm256_sub_epi64(s, _mm256_and_si256(s_ge, mod4));
+
+                __m256i d_plain = _mm256_sub_epi64(u, v);
+                __m256i d_wrap = _mm256_sub_epi64(_mm256_add_epi64(u, mod4), v);
+                __m256i v_gt_u = _mm256_cmpgt_epi64(v, u);
+                __m256i u_ge_v = _mm256_xor_si256(v_gt_u, all);
+                __m256i d = _mm256_or_si256(_mm256_and_si256(u_ge_v, d_plain),
+                                            _mm256_andnot_si256(u_ge_v, d_wrap));
+
+                ntt_store4_u32(lo, s);
+                ntt_store4_u32(hi, d);
+            }
+#endif
+            for(; j < half; ++j){
                 uint32_t u = a[i + j];
                 uint32_t v = mont_mul(c, a[i + j + half], roots[half + j]);
 
@@ -139,7 +196,14 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
 
     if(inv){
         uint32_t inv_n = p.inv_n;
-        for(size_t i = 0; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
+        size_t i = 0;
+#if PRECN_NTT_HAVE_AVX2
+        __m256i inv4 = _mm256_set1_epi64x((long long)inv_n);
+        for(; i + 3 < n; i += 4){
+            ntt_store4_u32(a.data() + i, mont_mul4(c, ntt_load4_u32(a.data() + i), inv4));
+        }
+#endif
+        for(; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
     }
 }
 
@@ -173,12 +237,24 @@ static void ntt_convolve_mod(const std::vector<uint32_t> &a,
     for(size_t i = 0; i < a.size(); ++i) out[i] = mont_in(p.c, a[i]);
     for(size_t i = 0; i < b.size(); ++i) scratch[i] = mont_in(p.c, b[i]);
 
+    ntt_build_roots(p.roots, p.c, n, 0);
     ntt(out, 0, p, rev);
     ntt(scratch, 0, p, rev);
-    for(size_t i = 0; i < n; ++i) out[i] = mont_mul(p.c, out[i], scratch[i]);
+    size_t i = 0;
+#if PRECN_NTT_HAVE_AVX2
+    for(; i + 3 < n; i += 4) mont_mul4_store(out.data() + i, out.data() + i, scratch.data() + i, p.c);
+#endif
+    for(; i < n; ++i) out[i] = mont_mul(p.c, out[i], scratch[i]);
+    ntt_build_roots(p.roots, p.c, n, 1);
     ntt(out, 1, p, rev);
 
-    for(size_t i = 0; i < n; ++i) out[i] = mont_reduce(p.c, out[i]);
+    i = 0;
+#if PRECN_NTT_HAVE_AVX2
+    for(; i + 3 < n; i += 4){
+        ntt_store4_u32(out.data() + i, mont_reduce4(p.c, ntt_load4_u32(out.data() + i)));
+    }
+#endif
+    for(; i < n; ++i) out[i] = mont_reduce(p.c, out[i]);
 }
 
 static uint32_t mod_inv_u32(uint64_t a, uint32_t mod){
@@ -289,6 +365,8 @@ static int ntt_two_mod_ok(size_t terms){
 
 precn_t mul_ntt(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+    size_t limbs = std::max(a.rsiz, b.rsiz);
+    if(limbs > NTT_MAX_LIMBS) return mul_fft(a, b);
 
     std::vector<uint32_t> da = ntt_digits(a);
     std::vector<uint32_t> db = ntt_digits(b);
@@ -296,7 +374,7 @@ precn_t mul_ntt(const precn_t &a, const precn_t &b){
 
     size_t n = 1;
     while(n < da.size() + db.size()) n <<= 1;
-    if(n > ((size_t)1 << 25)) return mul_fft(a, b);
+    if(n > NTT_MAX_TRANSFORM) return mul_fft(a, b);
 
     std::vector<uint32_t> rev;
     ntt_build_rev(rev, n);
