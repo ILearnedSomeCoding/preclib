@@ -45,16 +45,17 @@ static precn_t dec_chunks_to_prec(const std::vector<uint32_t> &chunks,
 }
 
 precn_t::precn_t(){
-    a = (uint32_t*) malloc(4);
+    a = (uint64_t*) malloc(sizeof(uint64_t));
     asiz = 1;
     rsiz = 0;
     *a = 0;
 }
 precn_t::precn_t(const precn_t &o){
-    asiz = o.asiz;
+    asiz = std::max<size_t>(o.rsiz, 1);
     rsiz = o.rsiz;
-    a = (uint32_t*) malloc(asiz * 4);
-    memcpy(a, o.a, rsiz * 4);
+    a = (uint64_t*) malloc(asiz * sizeof(uint64_t));
+    if(rsiz) memcpy(a, o.a, rsiz * sizeof(uint64_t));
+    else a[0] = 0;
 }
 precn_t::precn_t(precn_t &&o){
     asiz = o.asiz;
@@ -63,7 +64,7 @@ precn_t::precn_t(precn_t &&o){
     o.a = nullptr; // shouldnt you free it? no, because it is moved, not copied
 }
 precn_t::precn_t(std::string o){
-    a = (uint32_t*) malloc(4);
+    a = (uint64_t*) malloc(sizeof(uint64_t));
     asiz = 1;
     rsiz = 0;
     *a = 0;
@@ -90,12 +91,33 @@ precn_t::precn_t(std::string o){
     *this = dec_chunks_to_prec(chunks, 0, chunks.size(), pow2);
 }
 
+precn_t::operator std::string() const{
+    if(rsiz == 0) return std::string("0");
+
+    uint64_t top = a[rsiz - 1];
+    size_t bits = (rsiz - 1) * 64;
+    while(top){
+        ++bits;
+        top >>= 1;
+    }
+    // 30103 / 100000 is a strict upper approximation of log10(2).
+    std::vector<uint32_t> digits(bits * 30103 / 100000 + 2);
+    size_t n = 0;
+    precn_base_convert(*this, 10, digits.data(), n);
+
+    std::string s;
+    s.reserve(n);
+    for(size_t i = n; i > 0; --i) s.push_back((char)('0' + digits[i - 1]));
+    return s;
+}
+
 precn_t &precn_t::operator=(const precn_t &o){
     if(this == &o) return *this;
-    asiz = o.asiz;
+    asiz = std::max<size_t>(o.rsiz, 1);
     rsiz = o.rsiz;
-    a = (uint32_t*) realloc(a, asiz * 4);
-    memcpy(a, o.a, rsiz * 4);
+    a = (uint64_t*) realloc(a, asiz * sizeof(uint64_t));
+    if(rsiz) memcpy(a, o.a, rsiz * sizeof(uint64_t));
+    else a[0] = 0;
     return *this;
 }
 precn_t &precn_t::operator=(precn_t &&o){

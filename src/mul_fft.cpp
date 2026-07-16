@@ -20,6 +20,15 @@ struct fft_vec_t{
     std::vector<double> im;
 };
 
+struct fft_plan_t{
+    size_t n;
+    std::vector<size_t> rev;
+    std::vector<std::vector<double> > forward_re;
+    std::vector<std::vector<double> > forward_im;
+    std::vector<std::vector<double> > inverse_re;
+    std::vector<std::vector<double> > inverse_im;
+};
+
 static const double PI = acos(-1.0);
 
 static void fft_resize(fft_vec_t &a, size_t n){
@@ -56,6 +65,30 @@ static void fft_fill_roots(double *wr, double *wi, size_t half, double ang){
             wi[i] = m;
         }
     }
+}
+
+static fft_plan_t &fft_plan(size_t n){
+    static std::vector<fft_plan_t> plans;
+    for(size_t i = 0; i < plans.size(); ++i){
+        if(plans[i].n == n) return plans[i];
+    }
+
+    fft_plan_t plan;
+    plan.n = n;
+    fft_build_rev(plan.rev, n);
+    for(size_t len = 2; len <= n; len <<= 1){
+        size_t half = len >> 1;
+        plan.forward_re.push_back(std::vector<double>(half));
+        plan.forward_im.push_back(std::vector<double>(half));
+        plan.inverse_re.push_back(std::vector<double>(half));
+        plan.inverse_im.push_back(std::vector<double>(half));
+        fft_fill_roots(plan.forward_re.back().data(), plan.forward_im.back().data(),
+                       half, 2.0 * PI / (double)len);
+        fft_fill_roots(plan.inverse_re.back().data(), plan.inverse_im.back().data(),
+                       half, -2.0 * PI / (double)len);
+    }
+    plans.push_back(std::move(plan));
+    return plans.back();
 }
 
 static void fft_stage(fft_vec_t &a, size_t len, const double *wr, const double *wi){
@@ -156,55 +189,57 @@ static void fft_scale(fft_vec_t &a, double s){
     }
 }
 
-static void fft(fft_vec_t &a, int inv, const std::vector<size_t> &rev,
-                std::vector<double> &wr, std::vector<double> &wi){
+static void fft(fft_vec_t &a, int inv, const fft_plan_t &plan){
     size_t n = a.re.size();
     double *re = a.re.data();
     double *im = a.im.data();
 
     for(size_t i = 1; i < n; ++i){
-        size_t j = rev[i];
+        size_t j = plan.rev[i];
         if(i < j){
             std::swap(re[i], re[j]);
             std::swap(im[i], im[j]);
         }
     }
 
-    if(wr.size() < n / 2){
-        wr.resize(n / 2);
-        wi.resize(n / 2);
-    }
-
-    for(size_t len = 2; len <= n; len <<= 1){
-        double ang = 2.0 * PI / (double)len * (inv ? -1.0 : 1.0);
-        size_t half = len >> 1;
-        fft_fill_roots(wr.data(), wi.data(), half, ang);
+    for(size_t level = 0, len = 2; len <= n; len <<= 1, ++level){
+        const std::vector<double> &wr = inv ? plan.inverse_re[level] : plan.forward_re[level];
+        const std::vector<double> &wi = inv ? plan.inverse_im[level] : plan.forward_im[level];
         fft_stage(a, len, wr.data(), wi.data());
     }
 
     if(inv) fft_scale(a, 1.0 / (double)n);
 }
 
-static std::vector<int> fft_digits(const precn_t &a, int bits){
-    std::vector<int> d;
-    uint32_t mask = (1u << bits) - 1;
-    size_t per = 32 / bits;
-    d.reserve(a.rsiz * per);
+static size_t fft_digit_count(const precn_t &a, int bits){
+    if(a.rsiz == 0) return 0;
+    size_t per = 64 / bits;
+    size_t n = (a.rsiz - 1) * per;
+    uint64_t top = a.a[a.rsiz - 1];
+    do{
+        ++n;
+        top >>= bits;
+    }while(top);
+    return n;
+}
+
+static void fft_load_digits(fft_vec_t &f, const precn_t &a, int bits, int imag){
+    uint64_t mask = ((uint64_t)1 << bits) - 1;
+    size_t per = 64 / bits;
+    double *dst = imag ? f.im.data() : f.re.data();
+    size_t k = 0;
     for(size_t i = 0; i < a.rsiz; ++i){
-        uint32_t x = a.a[i];
+        uint64_t x = a.a[i];
         for(size_t j = 0; j < per; ++j){
-            d.push_back((int)(x & mask));
+            dst[k++] = (double)(x & mask);
             x >>= bits;
         }
     }
-    while(!d.empty() && d.back() == 0) d.pop_back();
-    return d;
 }
 
 static void fft_pair_convolution(const fft_vec_t &f, fft_vec_t &out){
     size_t n = f.re.size();
     fft_resize(out, n);
-
     size_t k = 0;
 
 #if PRECN_FFT_HAVE_AVX2
@@ -224,7 +259,7 @@ static void fft_pair_convolution(const fft_vec_t &f, fft_vec_t &out){
         k = 1;
     }
 
-    const __m256d half = _mm256_set1_pd(0.5);
+    const __m256d half4 = _mm256_set1_pd(0.5);
     for(; k + 3 < n; k += 4){
         __m256d xr = _mm256_loadu_pd(f.re.data() + k);
         __m256d xi = _mm256_loadu_pd(f.im.data() + k);
@@ -233,16 +268,14 @@ static void fft_pair_convolution(const fft_vec_t &f, fft_vec_t &out){
 
         yr = _mm256_permute4x64_pd(yr, 0x1B);
         yi = _mm256_permute4x64_pd(yi, 0x1B);
-
-        __m256d ar = _mm256_mul_pd(_mm256_add_pd(xr, yr), half);
-        __m256d ai = _mm256_mul_pd(_mm256_sub_pd(xi, yi), half);
-        __m256d br = _mm256_mul_pd(_mm256_add_pd(xi, yi), half);
-        __m256d bi = _mm256_mul_pd(_mm256_sub_pd(yr, xr), half);
-
-        _mm256_storeu_pd(out.re.data() + k,
-                         _mm256_sub_pd(_mm256_mul_pd(ar, br), _mm256_mul_pd(ai, bi)));
-        _mm256_storeu_pd(out.im.data() + k,
-                         _mm256_add_pd(_mm256_mul_pd(ar, bi), _mm256_mul_pd(ai, br)));
+        __m256d ar = _mm256_mul_pd(_mm256_add_pd(xr, yr), half4);
+        __m256d ai = _mm256_mul_pd(_mm256_sub_pd(xi, yi), half4);
+        __m256d br = _mm256_mul_pd(_mm256_add_pd(xi, yi), half4);
+        __m256d bi = _mm256_mul_pd(_mm256_sub_pd(yr, xr), half4);
+        __m256d rr = _mm256_sub_pd(_mm256_mul_pd(ar, br), _mm256_mul_pd(ai, bi));
+        __m256d ri = _mm256_add_pd(_mm256_mul_pd(ar, bi), _mm256_mul_pd(ai, br));
+        _mm256_storeu_pd(out.re.data() + k, rr);
+        _mm256_storeu_pd(out.im.data() + k, ri);
     }
 #endif
 
@@ -268,7 +301,8 @@ static long long fft_round(double x){
 }
 
 static precn_t fft_from_digits(std::vector<long long> &d, int bits){
-    uint32_t mask = (1u << bits) - 1;
+    uint64_t mask = ((uint64_t)1 << bits) - 1;
+    size_t per = 64 / bits;
     long long carry = 0;
     for(size_t i = 0; i < d.size(); ++i){
         long long cur = d[i] + carry;
@@ -283,15 +317,12 @@ static precn_t fft_from_digits(std::vector<long long> &d, int bits){
 
     precn_t r;
     if(d.empty()) return r;
-
-    size_t per = 32 / bits;
     r.rsiz = (d.size() + per - 1) / per;
     r.asiz = std::max<size_t>(r.rsiz, 1);
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
-
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
     for(size_t i = 0; i < d.size(); ++i){
-        r.a[i / per] |= (uint32_t)d[i] << ((i % per) * bits);
+        r.a[i / per] |= (uint64_t)d[i] << ((i % per) * bits);
     }
     while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
     if(r.rsiz == 0) r.a[0] = 0;
@@ -299,33 +330,31 @@ static precn_t fft_from_digits(std::vector<long long> &d, int bits){
 }
 
 static precn_t mul_fft_bits(const precn_t &a, const precn_t &b, int bits){
-    std::vector<int> da = fft_digits(a, bits);
-    std::vector<int> db = fft_digits(b, bits);
-    if(da.empty() || db.empty()) return precn_t();
+    size_t da = fft_digit_count(a, bits);
+    size_t db = fft_digit_count(b, bits);
+    if(da == 0 || db == 0) return precn_t();
 
     size_t n = 1;
-    while(n < da.size() + db.size()) n <<= 1;
+    while(n < da + db) n <<= 1;
 
-    fft_vec_t f, prod;
+    fft_vec_t f, product;
     fft_resize(f, n);
-    for(size_t i = 0; i < da.size(); ++i) f.re[i] = (double)da[i];
-    for(size_t i = 0; i < db.size(); ++i) f.im[i] = (double)db[i];
+    fft_load_digits(f, a, bits, 0);
+    fft_load_digits(f, b, bits, 1);
 
-    std::vector<size_t> rev;
-    std::vector<double> wr, wi;
-    fft_build_rev(rev, n);
+    fft_plan_t &plan = fft_plan(n);
 
-    fft(f, 0, rev, wr, wi);
-    fft_pair_convolution(f, prod);
-    fft(prod, 1, rev, wr, wi);
-
+    fft(f, 0, plan);
+    fft_pair_convolution(f, product);
+    fft(product, 1, plan);
     std::vector<long long> out(n);
-    for(size_t i = 0; i < n; ++i) out[i] = fft_round(prod.re[i]);
+    for(size_t i = 0; i < n; ++i) out[i] = fft_round(product.re[i]);
     return fft_from_digits(out, bits);
 }
 
 precn_t mul_fft(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+    if(std::max(a.rsiz, b.rsiz) <= 192) return mul_basic(a, b);
 
     size_t digits16 = std::max(a.rsiz, b.rsiz) * 2;
     if(digits16 <= (1u << 12)) return mul_fft_bits(a, b, 16);

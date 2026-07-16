@@ -6,7 +6,7 @@
 
 struct ptr_len{
     size_t siz;
-    uint32_t *a;
+    uint64_t *a;
 };
 
 #endif

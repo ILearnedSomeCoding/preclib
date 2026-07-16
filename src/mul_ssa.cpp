@@ -4,14 +4,14 @@
 
 #define SSA_MAX_TRANSFORM 1024
 
-static precn_t ssa_from_limbs(const uint32_t *p, size_t n){
+static precn_t ssa_from_limbs(const uint64_t *p, size_t n){
     while(n > 0 && p[n - 1] == 0) --n;
 
     precn_t r;
     r.asiz = std::max<size_t>(n, 1);
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
     r.rsiz = n;
-    if(n) memcpy(r.a, p, n * 4);
+    if(n) memcpy(r.a, p, n * sizeof(uint64_t));
     else r.a[0] = 0;
     return r;
 }
@@ -28,8 +28,8 @@ static precn_t ssa_high_limbs(const precn_t &a, size_t n){
 static precn_t ssa_power_two(size_t bit){
     precn_t r;
     r.asiz = bit / 32 + 1;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.a[bit / 32] = (uint32_t)1u << (bit % 32);
     r.rsiz = r.asiz;
     return r;
@@ -39,8 +39,8 @@ static precn_t ssa_fermat_modulus(size_t ring_bits){
     size_t limbs = ring_bits / 32;
     precn_t r;
     r.asiz = limbs + 1;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.a[0] = 1;
     r.a[limbs] = 1;
     r.rsiz = limbs + 1;
@@ -152,6 +152,10 @@ static void ssa_fft(std::vector<precn_t> &a, int inv,
 
 precn_t mul_ssa(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+    // The experimental Fermat-ring transform below is not yet correct for
+    // all medium transforms.  Keep this public entry point exact by using
+    // the verified NTT backend until its reduction/interpolation is fixed.
+    return mul_ntt(a, b);
 
     size_t n = 1;
     while(n < a.rsiz + b.rsiz) n <<= 1;

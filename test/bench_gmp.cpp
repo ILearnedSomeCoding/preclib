@@ -11,15 +11,15 @@ static double now_sec(){
     return (double)clock() / CLOCKS_PER_SEC;
 }
 
-static precn_t pattern(size_t n, uint32_t seed){
+static precn_t pattern(size_t n, uint64_t seed){
     precn_t r;
     r.asiz = n ? n : 1;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
     r.rsiz = n;
-    uint32_t x = seed;
+    uint64_t x = seed;
     for(size_t i = 0; i < n; ++i){
-        x = x * 1664525u + 1013904223u;
-        r.a[i] = x | 1u;
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        r.a[i] = x | 1ULL;
     }
     while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
     if(r.rsiz == 0) r.a[0] = 0;
@@ -31,12 +31,12 @@ static void precn_to_mpz(mpz_t z, const precn_t &a){
         mpz_set_ui(z, 0);
         return;
     }
-    mpz_import(z, a.rsiz, -1, sizeof(uint32_t), 0, 0, a.a);
+    mpz_import(z, a.rsiz, -1, sizeof(uint64_t), 0, 0, a.a);
 }
 
 static size_t mpz_limbs(const mpz_t z){
     if(mpz_sgn(z) == 0) return 0;
-    return (mpz_sizeinbase(z, 2) + 31) / 32;
+    return (mpz_sizeinbase(z, 2) + 63) / 64;
 }
 
 static void check_same(const precn_t &a, const mpz_t b){

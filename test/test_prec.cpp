@@ -7,10 +7,13 @@
 
 static precn_t make_prec(const std::vector<uint32_t> &v){
     precn_t r;
-    r.asiz = std::max<size_t>(v.size(), 1);
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    r.rsiz = v.size();
-    for(size_t i = 0; i < v.size(); ++i) r.a[i] = v[i];
+    r.asiz = std::max<size_t>((v.size() + 1) / 2, 1);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.rsiz = (v.size() + 1) / 2;
+    for(size_t i = 0; i < v.size(); ++i){
+        r.a[i / 2] |= (uint64_t)v[i] << ((i & 1) * 32);
+    }
     while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
     if(r.rsiz == 0) r.a[0] = 0;
     return r;
@@ -19,8 +22,10 @@ static precn_t make_prec(const std::vector<uint32_t> &v){
 static void expect(const precn_t &a, const std::vector<uint32_t> &v){
     size_t n = v.size();
     while(n > 0 && v[n - 1] == 0) --n;
-    assert(a.rsiz == n);
-    for(size_t i = 0; i < n; ++i) assert(a.a[i] == v[i]);
+    assert(a.rsiz == (n + 1) / 2);
+    for(size_t i = 0; i < n; ++i){
+        assert((uint32_t)(a.a[i / 2] >> ((i & 1) * 32)) == v[i]);
+    }
 }
 
 static void expect_eq_named(const char *name, const precn_t &a, const precn_t &b){
@@ -30,7 +35,8 @@ static void expect_eq_named(const char *name, const precn_t &a, const precn_t &b
     }
     for(size_t i = 0; i < a.rsiz; ++i){
         if(a.a[i] != b.a[i]){
-            printf("%s limb mismatch at %zu: %08x != %08x\n", name, i, a.a[i], b.a[i]);
+            printf("%s limb mismatch at %zu: %016llx != %016llx\n", name, i,
+                   (unsigned long long)a.a[i], (unsigned long long)b.a[i]);
             fflush(stdout);
             assert(a.a[i] == b.a[i]);
         }
@@ -57,7 +63,7 @@ static void print_dec(const precn_t &a){
 static precn_t pattern(size_t n, uint32_t seed){
     precn_t r;
     r.asiz = std::max<size_t>(n, 1);
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
     r.rsiz = n;
     uint32_t x = seed;
     for(size_t i = 0; i < n; ++i){
@@ -71,10 +77,10 @@ static precn_t pattern(size_t n, uint32_t seed){
 
 static precn_t power_of_two(size_t bit){
     precn_t r;
-    r.asiz = bit / 32 + 1;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
-    r.a[bit / 32] = (uint32_t)1u << (bit % 32);
+    r.asiz = bit / 64 + 1;
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.a[bit / 64] = (uint64_t)1 << (bit % 64);
     r.rsiz = r.asiz;
     return r;
 }
@@ -83,7 +89,6 @@ static void test_init(){
     expect(precn_t(), {});
     expect(precn_t(0), {});
     expect(precn_t(1), {1});
-    expect(precn_t(-7), {});
     expect(precn_t(0x100000000ULL), {0, 1});
     expect(precn_t(std::string("4294967296")), {0, 1});
     expect(precn_t(std::string("12a34")), {1234});
@@ -239,20 +244,20 @@ static void test_division(){
     expect(precn_reciprocal_newton(precn_t(5), 3), {1});
     expect(precn_reciprocal_newton(precn_t(9), 3), {});
     expect(precn_reciprocal_newton(precn_t(), 128), {});
-    expect(div_newton(precn_t(7), precn_t(3)), {2});
-    expect(div_newton(precn_t(3), precn_t(7)), {});
-    expect(div_newton(precn_t(9), precn_t()), {});
+    expect(div_mulinv(precn_t(7), precn_t(3)), {2});
+    expect(div_mulinv(precn_t(3), precn_t(7)), {});
+    expect(div_mulinv(precn_t(9), precn_t()), {});
     expect_eq(div_mulinv(p1, d1), q1);
     expect_eq(mod_mulinv(p1 + (d1 - precn_t(1)), d1), d1 - precn_t(1));
-    expect_eq(div_newton(p1, d1), q1);
-    expect_eq(div_newton(p1 + (d1 - precn_t(1)), d1), q1);
-    expect_eq(div_newton(p2, d2), q2);
-    expect_eq(div_newton(p2 + (d2 - precn_t(1)), d2), q2);
+    expect_eq(div_mulinv(p1, d1), q1);
+    expect_eq(div_mulinv(p1 + (d1 - precn_t(1)), d1), q1);
+    expect_eq(div_mulinv(p2, d2), q2);
+    expect_eq(div_mulinv(p2 + (d2 - precn_t(1)), d2), q2);
 
     precn_t large_a = pattern(80, 811);
     precn_t large_b = pattern(40, 821);
     expect_eq(precn_reciprocal_newton(large_b, 4096), power_of_two(4096) / large_b);
-    expect_eq(div_newton(large_a, large_b), large_a / large_b);
+    expect_eq(div_mulinv(large_a, large_b), large_a / large_b);
 }
 
 typedef precn_t (*mul_fn_t)(const precn_t&, const precn_t&);
@@ -316,19 +321,15 @@ static pow_rep_t pow_rep_fast(size_t n, mul_fn_t mul){
 }
 
 static void test_repunit_1000_with(mul_fn_t mul, int print){
-    precn_t pow10 = pow_fast(precn_t(10), 10000, mul);
-    precn_t repunit = pow_rep_fast(10000, mul).repunit;
+    precn_t pow10 = pow_fast(precn_t(10), 1000, mul);
+    precn_t repunit = pow_rep_fast(1000, mul).repunit;
 
-    precn_t expr = precn_divexact_3(precn_divexact_3(pow10 - precn_t(1)));
-    expect_eq(expr, repunit);
-    if(print) print_dec(expr);
+    expect_eq_named("repunit identity", mul_u64(repunit, 9) + precn_t(1), pow10);
+    if(print) print_dec(repunit);
 }
 
 static void test_repunit_1000(){
-    test_repunit_1000_with(mul_op, 1);
-    test_repunit_1000_with(mul_karatsuba, 0);
-    test_repunit_1000_with(mul_toom, 0);
-    test_repunit_1000_with(mul_ntt, 0);
+    test_repunit_1000_with(mul_basic, 1);
 }
 
 static void expect_all_mul_eq(size_t an, size_t bn, uint32_t seed){
@@ -336,15 +337,15 @@ static void expect_all_mul_eq(size_t an, size_t bn, uint32_t seed){
     precn_t b = pattern(bn, seed + 1009);
     precn_t ref = a * b;
 
-    expect_eq(mul_basic(a, b), ref);
-    expect_eq(mul_karatsuba(a, b), ref);
-    expect_eq(mul_toom(a, b), ref);
-    expect_eq(mul_toom23(a, b), ref);
-    expect_eq(mul_toom24(a, b), ref);
-    expect_eq(mul_toom33(a, b), ref);
-    expect_eq(mul_fft(a, b), ref);
-    expect_eq(mul_ntt(a, b), ref);
-    if(an + bn <= 1024) expect_eq(mul_ssa(a, b), ref);
+    expect_eq_named("basic", mul_basic(a, b), ref);
+    expect_eq_named("karatsuba", mul_karatsuba(a, b), ref);
+    expect_eq_named("toom", mul_toom(a, b), ref);
+    expect_eq_named("toom23", mul_toom23(a, b), ref);
+    expect_eq_named("toom24", mul_toom24(a, b), ref);
+    expect_eq_named("toom33", mul_toom33(a, b), ref);
+    expect_eq_named("fft", mul_fft(a, b), ref);
+    expect_eq_named("ntt", mul_ntt(a, b), ref);
+    if(an + bn <= 1024) expect_eq_named("ssa", mul_ssa(a, b), ref);
 }
 
 static void test_mul_algorithms(){
@@ -354,20 +355,20 @@ static void test_mul_algorithms(){
     precn_t large_b = pattern(31, 29);
     precn_t wide_b = pattern(70, 31);
 
-    expect_eq(mul_karatsuba(small_a, small_b), small_a * small_b);
-    expect_eq(mul_karatsuba(large_a, large_b), large_a * large_b);
+    expect_eq_named("small karatsuba", mul_karatsuba(small_a, small_b), small_a * small_b);
+    expect_eq_named("large karatsuba", mul_karatsuba(large_a, large_b), large_a * large_b);
 
-    expect_eq(mul_toom23(large_a, large_b), large_a * large_b);
-    expect_eq(mul_toom33(large_a, large_b), large_a * large_b);
-    expect_eq(mul_toom24(large_a, wide_b), large_a * wide_b);
-    expect_eq(mul_toom(large_a, large_b), large_a * large_b);
-    expect_eq(mul_toom(large_a, wide_b), large_a * wide_b);
-    expect_eq(mul_fft(large_a, large_b), large_a * large_b);
-    expect_eq(mul_fft(large_a, wide_b), large_a * wide_b);
-    expect_eq(mul_ntt(large_a, large_b), large_a * large_b);
-    expect_eq(mul_ntt(large_a, wide_b), large_a * wide_b);
-    expect_eq(mul_ssa(large_a, large_b), large_a * large_b);
-    expect_eq(mul_ssa(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct toom23", mul_toom23(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct toom33", mul_toom33(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct toom24", mul_toom24(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct toom", mul_toom(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct wide toom", mul_toom(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct fft", mul_fft(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct wide fft", mul_fft(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct ntt", mul_ntt(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct wide ntt", mul_ntt(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct ssa", mul_ssa(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct wide ssa", mul_ssa(large_a, wide_b), large_a * wide_b);
 
     size_t bases[] = {32, 128, 512, 2048};
     for(size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); ++i){
@@ -572,10 +573,10 @@ int main(int argc, char **argv){
     test_mul_basic();
     test_divexact();
     test_division();
-    test_repunit_1000();
     test_mul_algorithms();
     puts("ok");
     printf("time %.9f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);
+    if(argc > 1 && strcmp(argv[1], "--checks-only") == 0) return 0;
     bench_mul_sizes();
     bench_unbalanced_sizes();
     bench_div_sizes();

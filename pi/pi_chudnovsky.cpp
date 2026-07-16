@@ -5,6 +5,7 @@
 #include<fstream>
 #include<iostream>
 #include<string>
+#include<utility>
 #include<vector>
 
 #define CHUD_C3_OVER_24 10939058860032000ULL
@@ -14,7 +15,6 @@
 static bool show_phases = false;
 static bool full_output = false;
 static std::string output_file;
-static size_t sqrt_iterations = 0;
 
 static double now_sec(){
     using clock_t = std::chrono::steady_clock;
@@ -34,10 +34,8 @@ struct bs_t{
 };
 
 static sprecn_t sp_make(precn_t v, bool neg){
-    sprecn_t r;
-    r.v = v;
-    r.neg = neg && v.rsiz != 0;
-    return r;
+    bool sign = neg && v.rsiz != 0;
+    return sprecn_t{std::move(v), sign};
 }
 
 static sprecn_t sp_add(const sprecn_t &a, const sprecn_t &b){
@@ -52,8 +50,8 @@ static sprecn_t sp_mul(const sprecn_t &a, const precn_t &b){
 
 static size_t bit_length(const precn_t &a){
     if(a.rsiz == 0) return 0;
-    uint32_t top = a.a[a.rsiz - 1];
-    size_t bits = (a.rsiz - 1) * 32;
+    uint64_t top = a.a[a.rsiz - 1];
+    size_t bits = (a.rsiz - 1) * 64;
     while(top){
         ++bits;
         top >>= 1;
@@ -72,83 +70,88 @@ static precn_t pow_u32(uint32_t base, size_t exp){
     return r;
 }
 
-static precn_t isqrt_guess(const precn_t &n, precn_t x){
-    if(n.rsiz == 0) return precn_t();
-    for(;;){
-        ++sqrt_iterations;
-        // Use ceil(n / x) and ceil-average so an upper guess stays upper.
-        // That avoids dropping below sqrt(n), which would make correction
-        // painfully expensive at high precision.
-        precn_t div = (n + x - precn_t(1)) / x;
-        precn_t y = (x + div + precn_t(1)) >> 1;
-        if(y >= x) break;
-        x = y;
+static void mul_u64_self(precn_t &a, uint64_t b){
+    if(a.rsiz == 0 || b == 1) return;
+    if(b == 0){
+        a.rsiz = 0;
+        a.a[0] = 0;
+        return;
+    }
+    if(a.asiz < a.rsiz + 1){
+        a.a = (uint64_t*)realloc(a.a, (a.rsiz + 1) * sizeof(uint64_t));
+        a.asiz = a.rsiz + 1;
     }
 
-    while(x * x > n) x = x - precn_t(1);
-    return x;
-}
-
-static precn_t isqrt(const precn_t &n){
-    if(n.rsiz == 0) return precn_t();
-
-    size_t bits = bit_length(n);
-    return isqrt_guess(n, precn_t(1) << ((bits + 1) / 2));
-}
-
-static precn_t sqrt10005_scaled(size_t digits){
-    if(digits <= 32){
-        precn_t n = mul_u32(pow_u32(10, digits * 2), 10005);
-        return isqrt(n);
+    uint64_t carry = 0;
+    for(size_t i = 0; i < a.rsiz; ++i){
+        uint64_t hi, lo, out;
+        precn_mul_wide(a.a[i], b, hi, lo);
+        uint64_t c = precn_add_carry(lo, carry, 0, out);
+        a.a[i] = out;
+        carry = hi + c;
     }
-
-    size_t half = (digits + 1) / 2;
-    precn_t low = sqrt10005_scaled(half);
-    precn_t factor = pow_u32(10, digits - half);
-    precn_t upper = (low + precn_t(1)) * factor;
-    precn_t n = mul_u32(pow_u32(10, digits * 2), 10005);
-    return isqrt_guess(n, upper);
+    if(carry) a.a[a.rsiz++] = carry;
 }
 
-static bs_t chud_bs(size_t a, size_t b){
+struct pow10_entry_t{
+    size_t digits;
+    precn_t value;
+};
+
+static size_t pow10_index(size_t digits, std::vector<pow10_entry_t> &cache){
+    for(size_t i = 0; i < cache.size(); ++i){
+        if(cache[i].digits == digits) return i;
+    }
+    cache.push_back(pow10_entry_t{digits, pow_u32(10, digits)});
+    return cache.size() - 1;
+}
+
+static precn_t sqrt10005_scaled(size_t, size_t scale_index,
+                                std::vector<pow10_entry_t> &pow10_cache){
+    precn_t n = mul_u32(pow10_cache[scale_index].value, 10005);
+    return precn_sqrt(n);
+}
+
+// A parent only needs P from its left child to form T.  Matching ilmPi's
+// needp scheduling avoids forming product-tree nodes that will not be used.
+static bs_t chud_bs(size_t a, size_t b, bool need_p){
     if(b - a == 1){
-        bs_t r;
         if(a == 0){
-            r.p = precn_t(1);
-            r.q = precn_t(1);
-        }else{
-            r.p = precn_t((uint64_t)(6 * a - 5));
-            r.p = r.p * precn_t((uint64_t)(2 * a - 1));
-            r.p = r.p * precn_t((uint64_t)(6 * a - 1));
-
-            r.q = precn_t((uint64_t)a) * precn_t((uint64_t)a);
-            r.q = r.q * precn_t((uint64_t)a);
-            r.q = r.q * precn_t((uint64_t)CHUD_C3_OVER_24);
+            return bs_t{precn_t(1), precn_t(1), sp_make(precn_t(CHUD_A), false)};
         }
 
-        precn_t term = r.p * (mul_u32(precn_t((uint64_t)a), CHUD_B) + precn_t(CHUD_A));
-        r.t = sp_make(term, (a & 1) != 0);
-        return r;
+        uint64_t k = (uint64_t)a;
+        precn_t p((uint64_t)(6 * k - 5));
+        mul_u64_self(p, (uint64_t)(2 * k - 1));
+        mul_u64_self(p, (uint64_t)(6 * k - 1));
+
+        precn_t q(k);
+        mul_u64_self(q, k);
+        mul_u64_self(q, k);
+        mul_u64_self(q, (uint64_t)CHUD_C3_OVER_24);
+
+        precn_t term = p * (uint64_t)(CHUD_B * k + CHUD_A);
+        return bs_t{std::move(p), std::move(q), sp_make(std::move(term), (a & 1) != 0)};
     }
 
     size_t m = a + (b - a) / 2;
-    bs_t l = chud_bs(a, m);
-    bs_t r = chud_bs(m, b);
+    bs_t l = chud_bs(a, m, true);
+    bs_t r = chud_bs(m, b, need_p);
 
-    bs_t out;
-    out.p = l.p * r.p;
-    out.q = l.q * r.q;
-    out.t = sp_add(sp_mul(l.t, r.q), sp_mul(r.t, l.p));
-    return out;
+    precn_t q = l.q * r.q;
+    sprecn_t t = sp_add(sp_mul(l.t, r.q), sp_mul(r.t, l.p));
+    if(need_p){
+        precn_t p = l.p * r.p;
+        return bs_t{std::move(p), std::move(q), std::move(t)};
+    }
+    return bs_t{precn_t(), std::move(q), std::move(t)};
 }
 
 static std::string to_dec(const precn_t &a){
-    size_t n = 0;
-    precn_base_convert(a, 10, nullptr, n);
-    if(n == 0) return "0";
-
+    size_t n = bit_length(a) * 30103 / 100000 + 1;
     std::vector<uint32_t> d(n);
     precn_base_convert(a, 10, d.data(), n);
+    if(n == 0) return "0";
 
     std::string s;
     s.reserve(n);
@@ -162,16 +165,17 @@ static std::string pi_digits(size_t digits){
     size_t terms = work_digits / 14 + 2;
 
     double t0 = now_sec();
-    bs_t bs = chud_bs(0, terms);
+    bs_t bs = chud_bs(0, terms, false);
     double t1 = now_sec();
     if(bs.t.neg || bs.t.v.rsiz == 0) return "error";
 
-    sqrt_iterations = 0;
-    precn_t sqrt_scaled = sqrt10005_scaled(work_digits);
+    std::vector<pow10_entry_t> pow10_cache;
+    size_t scale_index = pow10_index(work_digits * 2, pow10_cache);
+    precn_t sqrt_scaled = sqrt10005_scaled(work_digits, scale_index, pow10_cache);
     double t2 = now_sec();
     precn_t numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
     precn_t pi_scaled = numerator / bs.t.v;
-    pi_scaled = pi_scaled / pow_u32(10, guard);
+    pi_scaled = pi_scaled / 10000000000ULL;
     double t3 = now_sec();
 
     std::string s = to_dec(pi_scaled);
@@ -179,7 +183,6 @@ static std::string pi_digits(size_t digits){
     if(show_phases){
         std::cerr << "binary_split " << (t1 - t0) << " sec\n";
         std::cerr << "sqrt_scale " << (t2 - t1) << " sec\n";
-        std::cerr << "sqrt_iterations " << sqrt_iterations << "\n";
         std::cerr << "final_div " << (t3 - t2) << " sec\n";
         std::cerr << "to_decimal " << (t4 - t3) << " sec\n";
     }
@@ -213,7 +216,6 @@ int main(int argc, char **argv){
         if(arg == "--full") full_output = true;
         if(arg == "--file" && i + 1 < argc) output_file = argv[++i];
     }
-
     double start = now_sec();
     std::string out = pi_digits(digits);
     double sec = now_sec() - start;

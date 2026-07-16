@@ -209,10 +209,12 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
 
 static std::vector<uint32_t> ntt_digits(const precn_t &a){
     std::vector<uint32_t> d;
-    d.reserve(a.rsiz * 2);
+    d.reserve(a.rsiz * 4);
     for(size_t i = 0; i < a.rsiz; ++i){
-        d.push_back(a.a[i] & 0xFFFFu);
-        d.push_back(a.a[i] >> 16);
+        d.push_back((uint32_t)(a.a[i] & 0xFFFFu));
+        d.push_back((uint32_t)((a.a[i] >> 16) & 0xFFFFu));
+        d.push_back((uint32_t)((a.a[i] >> 32) & 0xFFFFu));
+        d.push_back((uint32_t)(a.a[i] >> 48));
     }
     while(!d.empty() && d.back() == 0) d.pop_back();
     return d;
@@ -220,7 +222,7 @@ static std::vector<uint32_t> ntt_digits(const precn_t &a){
 
 static void ntt_zero(std::vector<uint32_t> &a, size_t n){
     a.resize(n);
-    memset(a.data(), 0, n * 4);
+    memset(a.data(), 0, n * sizeof(uint32_t));
 }
 
 static void ntt_convolve_mod(const std::vector<uint32_t> &a,
@@ -295,24 +297,23 @@ static uint64_t ntt_crt3(uint32_t r1, uint32_t r2, uint32_t r3){
 }
 
 static void ntt_put_digit(precn_t &r, size_t id, uint32_t digit){
-    size_t limb = id >> 1;
+    size_t limb = id >> 2;
     if(limb >= r.asiz){
         size_t old = r.asiz;
         while(r.asiz <= limb) r.asiz <<= 1;
-        r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-        memset(r.a + old, 0, (r.asiz - old) * 4);
+        r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+        memset(r.a + old, 0, (r.asiz - old) * sizeof(uint64_t));
     }
-    if(id & 1) r.a[limb] = (r.a[limb] & 0x0000FFFFu) | (digit << 16);
-    else r.a[limb] = (r.a[limb] & 0xFFFF0000u) | digit;
+    r.a[limb] |= (uint64_t)digit << ((id & 3) * 16);
     if(r.rsiz < limb + 1) r.rsiz = limb + 1;
 }
 
 static precn_t ntt_from_residues2(const std::vector<uint32_t> &r1,
                                   const std::vector<uint32_t> &r2){
     precn_t r;
-    r.asiz = r1.size() / 2 + 8;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
+    r.asiz = r1.size() / 4 + 8;
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.rsiz = 0;
 
     uint64_t carry = 0;
@@ -336,9 +337,9 @@ static precn_t ntt_from_residues3(const std::vector<uint32_t> &r1,
                                   const std::vector<uint32_t> &r2,
                                   const std::vector<uint32_t> &r3){
     precn_t r;
-    r.asiz = r1.size() / 2 + 8;
-    r.a = (uint32_t*) realloc(r.a, r.asiz * 4);
-    memset(r.a, 0, r.asiz * 4);
+    r.asiz = r1.size() / 4 + 8;
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.rsiz = 0;
 
     uint64_t carry = 0;
@@ -365,6 +366,7 @@ static int ntt_two_mod_ok(size_t terms){
 
 precn_t mul_ntt(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+    if(std::max(a.rsiz, b.rsiz) <= 192) return mul_basic(a, b);
     size_t limbs = std::max(a.rsiz, b.rsiz);
     if(limbs > NTT_MAX_LIMBS) return mul_fft(a, b);
 
