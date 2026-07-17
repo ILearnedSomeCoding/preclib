@@ -29,6 +29,14 @@ struct fft_plan_t{
     std::vector<std::vector<double> > inverse_im;
 };
 
+#if defined(COUNT_FFTS) && COUNT_FFTS
+uint64_t total_fftmuls = 0;
+uint64_t danger_fftmuls = 0;
+uint64_t danger_fftmuls_1_4 = 0;
+uint64_t danger_fftmuls_3_8 = 0;
+double max_fft_rounding_error = 0.0;
+#endif
+
 static const double PI = acos(-1.0);
 
 static void fft_resize(fft_vec_t &a, size_t n){
@@ -348,7 +356,30 @@ static precn_t mul_fft_bits(const precn_t &a, const precn_t &b, int bits){
     fft_pair_convolution(f, product);
     fft(product, 1, plan);
     std::vector<long long> out(n);
-    for(size_t i = 0; i < n; ++i) out[i] = fft_round(product.re[i]);
+#if defined(COUNT_FFTS) && COUNT_FFTS
+    bool danger_1_8 = false;
+    bool danger_1_4 = false;
+    bool danger_3_8 = false;
+#endif
+    for(size_t i = 0; i < n; ++i){
+        double value = product.re[i];
+#if defined(COUNT_FFTS) && COUNT_FFTS
+        double nearest = std::nearbyint(value);
+        double error = std::fabs(value - nearest);
+        if(!std::isfinite(value)) error = INFINITY;
+        if(error > max_fft_rounding_error) max_fft_rounding_error = error;
+        if(error > 0.125) danger_1_8 = true;
+        if(error > 0.25) danger_1_4 = true;
+        if(error > 0.375) danger_3_8 = true;
+#endif
+        out[i] = fft_round(value);
+    }
+#if defined(COUNT_FFTS) && COUNT_FFTS
+    ++total_fftmuls;
+    if(danger_1_8) ++danger_fftmuls;
+    if(danger_1_4) ++danger_fftmuls_1_4;
+    if(danger_3_8) ++danger_fftmuls_3_8;
+#endif
     return fft_from_digits(out, bits);
 }
 
@@ -357,6 +388,8 @@ precn_t mul_fft(const precn_t &a, const precn_t &b){
     if(std::max(a.rsiz, b.rsiz) <= 192) return mul_basic(a, b);
 
     size_t digits16 = std::max(a.rsiz, b.rsiz) * 2;
-    if(digits16 <= (1u << 12)) return mul_fft_bits(a, b, 16);
+    // Keep the faster 16-bit path through 1024 limbs.  Larger products use
+    // byte digits to avoid the confirmed dense-input misround near 2048 limbs.
+    if(digits16 <= 2048) return mul_fft_bits(a, b, 16);
     return mul_fft_bits(a, b, 8);
 }

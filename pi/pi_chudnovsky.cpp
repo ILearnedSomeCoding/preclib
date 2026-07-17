@@ -231,6 +231,13 @@ int main(int argc, char **argv){
 
     std::cout << short_pi(out) << "\n";
     if(!output_file.empty()) std::cerr << "wrote " << output_file << "\n";
+#if defined(COUNT_FFTS) && COUNT_FFTS
+    std::cerr << "total_fftmuls " << total_fftmuls << "\n";
+    std::cerr << "danger_fftmuls " << danger_fftmuls << "\n";
+    std::cerr << "danger_fftmuls_1_4 " << danger_fftmuls_1_4 << "\n";
+    std::cerr << "danger_fftmuls_3_8 " << danger_fftmuls_3_8 << "\n";
+    std::cerr << "max_fft_rounding_error " << max_fft_rounding_error << "\n";
+#endif
     std::cerr << "time " << sec << " sec\n";
     return 0;
 }

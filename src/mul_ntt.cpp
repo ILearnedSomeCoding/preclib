@@ -20,7 +20,8 @@ struct mont_ctx_t{
 struct ntt_mod_plan_t{
     mont_ctx_t c;
     uint32_t inv_n;
-    std::vector<uint32_t> roots;
+    std::vector<uint32_t> roots_f;
+    std::vector<uint32_t> roots_i;
 };
 
 static const size_t NTT_MAX_LIMBS = (size_t)1 << 24;
@@ -47,7 +48,10 @@ static uint32_t mont_reduce(const mont_ctx_t &c, uint64_t x){
 }
 
 static uint32_t mont_in(const mont_ctx_t &c, uint32_t x){
-    return mont_reduce(c, (uint64_t)(x % c.mod) * c.r2);
+    // All callers pass either a base-2^16 digit, a root, or n % mod.
+    // Therefore x is already reduced; a hardware division here dominated
+    // transform setup for large operands.
+    return mont_reduce(c, (uint64_t)x * c.r2);
 }
 
 static uint32_t mont_mul(const mont_ctx_t &c, uint32_t a, uint32_t b){
@@ -81,6 +85,43 @@ static __m256i mont_mul4(const mont_ctx_t &c, __m256i a, __m256i b){
     return mont_reduce4(c, _mm256_mul_epu32(a, b));
 }
 
+static __m256i ntt_pack_even_odd(__m256i even, __m256i odd){
+    return _mm256_blend_epi32(even, _mm256_slli_epi64(odd, 32), 0xAA);
+}
+
+static __m256i mont_mul8(const mont_ctx_t &c, __m256i a, __m256i b){
+    __m256i even = mont_reduce4(c, _mm256_mul_epu32(a, b));
+    __m256i odd = mont_reduce4(c, _mm256_mul_epu32(_mm256_srli_epi64(a, 32),
+                                                  _mm256_srli_epi64(b, 32)));
+    return ntt_pack_even_odd(even, odd);
+}
+
+static __m256i mont_out8(const mont_ctx_t &c, __m256i a){
+    __m256i mask = _mm256_set1_epi64x(0xFFFFFFFFULL);
+    __m256i even = mont_reduce4(c, _mm256_and_si256(a, mask));
+    __m256i odd = mont_reduce4(c, _mm256_srli_epi64(a, 32));
+    return ntt_pack_even_odd(even, odd);
+}
+
+static __m256i ntt_cmpgt_epu32(__m256i a, __m256i b){
+    __m256i sign = _mm256_set1_epi32((int)0x80000000u);
+    return _mm256_cmpgt_epi32(_mm256_xor_si256(a, sign),
+                              _mm256_xor_si256(b, sign));
+}
+
+static __m256i ntt_add8(__m256i a, __m256i b, uint32_t mod){
+    __m256i s = _mm256_add_epi32(a, b);
+    __m256i m = _mm256_set1_epi32((int)mod);
+    __m256i ge = ntt_cmpgt_epu32(s, _mm256_set1_epi32((int)(mod - 1)));
+    return _mm256_sub_epi32(s, _mm256_and_si256(ge, m));
+}
+
+static __m256i ntt_sub8(__m256i a, __m256i b, uint32_t mod){
+    __m256i d = _mm256_sub_epi32(a, b);
+    __m256i lt = ntt_cmpgt_epu32(b, a);
+    return _mm256_add_epi32(d, _mm256_and_si256(lt, _mm256_set1_epi32((int)mod)));
+}
+
 static void mont_mul4_store(uint32_t *out, const uint32_t *a, const uint32_t *b,
                             const mont_ctx_t &c){
     ntt_store4_u32(out, mont_mul4(c, ntt_load4_u32(a), ntt_load4_u32(b)));
@@ -106,28 +147,26 @@ static uint32_t mont_pow(const mont_ctx_t &c, uint32_t a, uint64_t e){
     return r;
 }
 
-static void ntt_build_rev(std::vector<uint32_t> &rev, size_t n){
-    rev.resize(n);
-    size_t bits = 0;
-    while(((size_t)1 << bits) < n) ++bits;
-    rev[0] = 0;
-    for(size_t i = 1; i < n; ++i){
-        rev[i] = (rev[i >> 1] >> 1) | (uint32_t)((i & 1) << (bits - 1));
+static void ntt_build_roots(ntt_mod_plan_t &p, size_t n){
+    const mont_ctx_t &c = p.c;
+    p.roots_f.resize(n);
+    p.roots_i.resize(n);
+    if(n){
+        p.roots_f[0] = c.one;
+        p.roots_i[0] = c.one;
     }
-}
-
-static void ntt_build_roots(std::vector<uint32_t> &roots, const mont_ctx_t &c, size_t n, int inv){
-    roots.resize(n);
-    if(n) roots[0] = c.one;
     for(size_t len = 2; len <= n; len <<= 1){
         size_t half = len >> 1;
         uint64_t e = (c.mod - 1) / len;
-        if(inv) e = (uint64_t)c.mod - 1 - e;
         uint32_t wlen = mont_pow(c, c.root, e);
         uint32_t w = c.one;
         for(size_t i = 0; i < half; ++i){
-            roots[half + i] = w;
+            p.roots_f[half + i] = w;
             w = mont_mul(c, w, wlen);
+        }
+        p.roots_i[half] = c.one;
+        for(size_t i = 1; i < half; ++i){
+            p.roots_i[half + i] = c.mod - p.roots_f[half + half - i];
         }
     }
 }
@@ -136,20 +175,90 @@ static ntt_mod_plan_t ntt_make_mod_plan(size_t n, uint32_t mod, uint32_t root){
     ntt_mod_plan_t p;
     p.c = mont_make(mod, root);
     p.inv_n = mont_pow(p.c, (uint32_t)(n % mod), mod - 2);
+    ntt_build_roots(p, n);
     return p;
 }
 
-static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
-                const std::vector<uint32_t> &rev){
+static const ntt_mod_plan_t &ntt_get_mod_plan(size_t n, uint32_t mod, uint32_t root){
+    static thread_local ntt_mod_plan_t plans[3];
+    static thread_local size_t sizes[3] = {0, 0, 0};
+    size_t slot = mod == NTT_MOD1 ? 0 : mod == NTT_MOD2 ? 1 : 2;
+    if(sizes[slot] != n){
+        plans[slot] = ntt_make_mod_plan(n, mod, root);
+        sizes[slot] = n;
+    }
+    return plans[slot];
+}
+
+static void ntt_forward(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     size_t n = a.size();
     const mont_ctx_t &c = p.c;
-    const std::vector<uint32_t> &roots = p.roots;
+    const std::vector<uint32_t> &roots = p.roots_f;
     uint32_t mod = c.mod;
 
-    for(size_t i = 1; i < n; ++i){
-        size_t j = rev[i];
-        if(i < j) std::swap(a[i], a[j]);
+    // ProtoNTT's forward-DIF/inverse-DIT ordering leaves both transformed
+    // operands bit-reversed, so pointwise multiplication needs no permutation.
+    for(size_t len = n; len >= 2; len >>= 1){
+        size_t half = len >> 1;
+        for(size_t i = 0; i < n; i += len){
+            size_t j = 0;
+#if PRECN_NTT_HAVE_AVX2
+            __m256i mod4 = _mm256_set1_epi64x((long long)mod);
+            __m256i modm1 = _mm256_set1_epi64x((long long)mod - 1);
+            __m256i all = _mm256_cmpeq_epi64(mod4, mod4);
+            for(; j + 7 < half; j += 8){
+                uint32_t *lo = a.data() + i + j;
+                uint32_t *hi = lo + half;
+                __m256i u = _mm256_loadu_si256((const __m256i*)lo);
+                __m256i v = _mm256_loadu_si256((const __m256i*)hi);
+                __m256i s = ntt_add8(u, v, mod);
+                __m256i d = mont_mul8(c, ntt_sub8(u, v, mod),
+                                      _mm256_loadu_si256((const __m256i*)(roots.data() + half + j)));
+                _mm256_storeu_si256((__m256i*)lo, s);
+                _mm256_storeu_si256((__m256i*)hi, d);
+            }
+            for(; j + 3 < half; j += 4){
+                uint32_t *lo = a.data() + i + j;
+                uint32_t *hi = lo + half;
+                __m256i u = ntt_load4_u32(lo);
+                __m256i v = ntt_load4_u32(hi);
+
+                __m256i s = _mm256_add_epi64(u, v);
+                __m256i s_ge = _mm256_cmpgt_epi64(s, modm1);
+                s = _mm256_sub_epi64(s, _mm256_and_si256(s_ge, mod4));
+
+                __m256i d_plain = _mm256_sub_epi64(u, v);
+                __m256i d_wrap = _mm256_sub_epi64(_mm256_add_epi64(u, mod4), v);
+                __m256i v_gt_u = _mm256_cmpgt_epi64(v, u);
+                __m256i u_ge_v = _mm256_xor_si256(v_gt_u, all);
+                __m256i d = _mm256_or_si256(_mm256_and_si256(u_ge_v, d_plain),
+                                            _mm256_andnot_si256(u_ge_v, d_wrap));
+                d = mont_mul4(c, d, ntt_load4_u32(roots.data() + half + j));
+
+                ntt_store4_u32(lo, s);
+                ntt_store4_u32(hi, d);
+            }
+#endif
+            for(; j < half; ++j){
+                uint32_t u = a[i + j];
+                uint32_t v = a[i + j + half];
+
+                uint32_t s = u + v;
+                if(s >= mod) s -= mod;
+                uint32_t d = u >= v ? u - v : u + mod - v;
+
+                a[i + j] = s;
+                a[i + j + half] = mont_mul(c, d, roots[half + j]);
+            }
+        }
     }
+}
+
+static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
+    size_t n = a.size();
+    const mont_ctx_t &c = p.c;
+    const std::vector<uint32_t> &roots = p.roots_i;
+    uint32_t mod = c.mod;
 
     for(size_t len = 2; len <= n; len <<= 1){
         size_t half = len >> 1;
@@ -159,11 +268,21 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
             __m256i mod4 = _mm256_set1_epi64x((long long)mod);
             __m256i modm1 = _mm256_set1_epi64x((long long)mod - 1);
             __m256i all = _mm256_cmpeq_epi64(mod4, mod4);
+            for(; j + 7 < half; j += 8){
+                uint32_t *lo = a.data() + i + j;
+                uint32_t *hi = lo + half;
+                __m256i u = _mm256_loadu_si256((const __m256i*)lo);
+                __m256i v = mont_mul8(c, _mm256_loadu_si256((const __m256i*)hi),
+                                      _mm256_loadu_si256((const __m256i*)(roots.data() + half + j)));
+                _mm256_storeu_si256((__m256i*)lo, ntt_add8(u, v, mod));
+                _mm256_storeu_si256((__m256i*)hi, ntt_sub8(u, v, mod));
+            }
             for(; j + 3 < half; j += 4){
                 uint32_t *lo = a.data() + i + j;
                 uint32_t *hi = lo + half;
                 __m256i u = ntt_load4_u32(lo);
-                __m256i v = mont_mul4(c, ntt_load4_u32(hi), ntt_load4_u32(roots.data() + half + j));
+                __m256i v = mont_mul4(c, ntt_load4_u32(hi),
+                                      ntt_load4_u32(roots.data() + half + j));
 
                 __m256i s = _mm256_add_epi64(u, v);
                 __m256i s_ge = _mm256_cmpgt_epi64(s, modm1);
@@ -183,28 +302,30 @@ static void ntt(std::vector<uint32_t> &a, int inv, const ntt_mod_plan_t &p,
             for(; j < half; ++j){
                 uint32_t u = a[i + j];
                 uint32_t v = mont_mul(c, a[i + j + half], roots[half + j]);
-
                 uint32_t s = u + v;
                 if(s >= mod) s -= mod;
                 uint32_t d = u >= v ? u - v : u + mod - v;
-
                 a[i + j] = s;
                 a[i + j + half] = d;
             }
         }
     }
 
-    if(inv){
-        uint32_t inv_n = p.inv_n;
-        size_t i = 0;
+    uint32_t inv_n = p.inv_n;
+    size_t i = 0;
 #if PRECN_NTT_HAVE_AVX2
-        __m256i inv4 = _mm256_set1_epi64x((long long)inv_n);
-        for(; i + 3 < n; i += 4){
-            ntt_store4_u32(a.data() + i, mont_mul4(c, ntt_load4_u32(a.data() + i), inv4));
-        }
-#endif
-        for(; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
+    __m256i inv8 = _mm256_set1_epi32((int)inv_n);
+    for(; i + 7 < n; i += 8){
+        __m256i x = _mm256_loadu_si256((const __m256i*)(a.data() + i));
+        _mm256_storeu_si256((__m256i*)(a.data() + i), mont_mul8(c, x, inv8));
     }
+    __m256i inv4 = _mm256_set1_epi64x((long long)inv_n);
+    for(; i + 3 < n; i += 4){
+        ntt_store4_u32(a.data() + i,
+                       mont_mul4(c, ntt_load4_u32(a.data() + i), inv4));
+    }
+#endif
+    for(; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
 }
 
 static std::vector<uint32_t> ntt_digits(const precn_t &a){
@@ -230,28 +351,34 @@ static void ntt_convolve_mod(const std::vector<uint32_t> &a,
                              size_t n,
                              uint32_t mod,
                              uint32_t root,
-                             const std::vector<uint32_t> &rev,
                              std::vector<uint32_t> &out,
                              std::vector<uint32_t> &scratch){
-    ntt_mod_plan_t p = ntt_make_mod_plan(n, mod, root);
+    const ntt_mod_plan_t &p = ntt_get_mod_plan(n, mod, root);
     ntt_zero(out, n);
     ntt_zero(scratch, n);
     for(size_t i = 0; i < a.size(); ++i) out[i] = mont_in(p.c, a[i]);
     for(size_t i = 0; i < b.size(); ++i) scratch[i] = mont_in(p.c, b[i]);
 
-    ntt_build_roots(p.roots, p.c, n, 0);
-    ntt(out, 0, p, rev);
-    ntt(scratch, 0, p, rev);
+    ntt_forward(out, p);
+    ntt_forward(scratch, p);
     size_t i = 0;
 #if PRECN_NTT_HAVE_AVX2
+    for(; i + 7 < n; i += 8){
+        __m256i x = _mm256_loadu_si256((const __m256i*)(out.data() + i));
+        __m256i y = _mm256_loadu_si256((const __m256i*)(scratch.data() + i));
+        _mm256_storeu_si256((__m256i*)(out.data() + i), mont_mul8(p.c, x, y));
+    }
     for(; i + 3 < n; i += 4) mont_mul4_store(out.data() + i, out.data() + i, scratch.data() + i, p.c);
 #endif
     for(; i < n; ++i) out[i] = mont_mul(p.c, out[i], scratch[i]);
-    ntt_build_roots(p.roots, p.c, n, 1);
-    ntt(out, 1, p, rev);
+    ntt_inverse(out, p);
 
     i = 0;
 #if PRECN_NTT_HAVE_AVX2
+    for(; i + 7 < n; i += 8){
+        __m256i x = _mm256_loadu_si256((const __m256i*)(out.data() + i));
+        _mm256_storeu_si256((__m256i*)(out.data() + i), mont_out8(p.c, x));
+    }
     for(; i + 3 < n; i += 4){
         ntt_store4_u32(out.data() + i, mont_reduce4(p.c, ntt_load4_u32(out.data() + i)));
     }
@@ -278,8 +405,8 @@ static uint32_t mod_inv_u32(uint64_t a, uint32_t mod){
 static uint64_t ntt_crt2(uint32_t r1, uint32_t r2){
     static uint32_t inv_m1_m2 = mod_inv_u32(NTT_MOD1, NTT_MOD2);
     uint64_t x1 = r1;
-    uint64_t x1_m2 = x1 % NTT_MOD2;
-    uint64_t d2 = r2 >= x1_m2 ? r2 - x1_m2 : r2 + (uint64_t)NTT_MOD2 - x1_m2;
+    // mod1 < mod2, so r1 is already reduced modulo mod2.
+    uint64_t d2 = r2 >= x1 ? r2 - x1 : r2 + (uint64_t)NTT_MOD2 - x1;
     uint64_t t2 = d2 * inv_m1_m2 % NTT_MOD2;
     return x1 + (uint64_t)NTT_MOD1 * t2;
 }
@@ -378,17 +505,14 @@ precn_t mul_ntt(const precn_t &a, const precn_t &b){
     while(n < da.size() + db.size()) n <<= 1;
     if(n > NTT_MAX_TRANSFORM) return mul_fft(a, b);
 
-    std::vector<uint32_t> rev;
-    ntt_build_rev(rev, n);
-
     std::vector<uint32_t> r1, r2, r3, scratch;
-    ntt_convolve_mod(da, db, n, NTT_MOD1, NTT_ROOT1, rev, r1, scratch);
-    ntt_convolve_mod(da, db, n, NTT_MOD2, NTT_ROOT2, rev, r2, scratch);
+    ntt_convolve_mod(da, db, n, NTT_MOD1, NTT_ROOT1, r1, scratch);
+    ntt_convolve_mod(da, db, n, NTT_MOD2, NTT_ROOT2, r2, scratch);
 
     if(ntt_two_mod_ok(std::min(da.size(), db.size()))){
         return ntt_from_residues2(r1, r2);
     }
 
-    ntt_convolve_mod(da, db, n, NTT_MOD3, NTT_ROOT3, rev, r3, scratch);
+    ntt_convolve_mod(da, db, n, NTT_MOD3, NTT_ROOT3, r3, scratch);
     return ntt_from_residues3(r1, r2, r3);
 }

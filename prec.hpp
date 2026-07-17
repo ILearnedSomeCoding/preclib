@@ -92,6 +92,13 @@ precn_t mul_toom33(const precn_t &a, const precn_t &b);
 precn_t precn_divexact_2(const precn_t &a);
 precn_t precn_divexact_3(const precn_t &a);
 precn_t mul_fft(const precn_t &a, const precn_t &b);
+#if defined(COUNT_FFTS) && COUNT_FFTS
+extern uint64_t total_fftmuls;
+extern uint64_t danger_fftmuls;
+extern uint64_t danger_fftmuls_1_4;
+extern uint64_t danger_fftmuls_3_8;
+extern double max_fft_rounding_error;
+#endif
 precn_t mul_ntt(const precn_t &a, const precn_t &b);
 precn_t mul_ssa(const precn_t &a, const precn_t &b);
 

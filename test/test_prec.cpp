@@ -405,15 +405,15 @@ static void bench_balanced_size_row(const char *label, size_t limbs, size_t reps
     double toom_sec = tr.sec;
     expect_eq_named(run_basic ? "toom/basic" : "toom/karatsuba", toom, run_basic ? basic : kara);
 
-    bench_mul_result_t fr = bench_mul_once(mul_fft, a, b, reps);
-    precn_t fft = fr.v;
-    double fft_sec = fr.sec;
-    expect_eq_named(run_basic ? "fft/basic" : "fft/karatsuba", fft, run_basic ? basic : kara);
-
     bench_mul_result_t nr = bench_mul_once(mul_ntt, a, b, reps);
     precn_t ntt = nr.v;
     double ntt_sec = nr.sec;
     expect_eq_named(run_basic ? "ntt/basic" : "ntt/karatsuba", ntt, run_basic ? basic : kara);
+
+    bench_mul_result_t fr = bench_mul_once(mul_fft, a, b, reps);
+    precn_t fft = fr.v;
+    double fft_sec = fr.sec;
+    expect_eq_named(run_basic ? "fft/basic" : "fft/karatsuba", fft, run_basic ? basic : kara);
 
     bench_mul_result_t sr = bench_mul_once(mul_ssa, a, b, 1);
     precn_t ssa = sr.v;
@@ -422,16 +422,16 @@ static void bench_balanced_size_row(const char *label, size_t limbs, size_t reps
 
     if(run_basic){
         printf("%-8s %-8zu %-6zu %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
-               label, limbs, reps, basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, basic.rsiz);
+               label, limbs, reps, basic_sec, kara_sec, toom_sec, ntt_sec, fft_sec, ssa_sec, basic.rsiz);
     }else{
         printf("%-8s %-8zu %-6zu %-15s %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
-               label, limbs, reps, "-", kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, kara.rsiz);
+               label, limbs, reps, "-", kara_sec, toom_sec, ntt_sec, fft_sec, ssa_sec, kara.rsiz);
     }
 }
 
 static void bench_mul_sizes(){
     puts("mul timing");
-    printf("%-8s %-8s %-6s %-15s %-15s %-15s %-15s %-15s %-15s %-12s\n", "n", "limbs", "reps", "basic", "karatsuba", "toom", "fft", "ntt", "ssa", "result");
+    printf("%-8s %-8s %-6s %-15s %-15s %-15s %-15s %-15s %-15s %-12s\n", "n", "limbs", "reps", "basic", "karatsuba", "toom", "ntt", "fft", "ssa", "result");
     const size_t basic_limit_n = 16;
     const size_t max_n = 20;
     const size_t small_extra_limit_n = 15;
@@ -452,7 +452,7 @@ static void bench_mul_sizes(){
 static void bench_unbalanced_sizes(){
     puts("unbalanced mul timing");
     printf("%-8s %-10s %-8s %-15s %-15s %-15s %-15s %-15s %-15s %-12s\n",
-           "ratio", "a", "b", "basic", "karatsuba", "toom", "fft", "ntt", "ssa", "result");
+           "ratio", "a", "b", "basic", "karatsuba", "toom", "ntt", "fft", "ssa", "result");
 
     const char *names[] = {"1.25x", "1.333x", "1.5x", "2x", "3x"};
     size_t bases[] = {640, 768, 1024, 1280, 1536, 2048, 2560, 4096, 8192, 16384};
@@ -479,14 +479,14 @@ static void bench_unbalanced_sizes(){
             expect_eq(toom, basic);
 
             start = clock();
-            precn_t fft = mul_fft(a, b);
-            double fft_sec = (double)(clock() - start) / CLOCKS_PER_SEC;
-            expect_eq(fft, basic);
-
-            start = clock();
             precn_t ntt = mul_ntt(a, b);
             double ntt_sec = (double)(clock() - start) / CLOCKS_PER_SEC;
             expect_eq(ntt, basic);
+
+            start = clock();
+            precn_t fft = mul_fft(a, b);
+            double fft_sec = (double)(clock() - start) / CLOCKS_PER_SEC;
+            expect_eq(fft, basic);
 
             start = clock();
             precn_t ssa = mul_ssa(a, b);
@@ -494,7 +494,7 @@ static void bench_unbalanced_sizes(){
             expect_eq(ssa, basic);
 
             printf("%-8s %-10zu %-8zu %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-15.9f %-12zu\n",
-                   names[i], base, bs[i], basic_sec, kara_sec, toom_sec, fft_sec, ntt_sec, ssa_sec, basic.rsiz);
+                   names[i], base, bs[i], basic_sec, kara_sec, toom_sec, ntt_sec, fft_sec, ssa_sec, basic.rsiz);
         }
     }
 }

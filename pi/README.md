@@ -3,7 +3,13 @@
 Build from the repository root:
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 pi\pi_chudnovsky.cpp src\init_basic.cpp src\add.cpp src\sub.cpp src\mul_u32.cpp src\mul_basic.cpp src\mul_kara.cpp src\mul_toom.cpp src\mul_fft.cpp src\mul_ntt.cpp src\mul_ssa.cpp src\div_basic.cpp src\div_newton.cpp src\base_convert.cpp src\compare_shift.cpp -o pi\pi_chudnovsky.exe
+clang++ -O3 -mavx2 -std=c++17 pi\pi_chudnovsky.cpp src\*.cpp -o pi\pi_chudnovsky.exe
+```
+
+Build with FFT rounding-safety counters:
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 -DCOUNT_FFTS=1 pi\pi_chudnovsky.cpp src\*.cpp -o pi\pi_chudnovsky.exe
 ```
 
 Run:
