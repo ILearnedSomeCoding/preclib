@@ -16,6 +16,7 @@ struct torture_pattern_t{
     uint64_t a;
     uint64_t b;
     bool alternate;
+    bool popcount_parity;
 };
 
 static precn_t filled(size_t n, uint64_t even, uint64_t odd, bool alternate){
@@ -25,6 +26,25 @@ static precn_t filled(size_t n, uint64_t even, uint64_t odd, bool alternate){
     r.rsiz = n;
     for(size_t i = 0; i < n; ++i) r.a[i] = alternate && (i & 1) ? odd : even;
     if(n && r.a[n - 1] == 0) r.a[n - 1] = even ? even : UINT64_MAX;
+    return r;
+}
+
+static precn_t popcount_parity_filled(size_t n){
+    precn_t r;
+    r.asiz = n ? n : 1;
+    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    r.rsiz = n;
+    for(size_t i = 0; i < n; ++i){
+        size_t x = i;
+        unsigned parity = 0;
+        while(x){
+            parity ^= (unsigned)(x & 1);
+            x >>= 1;
+        }
+        r.a[i] = parity ? 0xFFFFULL : 0;
+    }
+    while(r.rsiz && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(!r.rsiz) r.a[0] = 0;
     return r;
 }
 
@@ -41,13 +61,14 @@ int main(){
         {4096, 4096}, {6144, 8192}, {8192, 8192}
     };
     const torture_pattern_t patterns[] = {
-        {"all-ones", UINT64_MAX, UINT64_MAX, false},
-        {"ffff0000", 0xFFFF0000FFFF0000ULL, 0xFFFF0000FFFF0000ULL, false},
-        {"0000ffff", 0x0000FFFF0000FFFFULL, 0x0000FFFF0000FFFFULL, false},
-        {"ff00x00ff", 0xFF00FF00FF00FF00ULL, 0x00FF00FF00FF00FFULL, false},
-        {"highxlow", 0xFFFFFFFF00000000ULL, 0x00000000FFFFFFFFULL, false},
-        {"carry-run", 0xFFFFFFFFFFFFFF00ULL, 0x00FFFFFFFFFFFFFFULL, false},
-        {"alternating", UINT64_MAX, 0, true}
+        {"all-ones", UINT64_MAX, UINT64_MAX, false, false},
+        {"ffff0000", 0xFFFF0000FFFF0000ULL, 0xFFFF0000FFFF0000ULL, false, false},
+        {"0000ffff", 0x0000FFFF0000FFFFULL, 0x0000FFFF0000FFFFULL, false, false},
+        {"ff00x00ff", 0xFF00FF00FF00FF00ULL, 0x00FF00FF00FF00FFULL, false, false},
+        {"highxlow", 0xFFFFFFFF00000000ULL, 0x00000000FFFFFFFFULL, false, false},
+        {"carry-run", 0xFFFFFFFFFFFFFF00ULL, 0x00FFFFFFFFFFFFFFULL, false, false},
+        {"alternating", UINT64_MAX, 0, true, false},
+        {"popcount", 0, 0, false, true}
     };
 
     size_t cases = 0;
@@ -56,8 +77,10 @@ int main(){
         for(size_t pi = 0; pi < sizeof(patterns) / sizeof(patterns[0]); ++pi){
             const torture_shape_t &s = shapes[si];
             const torture_pattern_t &p = patterns[pi];
-            precn_t a = filled(s.an, p.a, p.b, p.alternate);
-            precn_t b = filled(s.bn, p.b, p.a, p.alternate);
+            precn_t a = p.popcount_parity ? popcount_parity_filled(s.an) :
+                                            filled(s.an, p.a, p.b, p.alternate);
+            precn_t b = p.popcount_parity ? popcount_parity_filled(s.bn) :
+                                            filled(s.bn, p.b, p.a, p.alternate);
 
             uint64_t before_1_8 = danger_fftmuls;
             uint64_t before_1_4 = danger_fftmuls_1_4;
