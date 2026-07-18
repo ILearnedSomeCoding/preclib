@@ -387,9 +387,8 @@ precn_t mul_fft(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
     if(std::max(a.rsiz, b.rsiz) <= 192) return mul_basic(a, b);
 
-    size_t digits16 = std::max(a.rsiz, b.rsiz) * 2;
     // Keep the faster 16-bit path through 1024 limbs.  Larger products use
     // byte digits to avoid the confirmed dense-input misround near 2048 limbs.
-    if(digits16 <= 2048) return mul_fft_bits(a, b, 16);
+    if(std::max(a.rsiz, b.rsiz) <= 1024) return mul_fft_bits(a, b, 16);
     return mul_fft_bits(a, b, 8);
 }
