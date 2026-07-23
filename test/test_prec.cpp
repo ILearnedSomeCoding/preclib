@@ -260,6 +260,100 @@ static void test_division(){
     expect_eq(div_mulinv(large_a, large_b), large_a / large_b);
 }
 
+static void test_gcd(){
+    expect_eq(gcd(precn_t(), precn_t()), precn_t());
+    expect_eq(gcd(precn_t(42), precn_t()), precn_t(42));
+    expect_eq(gcd(precn_t(), precn_t(42)), precn_t(42));
+    expect_eq(gcd(precn_t(48), precn_t(18)), precn_t(6));
+    expect_eq(gcd(precn_t(18), precn_t(48)), precn_t(6));
+    expect_eq(gcd(precn_t(17), precn_t(13)), precn_t(1));
+
+    precn_t common = pattern(40, 1701);
+    precn_t factor = pattern(70, 1702);
+    precn_t a = common * factor;
+    precn_t b = common * (factor + 1);
+    expect_eq(gcd(a, b), common);
+}
+
+static void expect_z(const precz_t &a, const char *value){
+    assert((std::string)a == std::string(value));
+    if(a.is_zero()) assert(!a.is_negative());
+}
+
+static void test_signed(){
+    expect_z(precz_t(), "0");
+    expect_z(precz_t(0), "0");
+    expect_z(precz_t(-0), "0");
+    expect_z(precz_t(std::string("-0")), "0");
+    expect_z(-precz_t(), "0");
+    expect_z(precz_t(INT64_MIN), "-9223372036854775808");
+    expect_z(precz_t(std::string("-12345678901234567890")),
+             "-12345678901234567890");
+
+    expect_z(precz_t(7) + precz_t(-3), "4");
+    expect_z(precz_t(3) + precz_t(-7), "-4");
+    expect_z(precz_t(-7) + precz_t(7), "0");
+    expect_z(precz_t(-7) - precz_t(-3), "-4");
+    expect_z(precz_t(-7) * precz_t(-3), "21");
+    expect_z(precz_t(-7) * precz_t(0), "0");
+
+    // Division truncates toward zero and remainder has the dividend's sign.
+    expect_z(precz_t(-7) / precz_t(3), "-2");
+    expect_z(precz_t(7) / precz_t(-3), "-2");
+    expect_z(precz_t(-7) / precz_t(-3), "2");
+    expect_z(precz_t(-7) % precz_t(3), "-1");
+    expect_z(precz_t(7) % precz_t(-3), "1");
+    expect_z(precz_t(-6) % precz_t(3), "0");
+    expect_z(precz_t(-7) / precz_t(0), "0");
+    expect_z(precz_t(-7) % precz_t(0), "0");
+
+    for(int64_t a = -100; a <= 100; ++a){
+        for(int64_t b = -100; b <= 100; ++b){
+            if(b == 0) continue;
+            precz_t za(a);
+            precz_t zb(b);
+            precz_t q = za / zb;
+            precz_t r = za % zb;
+            assert((int64_t)q == a / b);
+            assert((int64_t)r == a % b);
+            assert(q * zb + r == za);
+            assert(abs(r) < abs(zb));
+            assert(r.is_zero() || r.is_negative() == za.is_negative());
+        }
+    }
+
+    expect_z(precz_t(-3) << 4, "-48");
+    expect_z(precz_t(-3) >> 1, "-1");
+    expect_z(precz_t(-1) >> 100, "0");
+    assert(precz_t(-5) < precz_t(-3));
+    assert(precz_t(-1) < precz_t(0));
+    assert(precz_t(3) > precz_t(-3));
+
+    precz_t x(-1);
+    expect_z(++x, "0");
+    expect_z(--x, "-1");
+    expect_z(abs(precz_t(-42)), "42");
+    expect_z(gcd(precz_t(-48), precz_t(18)), "6");
+    expect_z(precz_sqrt(precz_t(81)), "9");
+    expect_z(precz_sqrt(precz_t(-81)), "0");
+
+    precz_t large_abs_a(std::string("123456789012345678901234567890"));
+    precz_t large_abs_b(std::string("98765432109876543210"));
+    for(int sa = 0; sa < 2; ++sa){
+        for(int sb = 0; sb < 2; ++sb){
+            precz_t large_a = sa ? -large_abs_a : large_abs_a;
+            precz_t large_b = sb ? -large_abs_b : large_abs_b;
+            precz_t q = large_a / large_b;
+            precz_t r = large_a % large_b;
+            assert(q * large_b + r == large_a);
+            assert(abs(r) < abs(large_b));
+            assert(r.is_zero() || r.is_negative() == large_a.is_negative());
+            assert(q.is_zero() || q.is_negative() == (sa != sb));
+        }
+    }
+    assert(!(-large_abs_a + large_abs_a).is_negative());
+}
+
 typedef precn_t (*mul_fn_t)(const precn_t&, const precn_t&);
 
 struct bench_mul_result_t{
@@ -573,6 +667,8 @@ int main(int argc, char **argv){
     test_mul_basic();
     test_divexact();
     test_division();
+    test_gcd();
+    test_signed();
     test_mul_algorithms();
     puts("ok");
     printf("time %.9f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);

@@ -203,3 +203,87 @@ precn_t gcd(const precn_t &a, const precn_t &b);
 precn_t precn_sqrt(const precn_t &a);
 
 void precn_base_convert(const precn_t &a, uint32_t base, uint32_t *out, size_t &out_siz);
+
+class precz_t{ // signed arbitrary precision number, sign and precn_t magnitude
+    precn_t mag_;
+    bool neg_;
+
+    precz_t(precn_t mag, bool neg);
+
+public:
+    precz_t();
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    precz_t(T val) : mag_(), neg_(false){
+        uint64_t bits = (uint64_t)val;
+        if(std::is_signed<T>::value && val < 0){
+            neg_ = true;
+            bits = (uint64_t)0 - bits;
+        }
+        mag_ = precn_t(bits);
+        if(mag_.rsiz == 0) neg_ = false;
+    }
+    precz_t(const precn_t &mag);
+    precz_t(precn_t &&mag);
+    precz_t(std::string val);
+
+    bool is_negative() const;
+    bool is_zero() const;
+    const precn_t &magnitude() const;
+
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    explicit operator T() const{
+        uint64_t bits = mag_.rsiz == 0 ? 0 : mag_.a[0];
+        if(neg_) bits = (uint64_t)0 - bits;
+        return (T)bits;
+    }
+    explicit operator std::string() const;
+
+    precz_t &operator+=(const precz_t &o);
+    precz_t &operator-=(const precz_t &o);
+    precz_t &operator*=(const precz_t &o);
+    precz_t &operator/=(const precz_t &o);
+    precz_t &operator%=(const precz_t &o);
+    precz_t &operator<<=(size_t bits);
+    precz_t &operator>>=(size_t bits);
+
+    friend precz_t operator+(const precz_t &a, const precz_t &b);
+    friend precz_t operator-(const precz_t &a, const precz_t &b);
+    friend precz_t operator-(const precz_t &a);
+    friend precz_t operator+(const precz_t &a);
+    friend precz_t operator*(const precz_t &a, const precz_t &b);
+    friend precz_t operator/(const precz_t &a, const precz_t &b);
+    friend precz_t operator%(const precz_t &a, const precz_t &b);
+    friend precz_t operator<<(const precz_t &a, size_t bits);
+    friend precz_t operator>>(const precz_t &a, size_t bits);
+    friend bool operator==(const precz_t &a, const precz_t &b);
+    friend bool operator<(const precz_t &a, const precz_t &b);
+    friend precz_t abs(const precz_t &a);
+    friend precz_t gcd(const precz_t &a, const precz_t &b);
+    friend precz_t precz_sqrt(const precz_t &a);
+};
+
+precz_t operator+(const precz_t &a, const precz_t &b);
+precz_t operator-(const precz_t &a, const precz_t &b);
+precz_t operator-(const precz_t &a);
+precz_t operator+(const precz_t &a);
+precz_t operator*(const precz_t &a, const precz_t &b);
+precz_t operator/(const precz_t &a, const precz_t &b);
+precz_t operator%(const precz_t &a, const precz_t &b);
+precz_t operator<<(const precz_t &a, size_t bits);
+precz_t operator>>(const precz_t &a, size_t bits);
+
+precz_t operator++(precz_t &a);
+precz_t operator++(precz_t &a, int);
+precz_t operator--(precz_t &a);
+precz_t operator--(precz_t &a, int);
+
+bool operator==(const precz_t &a, const precz_t &b);
+bool operator!=(const precz_t &a, const precz_t &b);
+bool operator<(const precz_t &a, const precz_t &b);
+bool operator>(const precz_t &a, const precz_t &b);
+bool operator<=(const precz_t &a, const precz_t &b);
+bool operator>=(const precz_t &a, const precz_t &b);
+
+precz_t abs(const precz_t &a);
+precz_t gcd(const precz_t &a, const precz_t &b);
+precz_t precz_sqrt(const precz_t &a); // returns zero for negative inputs

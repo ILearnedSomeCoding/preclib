@@ -5,6 +5,7 @@
 #include<cassert>
 #include<cstdio>
 #include<cstdlib>
+#include<cstring>
 #include<ctime>
 
 static double now_sec(){
@@ -78,6 +79,28 @@ static double bench_gmp_div(const mpz_t a, const mpz_t b, int reps, mpz_t out){
     return now_sec() - st;
 }
 
+static int gcd_reps_for(size_t n){
+    if(n <= 2) return 10000;
+    if(n <= 8) return 1000;
+    if(n <= 32) return 100;
+    if(n <= 128) return 10;
+    return 1;
+}
+
+static double bench_prec_gcd(const precn_t &a, const precn_t &b,
+                             int reps, precn_t &out){
+    double st = now_sec();
+    for(int i = 0; i < reps; ++i) out = gcd(a, b);
+    return now_sec() - st;
+}
+
+static double bench_gmp_gcd(const mpz_t a, const mpz_t b,
+                            int reps, mpz_t out){
+    double st = now_sec();
+    for(int i = 0; i < reps; ++i) mpz_gcd(out, a, b);
+    return now_sec() - st;
+}
+
 static void run_mul(size_t max_pow){
     std::printf("mul speed vs gmp\n");
     std::printf("%-8s %-8s %-6s %-15s %-15s %-10s %-10s\n",
@@ -135,9 +158,47 @@ static void run_div(size_t max_pow){
     }
 }
 
+static void run_gcd(size_t max_pow){
+    std::printf("gcd speed vs gmp\n");
+    std::printf("%-8s %-8s %-8s %-6s %-15s %-15s %-10s %-10s\n",
+                "n", "a", "b", "reps", "prec", "gmp", "ratio", "gcd");
+    for(size_t p = 0; p <= max_pow; ++p){
+        size_t n = (size_t)1 << p;
+        int reps = gcd_reps_for(n);
+
+        // Both inputs contain the same factor, while the remaining factors
+        // are unrelated.  This exercises a normal Euclidean remainder chain
+        // and still produces a non-trivial GCD.
+        precn_t common = pattern(std::max<size_t>(n / 2, 1), 53u + (uint32_t)p);
+        precn_t a = common * pattern(n, 67u + (uint32_t)p);
+        precn_t b = common * pattern(n, 79u + (uint32_t)p);
+        precn_t rp;
+
+        mpz_t ga, gb, gr;
+        mpz_inits(ga, gb, gr, NULL);
+        precn_to_mpz(ga, a);
+        precn_to_mpz(gb, b);
+
+        double tp = bench_prec_gcd(a, b, reps, rp);
+        double tg = bench_gmp_gcd(ga, gb, reps, gr);
+        check_same(rp, gr);
+
+        std::printf("2^%-6zu %-8zu %-8zu %-6d %-15.9f %-15.9f %-10.2f %-10zu\n",
+                    p, a.rsiz, b.rsiz, reps, tp / reps, tg / reps,
+                    tg > 0.0 ? tp / tg : 0.0, rp.rsiz);
+        mpz_clears(ga, gb, gr, NULL);
+    }
+}
+
 int main(int argc, char **argv){
     size_t max_pow = 22;
     if(argc >= 2) max_pow = (size_t)std::atoi(argv[1]);
+
+    if(argc >= 3 && std::strcmp(argv[2], "gcd") == 0){
+        run_gcd(max_pow);
+        std::printf("ok\n");
+        return 0;
+    }
 
     run_mul(max_pow);
     run_div(max_pow);

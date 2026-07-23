@@ -109,6 +109,10 @@ int main(){
         same(precn_sqrt(square + root + root + 1), root + 1);
     }
 
+    precn_t common = pattern(32, 2800);
+    precn_t factor = pattern(48, 2801);
+    same(gcd(common * factor, common * (factor + 1)), common);
+
     precn_t converted = pattern(257, 3001);
     size_t digit_count = 0;
     precn_base_convert(converted, 10, nullptr, digit_count);
