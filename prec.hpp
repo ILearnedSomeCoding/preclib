@@ -287,3 +287,64 @@ bool operator>=(const precz_t &a, const precz_t &b);
 precz_t abs(const precz_t &a);
 precz_t gcd(const precz_t &a, const precz_t &b);
 precz_t precz_sqrt(const precz_t &a); // returns zero for negative inputs
+
+class precq_t{ // reduced signed rational: (-1)^neg_ * num_ / den_
+    precn_t num_;
+    precn_t den_;
+    bool neg_;
+
+    void normalize();
+
+public:
+    precq_t();
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    precq_t(T val) : num_(), den_(1), neg_(false){
+        precz_t z(val);
+        num_ = z.magnitude();
+        neg_ = z.is_negative();
+    }
+    precq_t(const precn_t &num);
+    precq_t(const precz_t &num);
+    precq_t(precn_t num, precn_t den, bool negative = false);
+    precq_t(const precz_t &num, const precn_t &den);
+    precq_t(std::string val);
+
+    bool is_negative() const;
+    bool is_zero() const;
+    const precn_t &numerator() const;
+    const precn_t &denominator() const;
+    explicit operator std::string() const;
+
+    precq_t &operator+=(const precq_t &o);
+    precq_t &operator-=(const precq_t &o);
+    precq_t &operator*=(const precq_t &o);
+    precq_t &operator/=(const precq_t &o);
+
+    friend precq_t operator+(const precq_t &a, const precq_t &b);
+    friend precq_t operator-(const precq_t &a, const precq_t &b);
+    friend precq_t operator-(const precq_t &a);
+    friend precq_t operator+(const precq_t &a);
+    friend precq_t operator*(const precq_t &a, const precq_t &b);
+    friend precq_t operator/(const precq_t &a, const precq_t &b);
+    friend bool operator==(const precq_t &a, const precq_t &b);
+    friend bool operator<(const precq_t &a, const precq_t &b);
+    friend precq_t abs(const precq_t &a);
+    friend precq_t reciprocal(const precq_t &a);
+};
+
+precq_t operator+(const precq_t &a, const precq_t &b);
+precq_t operator-(const precq_t &a, const precq_t &b);
+precq_t operator-(const precq_t &a);
+precq_t operator+(const precq_t &a);
+precq_t operator*(const precq_t &a, const precq_t &b);
+precq_t operator/(const precq_t &a, const precq_t &b);
+
+bool operator==(const precq_t &a, const precq_t &b);
+bool operator!=(const precq_t &a, const precq_t &b);
+bool operator<(const precq_t &a, const precq_t &b);
+bool operator>(const precq_t &a, const precq_t &b);
+bool operator<=(const precq_t &a, const precq_t &b);
+bool operator>=(const precq_t &a, const precq_t &b);
+
+precq_t abs(const precq_t &a);
+precq_t reciprocal(const precq_t &a); // aborts when a is zero

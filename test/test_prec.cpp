@@ -354,6 +354,56 @@ static void test_signed(){
     assert(!(-large_abs_a + large_abs_a).is_negative());
 }
 
+static void expect_q(const precq_t &a, const char *value){
+    assert((std::string)a == std::string(value));
+    assert(a.denominator().rsiz != 0);
+    assert(gcd(a.numerator(), a.denominator()) == precn_t(1));
+    if(a.is_zero()){
+        assert(!a.is_negative());
+        assert(a.numerator() == precn_t());
+        assert(a.denominator() == precn_t(1));
+    }
+}
+
+static void test_rational(){
+    expect_q(precq_t(), "0/1");
+    expect_q(precq_t(0), "0/1");
+    expect_q(precq_t(precn_t(), precn_t(99), true), "0/1");
+    expect_q(precq_t(precn_t(6), precn_t(8)), "3/4");
+    expect_q(precq_t(precn_t(6), precn_t(8), true), "-3/4");
+    expect_q(precq_t(std::string("-6/8")), "-3/4");
+    expect_q(precq_t(std::string("-6/-8")), "3/4");
+    expect_q(precq_t(precz_t(-12), precn_t(18)), "-2/3");
+
+    precq_t a(precn_t(1), precn_t(2));
+    precq_t b(precn_t(1), precn_t(3));
+    expect_q(a + b, "5/6");
+    expect_q(a - b, "1/6");
+    expect_q(b - a, "-1/6");
+    expect_q(-a + a, "0/1");
+    expect_q(-precq_t(), "0/1");
+    expect_q(precq_t(precn_t(6), precn_t(35)) *
+             precq_t(precn_t(14), precn_t(15)), "4/25");
+    expect_q(precq_t(precn_t(6), precn_t(35)) /
+             precq_t(precn_t(14), precn_t(15)), "9/49");
+    expect_q(precq_t(-2) * precq_t(0), "0/1");
+    expect_q(reciprocal(precq_t(precn_t(2), precn_t(3), true)), "-3/2");
+    expect_q(abs(precq_t(precn_t(2), precn_t(3), true)), "2/3");
+
+    assert(precq_t(precn_t(1), precn_t(2)) ==
+           precq_t(precn_t(2), precn_t(4)));
+    assert(precq_t(-1) < precq_t(precn_t(-0), precn_t(1)));
+    assert(precq_t(precn_t(2), precn_t(3)) >
+           precq_t(precn_t(3), precn_t(5)));
+
+    precq_t large_a(std::string("12345678901234567890/9876543210"));
+    precq_t large_b(std::string("-112233445566778899/9988776655"));
+    expect_q((large_a + large_b) - large_b,
+             ((std::string)large_a).c_str());
+    expect_q((large_a * large_b) / large_b,
+             ((std::string)large_a).c_str());
+}
+
 typedef precn_t (*mul_fn_t)(const precn_t&, const precn_t&);
 
 struct bench_mul_result_t{
@@ -669,6 +719,7 @@ int main(int argc, char **argv){
     test_division();
     test_gcd();
     test_signed();
+    test_rational();
     test_mul_algorithms();
     puts("ok");
     printf("time %.9f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);

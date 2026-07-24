@@ -9,6 +9,8 @@ It provides two number types:
 - `precn_t`: an arbitrary-precision unsigned integer
 - `precz_t`: an arbitrary-precision signed integer built from a private
   `precn_t` magnitude and a sign
+- `precq_t`: a reduced arbitrary-precision rational built from two private
+  `precn_t` values and a sign
 
 The repository also includes a Chudnovsky/binary-splitting program that uses
 the library to calculate large numbers of digits of pi.
@@ -82,6 +84,23 @@ The quotient truncates toward zero. A nonzero remainder has the dividend's
 sign; an exact remainder is canonical positive zero. These rules are tested
 against native signed integer division over all sign combinations.
 
+### Rational representation
+
+`precq_t` represents a rational as a nonnegative numerator, a positive
+denominator, and a private sign. Every public constructor and arithmetic
+operation enforces:
+
+```text
+gcd(numerator, denominator) == 1
+denominator > 0
+zero == +0/1
+```
+
+Construction, addition, subtraction, multiplication, and division all reduce
+their results. Multiplication and division cross-cancel factors before forming
+large intermediate products. A zero denominator and division by a zero
+rational call `abort`, because neither operation has a valid rational result.
+
 ## Example
 
 ```cpp
@@ -117,6 +136,21 @@ std::cout << static_cast<std::string>(z) << '\n';
 The signed API includes arithmetic, division and remainder, comparisons,
 shifts, increment/decrement, `abs`, `gcd`, and `precz_sqrt`. Right shift acts
 on the magnitude and therefore truncates negative values toward zero.
+
+Rational values may be constructed from integers, signed integers, numerator
+and denominator magnitudes, or strings:
+
+```cpp
+precq_t a(std::string("-6/8")); // normalized to -3/4
+precq_t b(precn_t(5), precn_t(6));
+precq_t c = a + b;              // 1/12
+
+std::cout << static_cast<std::string>(c) << '\n';
+```
+
+Rational string conversion always includes the denominator, including for
+integers and zero (`"3/1"` and `"0/1"`). The signed rational API includes
+arithmetic, comparisons, compound assignment, `abs`, and `reciprocal`.
 
 Build it from the repository root by compiling the program together with all
 library source files:
@@ -293,6 +327,8 @@ time divided by GMP time, so smaller is better.
 - Division or remainder by zero currently returns positive zero for both
   `precn_t` and `precz_t`. Unlike this library, division by zero in C and C++ is
   undefined behavior.
+- `precq_t` instead rejects a zero denominator and division by zero with
+  `abort`, preserving its valid reduced-rational invariant.
 - Decimal string construction ignores non-decimal characters. For example,
   `"12a34"` is parsed as `1234`.
 - The representation fields are public and memory is managed with
