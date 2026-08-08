@@ -1,14 +1,19 @@
-# Exact CAS Core
+# 精确 CAS 核心
 
-`prec_cas.hpp` provides the first symbolic layer for prec-cpp. It deliberately
-keeps exact values separate from symbolic expressions:
+`prec_cas.hpp` 提供 prec-cpp 的符号计算接口。精确数、近似数和符号表达式共用同一套不可变 DAG，但仍保留各自的数值语义。
 
-- `exact_value` is an integer, reduced rational, or approximate `Number`.
-- `exact_expr` is a small handle to an immutable expression DAG.
-- `exact_context` owns the shared node arena and constructs canonical nodes.
-- `exact_add_builder` folds numeric terms before they enter the arena.
+主要类型：
 
-## Example
+- `exact_value`：整数、最简有理数或近似 `Number`。
+- `exact_expr`：指向不可变表达式 DAG 节点的轻量句柄。
+- `exact_context`：拥有共享节点 arena，并负责构造、合并和化简节点。
+- `exact_add_builder`：构造大型加法时先合并数值项，减少临时节点。
+- `expr`：可包含任意精度近似值的通用表达式。
+- `expr_context`：为 `expr` 保存默认二进制精度和底层 `exact_context`。
+
+`exact_expr` 和 `expr` 的声明现在都位于 `prec_cas.hpp`。
+
+## 基本示例
 
 ```cpp
 #include"prec_cas.hpp"
@@ -19,30 +24,41 @@ exact_expr expression = pow(cas.integer(1) + sqrt(cas.integer(2)) + x,
                             cas.integer(123));
 ```
 
-The power remains a single power node. Ordinary construction never expands it
-into a large sum.
+这里的幂会保留为一个紧凑的 power 节点，不会在普通构造过程中展开成巨大的多项式。
 
-Approximate values retain `Number`'s precision metadata. Mixed arithmetic
-promotes exact operands to the approximate operand's precision, while purely
-integer and rational operations remain exact. Interning compares the stored
-approximate bits and precision rather than using fuzzy equality.
+纯整数和有理数运算保持精确。混合近似运算会将精确操作数转换到近似操作数的精度。近似值的驻留比较使用实际保存的二进制值与精度，不使用模糊相等。
 
-## Sharing and Canonicalization
+## DAG 共享与规范化
 
-Nodes are immutable and hash-consed. Constructing `cas.integer(2)` repeatedly
-returns the same node ID. Addition and multiplication are n-ary, flattened,
-constant-folded, sorted, and interned, so operand order does not change the
-resulting expression. Subtraction combines signed coefficients, while division
-uses negative integer powers and combines exponents. Consequently `x-x`
-becomes `0`, `x/x` becomes `1`, and `x^2/x^3` becomes `x^-1`.
+节点不可变，并使用 hash-consing 共享。重复执行：
 
-The arena uses fixed-size nodes plus a contiguous array of 32-bit operand IDs.
-The operands refer to shared nodes; they do not own contiguous subtrees.
+```cpp
+cas.integer(2)
+```
 
-## Arena Compaction
+会得到相同的节点 ID，而不会反复分配相同常量。
 
-Hash-consed arenas grow as expressions are created. Reclaim unreachable nodes
-by compacting every root that must survive:
+加法和乘法使用 n 元节点，并会执行：
+
+- 展平嵌套的相同运算；
+- 合并常量和同类项；
+- 按规范顺序排序；
+- 合并完全相同的节点；
+- 合并乘方指数和有理式因子。
+
+因此：
+
+```text
+x-x       -> 0
+x/x       -> 1
+x^2/x^3   -> x^-1
+```
+
+arena 使用固定大小的节点数组和连续的 32-bit operand ID 数组。operand 指向共享节点，不拥有连续子树。
+
+## Arena 压缩与内存回收
+
+hash-consing arena 在构造表达式时只会增长。要回收不可达节点，需要把所有仍需使用的根传给 `compact`：
 
 ```cpp
 std::vector<exact_expr> roots = cas.compact({x, expression});
@@ -50,14 +66,33 @@ x = std::move(roots[0]);
 expression = std::move(roots[1]);
 ```
 
-Compaction traces the roots into a fresh arena. Existing handles remain valid
-because they retain the old arena; release those handles to release its memory.
-The calculator performs this automatically when its arena is much larger than
-the current answer.
+`compact` 会从这些根出发追踪可达 DAG，并把可达节点复制到新的 `exact_storage`。遍历使用迭代后序算法，不会因表达式过深而耗尽 C++ 调用栈。
 
-## Large Numeric Sums
+旧的 `exact_expr` 句柄仍然有效，因为它们会继续持有旧 arena。只有释放所有旧句柄后，旧 arena 的内存才会真正释放。计算器会在 arena 很大且绝大部分节点已不可达时自动执行压缩，也可以使用 `!gc` 手动触发。
 
-Use a transient builder when parsing a long addition:
+## 多项式化简与 GCD
+
+有理式约分使用混合多项式 GCD：
+
+1. 尝试直接整除。
+2. 快速提取公共单项式，例如 `x^a*y^b`。
+3. 一元多项式在 `Q[x]` 上使用 monic Euclid。
+4. 多变量多项式根据次数和稀疏度选择主变量。
+5. 其余情况使用递归 primitive pseudo-remainder sequence。
+6. 最后验证公因式能精确整除分子和分母。
+
+例如：
+
+```text
+simplify((x^2-y^2)/(x-y))
+-> x + y
+```
+
+当前实现适合中小型稀疏多项式。大型多变量输入以后可以增加 modular GCD、CRT 和插值恢复。
+
+## 大型数值求和
+
+解析很长的加法时，应使用临时 builder：
 
 ```cpp
 exact_add_builder sum = cas.make_add_builder();
@@ -65,16 +100,26 @@ for(uint64_t i = 1; i <= 10000000; ++i) sum.add_integer(i);
 exact_expr result = sum.finish();
 ```
 
-Small positive and negative literals first use 64-bit accumulators and spill
-to the big integer only on overflow, so this creates one final integer node
-rather than ten million temporary nodes or big-integer allocations. Generated sums can use
-`bounded_sum`; the initial implementation recognizes `sum(i, i=lower..upper)`
-and evaluates it with the arithmetic-series formula.
+小的正负整数先在 64-bit 累加器中合并，仅在溢出时转入大整数。因此这个循环会生成一个最终整数节点，而不是一千万个临时大整数节点。
 
-## Current Scope
+规则化求和可以使用 `bounded_sum`。当前实现能够识别：
 
-This foundation handles exact constants, symbols, canonical addition and
-multiplication, compact powers, square roots of perfect rational squares, and
-bounded sums. General expansion, substitution, differentiation, parsing, and
-garbage collection should be added on top of this representation rather than
-changing its public handles.
+```text
+sum(i, i=lower..upper)
+```
+
+并使用等差数列公式直接计算。
+
+## 当前能力
+
+目前包括：
+
+- 精确整数、有理数和任意精度近似值；
+- 符号、规范加法、乘法、幂和根式；
+- 展开、因式约分和多项式 GCD；
+- 部分平方根与立方根分母有理化；
+- 三角、指数和双曲函数节点；
+- 有界求和；
+- DAG 调试输出和 arena 压缩。
+
+当前尚未实现完整的代换、求导、方程求解、假设系统和 modular 多项式算法。
