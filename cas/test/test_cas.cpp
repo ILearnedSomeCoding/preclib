@@ -335,6 +335,24 @@ int main(){
     assert(symbolic_sum.operation() == exact_opcode::bounded_sum);
     assert(symbolic_sum.operand_count() == 4);
 
+    exact_context gc_context;
+    exact_expr gc_x = gc_context.symbol("x");
+    exact_expr gc_kept = gc_context.add({gc_x, gc_context.integer(1)});
+    for(uint64_t value = 2; value < 5000; ++value){
+        exact_expr discarded = gc_context.add({gc_x, gc_context.integer(value)});
+        assert(discarded.valid());
+    }
+    size_t nodes_before_gc = gc_context.node_count();
+    std::string kept_before_gc = gc_kept.to_string();
+    exact_expr old_kept = gc_kept;
+    std::vector<exact_expr> compacted = gc_context.compact({gc_x, gc_kept});
+    gc_x = std::move(compacted[0]);
+    gc_kept = std::move(compacted[1]);
+    assert(gc_context.node_count() < nodes_before_gc / 100);
+    assert(gc_kept.to_string() == kept_before_gc);
+    assert(old_kept.to_string() == kept_before_gc);
+    assert(gc_context.add({gc_kept, gc_x}).valid());
+
     puts("cas ok");
     return 0;
 }

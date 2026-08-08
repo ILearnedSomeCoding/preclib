@@ -2801,6 +2801,68 @@ exact_expr exact_context::simplify(const exact_expr &expression,
         return factored;
     }
 }
+
+std::vector<exact_expr> exact_context::compact(
+        const std::vector<exact_expr> &roots){
+    for(const exact_expr &root : roots)
+        if(!root.valid() || root.storage_ != storage_)
+            throw std::invalid_argument("compact roots must belong to this context");
+
+    std::shared_ptr<exact_storage> old_storage = storage_;
+    std::shared_ptr<exact_storage> new_storage = std::make_shared<exact_storage>();
+    std::vector<uint32_t> remap(old_storage->nodes.size(), UINT32_MAX);
+
+    // Iterative postorder avoids consuming the C++ call stack for a deep DAG.
+    std::vector<std::pair<uint32_t, bool>> pending;
+    for(const exact_expr &root : roots) pending.emplace_back(root.root_, false);
+    while(!pending.empty()){
+        uint32_t id = pending.back().first;
+        bool expanded = pending.back().second;
+        pending.pop_back();
+        if(remap[id] != UINT32_MAX) continue;
+
+        const exact_node &source = old_storage->node(id);
+        if(!expanded && source.operand_count){
+            pending.emplace_back(id, true);
+            const uint32_t *children = old_storage->children(source);
+            for(size_t i = source.operand_count; i > 0; --i)
+                if(remap[children[i - 1]] == UINT32_MAX)
+                    pending.emplace_back(children[i - 1], false);
+            continue;
+        }
+
+        if(source.op == exact_opcode::value){
+            remap[id] = new_storage->intern_value(
+                old_storage->values[source.payload]);
+        }else if(source.op == exact_opcode::symbol){
+            remap[id] = new_storage->intern_symbol(
+                old_storage->symbols[source.payload]);
+        }else{
+            std::vector<uint32_t> children;
+            children.reserve(source.operand_count);
+            const uint32_t *source_children = old_storage->children(source);
+            for(size_t i = 0; i < source.operand_count; ++i){
+                if(remap[source_children[i]] == UINT32_MAX)
+                    throw std::logic_error("invalid expression DAG order");
+                children.push_back(remap[source_children[i]]);
+            }
+            remap[id] = new_storage->intern_compound(source.op, children);
+        }
+    }
+
+    storage_ = std::move(new_storage);
+    std::vector<exact_expr> result;
+    result.reserve(roots.size());
+    for(const exact_expr &root : roots)
+        result.push_back(exact_expr(storage_, remap[root.root_]));
+    return result;
+}
+
+exact_expr exact_context::compact(const exact_expr &root){
+    std::vector<exact_expr> compacted = compact(std::vector<exact_expr>{root});
+    return std::move(compacted[0]);
+}
+
 exact_add_builder exact_context::make_add_builder(){
     return exact_add_builder(storage_);
 }

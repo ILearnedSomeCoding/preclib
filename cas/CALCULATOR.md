@@ -31,6 +31,7 @@ Commands:
 ```text
 !precision 512
 !nodes
+!gc
 !clear
 !help
 !quit

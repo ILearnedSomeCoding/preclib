@@ -39,6 +39,22 @@ becomes `0`, `x/x` becomes `1`, and `x^2/x^3` becomes `x^-1`.
 The arena uses fixed-size nodes plus a contiguous array of 32-bit operand IDs.
 The operands refer to shared nodes; they do not own contiguous subtrees.
 
+## Arena Compaction
+
+Hash-consed arenas grow as expressions are created. Reclaim unreachable nodes
+by compacting every root that must survive:
+
+```cpp
+std::vector<exact_expr> roots = cas.compact({x, expression});
+x = std::move(roots[0]);
+expression = std::move(roots[1]);
+```
+
+Compaction traces the roots into a fresh arena. Existing handles remain valid
+because they retain the old arena; release those handles to release its memory.
+The calculator performs this automatically when its arena is much larger than
+the current answer.
+
 ## Large Numeric Sums
 
 Use a transient builder when parsing a long addition:

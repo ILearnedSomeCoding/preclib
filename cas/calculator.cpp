@@ -26,6 +26,23 @@ struct calculator_state{
     double precision = 256.0;
 };
 
+static void collect_garbage(calculator_state &state, bool force){
+    if(!state.answer.valid()){
+        if(force) std::cout << "nothing to collect\n";
+        return;
+    }
+    size_t total = state.context.node_count();
+    size_t live = state.answer.reachable_node_count();
+    bool worthwhile = total >= 65536 &&
+        (live <= (SIZE_MAX - 4096) / 4) && total > live * 4 + 4096;
+    if(!force && !worthwhile) return;
+
+    state.answer = state.context.compact(state.answer);
+    if(force)
+        std::cout << "collected " << total << " -> "
+                  << state.context.node_count() << " nodes\n";
+}
+
 class parser{
     const std::string &text_;
     size_t position_;
@@ -256,7 +273,7 @@ static void help(){
         << "functions: sqrt, expand, simplify, approx, exp, expm1, ln, log10, log2,\n"
         << "           sin, cos, tan, asin, acos, atan,\n"
         << "           sinh, cosh, tanh, asinh, acosh, atanh\n"
-        << "commands: !precision BITS, !nodes, !dump [LIMIT], !info [EXPR],\n"
+        << "commands: !precision BITS, !nodes, !gc, !dump [LIMIT], !info [EXPR],\n"
         << "          !tree [EXPR], !time EXPR, !clear, !help, !quit\n";
 }
 
@@ -290,6 +307,7 @@ static bool command(const std::string &line, calculator_state &state){
     else if(line == "!nodes")
         std::cout << state.context.node_count() << " nodes, "
                   << state.context.operand_id_count() << " operand ids\n";
+    else if(line == "!gc") collect_garbage(state, true);
     else if(line == "!dump")
         std::cout << state.context.debug_dump();
     else if(line.compare(0, 6, "!dump ") == 0){
@@ -311,6 +329,7 @@ static bool command(const std::string &line, calculator_state &state){
         state.answer = parser(expression, state).parse();
         auto end = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = end - begin;
+        collect_garbage(state, false);
         std::cout << state.answer.to_string() << '\n'
                   << "time " << elapsed.count() << " sec\n";
     }
@@ -348,6 +367,7 @@ int main(){
                 continue;
             }
             state.answer = parser(line, state).parse();
+            collect_garbage(state, false);
             std::cout << state.answer.to_string() << '\n';
         }catch(const std::exception &error){
             std::cerr << "error: " << error.what() << '\n';
