@@ -4,13 +4,18 @@
 stores magnitudes as little-endian arrays of 64-bit limbs and selects different
 multiplication and division algorithms according to operand size.
 
-It provides two number types:
+It provides these number types:
 
 - `precn_t`: an arbitrary-precision unsigned integer
 - `precz_t`: an arbitrary-precision signed integer built from a private
   `precn_t` magnitude and a sign
+- `precf_t`: a signed fixed-point number backed by `precz_t`
+- `Number` (in `prec_num.hpp`): a precision-tagged binary floating-point
+  number backed by `precz_t`
 - `precq_t`: a reduced arbitrary-precision rational built from two private
   `precn_t` values and a sign
+
+We suggest you to use `precz_t` for integers and `Number` for non-integers.
 
 The repository also includes a Chudnovsky/binary-splitting program that uses
 the library to calculate large numbers of digits of pi.
@@ -133,6 +138,36 @@ precz_t z = x * y + 7;
 std::cout << static_cast<std::string>(z) << '\n';
 ```
 
+Fixed-point values store a snapshot of the global binary precision
+`precf_digit`. Changing the global affects newly constructed values but does
+not reinterpret existing ones. Arithmetic, comparison, or assignment between
+different stored precisions aborts:
+
+```cpp
+precf_digit = 128;
+precf_t x(std::string("1.25"));
+precf_t y(2);
+precf_t z = x / y;
+
+std::cout << static_cast<std::string>(z) << '\n'; // 0.625
+```
+
+Multiplication and division truncate toward zero at the configured binary
+precision. Division by zero aborts.
+
+[`Number`](NUMBER.md) stores a signed significand, a radix point measured in
+64-bit limbs, and an independent precision for each object:
+
+```text
+value = significand * 2^(-64 * radix_point)
+```
+
+Finite precisions retain two guard limbs and discard lower limbs during
+normalization. Exact integers use infinite precision. Mixed-precision
+arithmetic propagates the lower operand accuracy instead of aborting. Include
+`prec_num.hpp` to use this type. Division by zero and square root of a negative
+number abort; NaN and infinity are not represented.
+
 The signed API includes arithmetic, division and remainder, comparisons,
 shifts, increment/decrement, `abs`, `gcd`, and `precz_sqrt`. Right shift acts
 on the magnitude and therefore truncates negative values toward zero.
@@ -171,8 +206,8 @@ uses approximately the following policy, measured in 64-bit limbs:
 | One-limb operand | Scalar multiplication |
 | Up to 24 limbs | Schoolbook |
 | 25-192 limbs | Karatsuba |
-| 193-6144 limbs | FFT |
-| More than 6144 limbs | NTT |
+| 193-4096 limbs | FFT |
+| More than 4096 limbs with AVX2 | NTT |
 | More than 2:1 imbalance | Blocked multiplication |
 
 Dedicated Toom-Cook and SSA entry points are available for testing and
@@ -348,6 +383,13 @@ for GMP or Boost.Multiprecision.
 prec.hpp          Public type and function declarations
 src/              Arithmetic implementations
 pi/               Chudnovsky pi calculator
+calculator/       Interactive expression calculator using Number
 test/             Correctness tests, torture tests, and benchmarks
 tools/            Helper scripts for generated numerical constants
 ```
+
+## License
+
+Original prec-cpp contributions are available under the [MIT License](LICENSE).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for upstream attribution
+and redistribution requirements.

@@ -22,30 +22,123 @@ static double now_sec(){
     return std::chrono::duration<double>(clock_t::now() - start).count();
 }
 
-struct sprecn_t{
-    precn_t v;
-    bool neg;
+struct factor_power_t{
+    uint32_t prime;
+    uint32_t power;
 };
 
 struct bs_t{
     precn_t p;
     precn_t q;
-    sprecn_t t;
+    precz_t t;
+    std::vector<factor_power_t> fp;
+    std::vector<factor_power_t> fq;
 };
 
-static sprecn_t sp_make(precn_t v, bool neg){
-    bool sign = neg && v.rsiz != 0;
-    return sprecn_t{std::move(v), sign};
+class chud_factor_sieve_t{
+    std::vector<uint32_t> smallest_;
+
+public:
+    chud_factor_sieve_t(size_t n) : smallest_(n + 1, 0){
+        for(size_t i = 2; i <= n; ++i){
+            if(smallest_[i]) continue;
+            smallest_[i] = (uint32_t)i;
+            if(i > n / i) continue;
+            for(size_t j = i * i; j <= n; j += i){
+                if(!smallest_[j]) smallest_[j] = (uint32_t)i;
+            }
+        }
+    }
+
+    void append(std::vector<factor_power_t> &out, size_t value,
+                uint32_t multiplier = 1) const{
+        while(value > 1){
+            uint32_t p = smallest_[value];
+            uint32_t power = 0;
+            do{
+                value /= p;
+                ++power;
+            }while(value > 1 && smallest_[value] == p);
+            out.push_back(factor_power_t{p, power * multiplier});
+        }
+    }
+};
+
+static std::vector<factor_power_t> factor_merge(
+    const std::vector<factor_power_t> &a,
+    const std::vector<factor_power_t> &b){
+    std::vector<factor_power_t> r;
+    r.reserve(a.size() + b.size());
+    size_t i = 0, j = 0;
+    while(i < a.size() || j < b.size()){
+        if(j == b.size() || (i < a.size() && a[i].prime < b[j].prime)){
+            r.push_back(a[i++]);
+        }else if(i == a.size() || b[j].prime < a[i].prime){
+            r.push_back(b[j++]);
+        }else{
+            r.push_back(factor_power_t{a[i].prime, a[i].power + b[j].power});
+            ++i;
+            ++j;
+        }
+    }
+    return r;
 }
 
-static sprecn_t sp_add(const sprecn_t &a, const sprecn_t &b){
-    if(a.neg == b.neg) return sp_make(a.v + b.v, a.neg);
-    if(a.v >= b.v) return sp_make(a.v - b.v, a.neg);
-    return sp_make(b.v - a.v, b.neg);
+static precn_t factor_pow(uint32_t base, uint32_t power){
+    precn_t r(1);
+    precn_t b(base);
+    while(power){
+        if(power & 1) r = r * b;
+        power >>= 1;
+        if(power) b = b * b;
+    }
+    return r;
 }
 
-static sprecn_t sp_mul(const sprecn_t &a, const precn_t &b){
-    return sp_make(a.v * b, a.neg);
+static precn_t factor_product(const std::vector<factor_power_t> &f,
+                              size_t begin, size_t end){
+    if(begin == end) return precn_t(1);
+    if(end - begin == 1) return factor_pow(f[begin].prime, f[begin].power);
+    size_t mid = begin + (end - begin) / 2;
+    return factor_product(f, begin, mid) * factor_product(f, mid, end);
+}
+
+static void factor_compact(std::vector<factor_power_t> &f){
+    size_t out = 0;
+    for(size_t i = 0; i < f.size(); ++i){
+        if(f[i].power) f[out++] = f[i];
+    }
+    f.resize(out);
+}
+
+static void factor_cancel(precn_t &p, std::vector<factor_power_t> &fp,
+                          precn_t &q, std::vector<factor_power_t> &fq){
+    std::vector<factor_power_t> common;
+    common.reserve(std::min(fp.size(), fq.size()));
+    size_t i = 0, j = 0;
+    while(i < fp.size() && j < fq.size()){
+        if(fp[i].prime < fq[j].prime){
+            ++i;
+        }else if(fq[j].prime < fp[i].prime){
+            ++j;
+        }else{
+            uint32_t power = std::min(fp[i].power, fq[j].power);
+            if(power){
+                fp[i].power -= power;
+                fq[j].power -= power;
+                common.push_back(factor_power_t{fp[i].prime, power});
+            }
+            ++i;
+            ++j;
+        }
+    }
+    if(common.empty()) return;
+
+    precn_t divisor = factor_product(common, 0, common.size());
+    p = p / divisor;
+    q = q / divisor;
+    factor_compact(fp);
+    factor_compact(fq);
 }
 
 static size_t bit_length(const precn_t &a){
@@ -114,13 +207,10 @@ static precn_t sqrt10005_scaled(size_t, size_t scale_index,
 
 // A parent only needs P from its left child to form T.  Matching ilmPi's
 // needp scheduling avoids forming product-tree nodes that will not be used.
-static bs_t chud_bs(size_t a, size_t b, bool need_p){
+static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
+                    const chud_factor_sieve_t &sieve){
     if(b - a == 1){
-        if(a == 0){
-            return bs_t{precn_t(1), precn_t(1), sp_make(precn_t(CHUD_A), false)};
-        }
-
-        uint64_t k = (uint64_t)a;
+        uint64_t k = (uint64_t)b;
         precn_t p((uint64_t)(6 * k - 5));
         mul_u64_self(p, (uint64_t)(2 * k - 1));
         mul_u64_self(p, (uint64_t)(6 * k - 1));
@@ -131,20 +221,69 @@ static bs_t chud_bs(size_t a, size_t b, bool need_p){
         mul_u64_self(q, (uint64_t)CHUD_C3_OVER_24);
 
         precn_t term = p * (uint64_t)(CHUD_B * k + CHUD_A);
-        return bs_t{std::move(p), std::move(q), sp_make(std::move(term), (a & 1) != 0)};
+        precz_t t(std::move(term));
+        if(k & 1) t = -t;
+
+        std::vector<factor_power_t> fp;
+        sieve.append(fp, (size_t)(6 * k - 5));
+        sieve.append(fp, (size_t)(2 * k - 1));
+        sieve.append(fp, (size_t)(6 * k - 1));
+        std::sort(fp.begin(), fp.end(), [](const factor_power_t &x,
+                                           const factor_power_t &y){
+            return x.prime < y.prime;
+        });
+        std::vector<factor_power_t> fp_merged;
+        for(size_t i = 0; i < fp.size(); ++i){
+            if(!fp_merged.empty() && fp_merged.back().prime == fp[i].prime){
+                fp_merged.back().power += fp[i].power;
+            }else{
+                fp_merged.push_back(fp[i]);
+            }
+        }
+
+        std::vector<factor_power_t> fq;
+        sieve.append(fq, (size_t)k, 3);
+        fq.push_back(factor_power_t{2, 15});
+        fq.push_back(factor_power_t{3, 2});
+        fq.push_back(factor_power_t{5, 3});
+        fq.push_back(factor_power_t{23, 3});
+        fq.push_back(factor_power_t{29, 3});
+        std::sort(fq.begin(), fq.end(), [](const factor_power_t &x,
+                                           const factor_power_t &y){
+            return x.prime < y.prime;
+        });
+        std::vector<factor_power_t> fq_merged;
+        for(size_t i = 0; i < fq.size(); ++i){
+            if(!fq_merged.empty() && fq_merged.back().prime == fq[i].prime){
+                fq_merged.back().power += fq[i].power;
+            }else{
+                fq_merged.push_back(fq[i]);
+            }
+        }
+        return bs_t{std::move(p), std::move(q), std::move(t),
+                    std::move(fp_merged), std::move(fq_merged)};
     }
 
     size_t m = a + (b - a) / 2;
-    bs_t l = chud_bs(a, m, true);
-    bs_t r = chud_bs(m, b, need_p);
+    bs_t l = chud_bs(a, m, true, level + 1, sieve);
+    bs_t r = chud_bs(m, b, need_p, level + 1, sieve);
+
+    // This is ilmPi's factor-aware cancellation: scaling P_left and Q_right
+    // by the same exact factor scales Q and T equally, preserving T/Q while
+    // keeping every multiplication above this node smaller.
+    if(level >= 4) factor_cancel(l.p, l.fp, r.q, r.fq);
 
     precn_t q = l.q * r.q;
-    sprecn_t t = sp_add(sp_mul(l.t, r.q), sp_mul(r.t, l.p));
+    precz_t t = l.t * precz_t(r.q) + r.t * precz_t(l.p);
+    std::vector<factor_power_t> fq = factor_merge(l.fq, r.fq);
     if(need_p){
         precn_t p = l.p * r.p;
-        return bs_t{std::move(p), std::move(q), std::move(t)};
+        std::vector<factor_power_t> fp = factor_merge(l.fp, r.fp);
+        return bs_t{std::move(p), std::move(q), std::move(t),
+                    std::move(fp), std::move(fq)};
     }
-    return bs_t{precn_t(), std::move(q), std::move(t)};
+    return bs_t{precn_t(), std::move(q), std::move(t),
+                std::vector<factor_power_t>(), std::move(fq)};
 }
 
 static std::string to_dec(const precn_t &a){
@@ -162,19 +301,22 @@ static std::string to_dec(const precn_t &a){
 static std::string pi_digits(size_t digits){
     size_t guard = 10;
     size_t work_digits = digits + guard;
-    size_t terms = work_digits / 14 + 2;
+    size_t terms = work_digits / 14 + 1;
 
     double t0 = now_sec();
-    bs_t bs = chud_bs(0, terms, false);
+    if(terms > (UINT32_MAX - 1) / 6) return "error";
+    chud_factor_sieve_t sieve(6 * terms + 1);
+    bs_t bs = chud_bs(0, terms, false, 0, sieve);
+    bs.t += precz_t(bs.q * CHUD_A);
     double t1 = now_sec();
-    if(bs.t.neg || bs.t.v.rsiz == 0) return "error";
+    if(bs.t.is_negative() || bs.t.is_zero()) return "error";
 
     std::vector<pow10_entry_t> pow10_cache;
     size_t scale_index = pow10_index(work_digits * 2, pow10_cache);
     precn_t sqrt_scaled = sqrt10005_scaled(work_digits, scale_index, pow10_cache);
     double t2 = now_sec();
     precn_t numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
-    precn_t pi_scaled = numerator / bs.t.v;
+    precn_t pi_scaled = numerator / bs.t.magnitude();
     pi_scaled = pi_scaled / 10000000000ULL;
     double t3 = now_sec();
 

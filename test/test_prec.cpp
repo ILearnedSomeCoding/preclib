@@ -404,6 +404,58 @@ static void test_rational(){
              ((std::string)large_a).c_str());
 }
 
+static void test_sqrt_large(){
+    const size_t sizes[] = {127, 256, 1024, 4096};
+    for(size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i){
+        precn_t root = pattern(sizes[i], (uint32_t)(17000 + i));
+        precn_t square = root * root;
+        expect_eq_named("sqrt square", precn_sqrt(square), root);
+        expect_eq_named("sqrt below square", precn_sqrt(square - 1), root - 1);
+        expect_eq_named("sqrt below next square",
+                        precn_sqrt(square + root + root), root);
+        expect_eq_named("sqrt next square",
+                        precn_sqrt(square + root + root + 1), root + 1);
+    }
+}
+
+static void expect_f(const precf_t &a, const char *value){
+    assert((std::string)a == std::string(value));
+}
+
+static void test_fixed_point(){
+    unsigned int old_digit = precf_digit;
+    precf_digit = 8;
+
+    precf_t a(std::string("1.25"));
+    precf_t b(std::string("-0.5"));
+    assert(a.precision() == 8);
+    assert(a.scaled_integer() == precz_t(320));
+    expect_f(precf_t(), "0");
+    expect_f(precf_t(3), "3");
+    expect_f(a + b, "0.75");
+    expect_f(a - b, "1.75");
+    expect_f(a * b, "-0.625");
+    expect_f(precf_t(3) / precf_t(2), "1.5");
+    expect_f(precf_t(1) / precf_t(3), "0.33203125");
+    expect_f(-a, "-1.25");
+    expect_f(abs(b), "0.5");
+    assert(b < a);
+    assert((precz_t)precf_t(std::string("-3.75")) == precz_t(-3));
+
+    precf_t c(1);
+    c += precf_t(std::string("0.5"));
+    c *= precf_t(2);
+    c /= precf_t(4);
+    expect_f(c, "0.75");
+
+    precf_digit = 16;
+    precf_t higher(1);
+    assert(higher.precision() == 16);
+    assert(a.precision() == 8);
+
+    precf_digit = old_digit;
+}
+
 typedef precn_t (*mul_fn_t)(const precn_t&, const precn_t&);
 
 struct bench_mul_result_t{
@@ -718,8 +770,10 @@ int main(int argc, char **argv){
     test_divexact();
     test_division();
     test_gcd();
+    test_sqrt_large();
     test_signed();
     test_rational();
+    test_fixed_point();
     test_mul_algorithms();
     puts("ok");
     printf("time %.9f sec\n", (double)(clock() - start) / CLOCKS_PER_SEC);

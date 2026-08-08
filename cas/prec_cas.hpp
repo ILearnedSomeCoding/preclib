@@ -1,0 +1,220 @@
+#pragma once
+
+#include"../prec_num.hpp"
+
+#include<cstddef>
+#include<cstdint>
+#include<initializer_list>
+#include<memory>
+#include<string>
+#include<type_traits>
+#include<variant>
+#include<vector>
+
+enum class exact_opcode : uint8_t{
+    value,
+    symbol,
+    add,
+    multiply,
+    power,
+    square_root,
+    exponential,
+    sine,
+    cosine,
+    tangent,
+    hyperbolic_sine,
+    hyperbolic_cosine,
+    hyperbolic_tangent,
+    bounded_sum
+};
+
+const char *exact_opcode_name(exact_opcode operation);
+
+class exact_value{
+    std::variant<precz_t, precq_t, Number> value_;
+
+public:
+    exact_value();
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    exact_value(T value) : value_(precz_t(value)){}
+    exact_value(const precz_t &value);
+    exact_value(precz_t &&value);
+    exact_value(const precq_t &value);
+    exact_value(precq_t &&value);
+    exact_value(const Number &value);
+    exact_value(Number &&value);
+
+    bool is_integer() const;
+    bool is_rational() const;
+    bool is_approximate() const;
+    bool is_zero() const;
+    bool is_one() const;
+    bool is_negative() const;
+    const precz_t &integer() const;
+    precq_t rational() const;
+    const Number &number() const;
+    Number to_number(double precision_bits = 64.0) const;
+    std::string to_string() const;
+
+    friend exact_value operator+(const exact_value &a, const exact_value &b);
+    friend exact_value operator-(const exact_value &a, const exact_value &b);
+    friend exact_value operator-(const exact_value &a);
+    friend exact_value operator*(const exact_value &a, const exact_value &b);
+    friend exact_value operator/(const exact_value &a, const exact_value &b);
+    friend bool operator==(const exact_value &a, const exact_value &b);
+};
+
+exact_value operator+(const exact_value &a, const exact_value &b);
+exact_value operator-(const exact_value &a, const exact_value &b);
+exact_value operator-(const exact_value &a);
+exact_value operator*(const exact_value &a, const exact_value &b);
+exact_value operator/(const exact_value &a, const exact_value &b);
+bool operator==(const exact_value &a, const exact_value &b);
+bool operator!=(const exact_value &a, const exact_value &b);
+
+struct exact_storage;
+class exact_context;
+class exact_add_builder;
+
+class exact_expr{
+    std::shared_ptr<exact_storage> storage_;
+    uint32_t root_;
+
+    exact_expr(std::shared_ptr<exact_storage> storage, uint32_t root);
+
+public:
+    exact_expr();
+
+    bool valid() const;
+    uint32_t id() const;
+    exact_opcode operation() const;
+    size_t operand_count() const;
+    exact_expr operand(size_t index) const;
+    size_t reachable_node_count() const;
+    size_t depth() const;
+    std::string debug_tree(size_t maximum_nodes = 256) const;
+    bool is_value() const;
+    exact_value value() const;
+    std::string to_string() const;
+
+    friend class exact_context;
+    friend class exact_add_builder;
+    friend exact_expr operator+(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator-(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator-(const exact_expr &a);
+    friend exact_expr operator*(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator/(const exact_expr &a, const exact_expr &b);
+    friend exact_expr pow(const exact_expr &base, const exact_expr &exponent);
+    friend exact_expr sqrt(const exact_expr &value);
+    friend exact_expr exp(const exact_expr &value);
+    friend exact_expr sin(const exact_expr &value);
+    friend exact_expr cos(const exact_expr &value);
+    friend exact_expr tan(const exact_expr &value);
+    friend exact_expr sinh(const exact_expr &value);
+    friend exact_expr cosh(const exact_expr &value);
+    friend exact_expr tanh(const exact_expr &value);
+    friend bool operator==(const exact_expr &a, const exact_expr &b);
+};
+
+class exact_context{
+    std::shared_ptr<exact_storage> storage_;
+
+    explicit exact_context(std::shared_ptr<exact_storage> storage);
+
+public:
+    exact_context();
+
+    exact_expr value(const exact_value &value);
+    exact_expr value(exact_value &&value);
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    exact_expr integer(T value){ return this->value(exact_value(value)); }
+    exact_expr rational(const precq_t &value);
+    exact_expr symbol(const std::string &name);
+
+    exact_expr add(const std::vector<exact_expr> &terms);
+    exact_expr add(std::initializer_list<exact_expr> terms);
+    exact_expr subtract(const exact_expr &a, const exact_expr &b);
+    exact_expr multiply(const std::vector<exact_expr> &factors);
+    exact_expr multiply(std::initializer_list<exact_expr> factors);
+    exact_expr divide(const exact_expr &a, const exact_expr &b);
+    exact_expr power(const exact_expr &base, const exact_expr &exponent);
+    exact_expr square_root(const exact_expr &value);
+    exact_expr exponential(const exact_expr &value);
+    exact_expr sine(const exact_expr &value);
+    exact_expr cosine(const exact_expr &value);
+    exact_expr tangent(const exact_expr &value);
+    exact_expr hyperbolic_sine(const exact_expr &value);
+    exact_expr hyperbolic_cosine(const exact_expr &value);
+    exact_expr hyperbolic_tangent(const exact_expr &value);
+    exact_expr bounded_sum(const exact_expr &variable, const exact_expr &lower,
+                           const exact_expr &upper, const exact_expr &body);
+    exact_expr expand(const exact_expr &expression,
+                      size_t maximum_terms = 100000);
+    exact_expr simplify(const exact_expr &expression,
+                        size_t automatic_expansion_terms = 64);
+
+    exact_add_builder make_add_builder();
+    size_t node_count() const;
+    size_t operand_id_count() const;
+    std::string debug_dump(size_t maximum_nodes = 0) const;
+
+    friend class exact_add_builder;
+    friend exact_expr operator+(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator-(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator-(const exact_expr &a);
+    friend exact_expr operator*(const exact_expr &a, const exact_expr &b);
+    friend exact_expr operator/(const exact_expr &a, const exact_expr &b);
+    friend exact_expr pow(const exact_expr &base, const exact_expr &exponent);
+    friend exact_expr sqrt(const exact_expr &value);
+    friend exact_expr exp(const exact_expr &value);
+    friend exact_expr sin(const exact_expr &value);
+    friend exact_expr cos(const exact_expr &value);
+    friend exact_expr tan(const exact_expr &value);
+    friend exact_expr sinh(const exact_expr &value);
+    friend exact_expr cosh(const exact_expr &value);
+    friend exact_expr tanh(const exact_expr &value);
+};
+
+class exact_add_builder{
+    std::shared_ptr<exact_storage> storage_;
+    exact_value constant_;
+    uint64_t positive_small_;
+    uint64_t negative_small_;
+    std::vector<uint32_t> terms_;
+
+    explicit exact_add_builder(std::shared_ptr<exact_storage> storage);
+    void add_positive(uint64_t value);
+    void add_negative(uint64_t magnitude);
+    void flush_small();
+
+public:
+    void add(const exact_value &value);
+    void add(exact_value &&value);
+    void add(const exact_expr &term);
+    template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+    void add_integer(T value){
+        uint64_t bits = (uint64_t)value;
+        if(std::is_signed<T>::value && value < 0) add_negative((uint64_t)0 - bits);
+        else add_positive(bits);
+    }
+    exact_expr finish();
+
+    friend class exact_context;
+};
+
+exact_expr operator+(const exact_expr &a, const exact_expr &b);
+exact_expr operator-(const exact_expr &a, const exact_expr &b);
+exact_expr operator-(const exact_expr &a);
+exact_expr operator*(const exact_expr &a, const exact_expr &b);
+exact_expr operator/(const exact_expr &a, const exact_expr &b);
+exact_expr pow(const exact_expr &base, const exact_expr &exponent);
+exact_expr sqrt(const exact_expr &value);
+exact_expr exp(const exact_expr &value);
+exact_expr sin(const exact_expr &value);
+exact_expr cos(const exact_expr &value);
+exact_expr tan(const exact_expr &value);
+exact_expr sinh(const exact_expr &value);
+exact_expr cosh(const exact_expr &value);
+exact_expr tanh(const exact_expr &value);
+bool operator==(const exact_expr &a, const exact_expr &b);
+bool operator!=(const exact_expr &a, const exact_expr &b);

@@ -2,7 +2,9 @@
 
 #include<vector>
 
-#if defined(__AVX2__) || defined(_M_AVX2)
+#if defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD
+#define PRECN_NTT_HAVE_AVX2 0
+#elif defined(__AVX2__) || defined(_M_AVX2)
 #include<immintrin.h>
 #define PRECN_NTT_HAVE_AVX2 1
 #else

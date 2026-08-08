@@ -41,22 +41,13 @@ static precn_t sqrt_top_seed(const precn_t &a){
 static precn_t sqrt_refine_upper(const precn_t &a, precn_t x){
     for(;;){
         precn_t y = (x + a / x) >> 1;
-        if(y >= x) break;
+        // Starting from an upper bound, integer Newton decreases until x is
+        // exactly floor(sqrt(a)).  At that point floor(a/x) >= x and the
+        // iteration can no longer decrease.  No full-size x*x correction is
+        // needed after this condition.
+        if(y >= x) return x;
         x = y;
     }
-
-    precn_t square = x * x;
-    while(square > a){
-        x = x - 1;
-        square = x * x;
-    }
-    for(;;){
-        precn_t next = x + 1;
-        precn_t next_square = next * next;
-        if(next_square > a) break;
-        x = next;
-    }
-    return x;
 }
 
 static precn_t sqrt_high_part(const precn_t &a, size_t drop){

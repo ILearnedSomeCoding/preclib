@@ -2,7 +2,17 @@
 
 #define MUL_DISPATCH_KARATSUBA_THRESHOLD 24
 #define MUL_DISPATCH_FFT_THRESHOLD 192
-#define MUL_DISPATCH_NTT_THRESHOLD 6144
+#if defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD
+// The scalar NTT remains slower than the scalar FFT through the largest
+// benchmark sizes, so do not select it automatically in this configuration.
+#define MUL_DISPATCH_NTT_THRESHOLD ((size_t)-1)
+#elif defined(__AVX2__) || defined(_M_AVX2)
+#define MUL_DISPATCH_NTT_THRESHOLD 4096
+#else
+// Scalar Montgomery butterflies do not catch the SSE2 FFT until roughly
+// 16K limbs on x86-64.  Keep medium products on FFT without AVX2.
+#define MUL_DISPATCH_NTT_THRESHOLD 12288
+#endif
 #define MUL_DISPATCH_TOOM_UNBALANCED_MIN 768
 #define MUL_DISPATCH_TOOM_UNBALANCED_MAX 1280
 
@@ -200,6 +210,7 @@ precn_t precn_sqr(const precn_t &a){
         mul_square_schoolbook_into(r, a);
         return r;
     }
+    if(a.rsiz > MUL_DISPATCH_NTT_THRESHOLD) return mul_ntt(a, a);
     if(a.rsiz > MUL_DISPATCH_FFT_THRESHOLD) return mul_fft(a, a);
     return mul_karatsuba(a, a);
 }
