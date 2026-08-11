@@ -1,6 +1,7 @@
 #include"../prec_cas.hpp"
 
 #include<cmath>
+#include<limits>
 #include<stdexcept>
 #include<utility>
 
@@ -22,6 +23,14 @@ static void require_same_state(const expr &a, const expr &b){
     require_state(b);
     if(!a.same_context(b))
         throw std::invalid_argument("expressions belong to different contexts");
+}
+
+static int constant_digits(double binary_precision){
+    long double digits = std::ceil((long double)binary_precision *
+                                   0.30102999566398119521L) + 10.0L;
+    if(digits > (long double)std::numeric_limits<int>::max())
+        throw std::length_error("constant precision is too large");
+    return (int)digits;
 }
 
 template<class Function>
@@ -85,6 +94,16 @@ expr expr_context::exact_integer(const precz_t &value){
 expr expr_context::symbol(const std::string &name){
     return expr(state_, state_->context.symbol(name));
 }
+expr expr_context::pi(){
+    Number value = getpi(constant_digits(state_->precision));
+    value.set_precision(state_->precision);
+    return number(std::move(value));
+}
+expr expr_context::e(){
+    Number value = gete(constant_digits(state_->precision));
+    value.set_precision(state_->precision);
+    return number(std::move(value));
+}
 expr expr_context::add(const std::vector<expr> &terms){
     std::vector<exact_expr> nodes;
     nodes.reserve(terms.size());
@@ -119,6 +138,12 @@ expr expr_context::square_root(const expr &value){
         throw std::invalid_argument("expression belongs to a different context");
     return expr(state_, state_->context.square_root(value.node_));
 }
+expr expr_context::absolute_value(const expr &value){
+    require_state(value);
+    if(value.state_ != state_)
+        throw std::invalid_argument("expression belongs to a different context");
+    return expr(state_, state_->context.absolute_value(value.node_));
+}
 expr expr_context::simplify(const expr &value, size_t maximum_terms){
     require_state(value);
     if(value.state_ != state_)
@@ -130,6 +155,12 @@ expr expr_context::expand(const expr &value, size_t maximum_terms){
     if(value.state_ != state_)
         throw std::invalid_argument("expression belongs to a different context");
     return expr(state_, state_->context.expand(value.node_, maximum_terms));
+}
+expr expr_context::factor(const expr &value){
+    require_state(value);
+    if(value.state_ != state_)
+        throw std::invalid_argument("expression belongs to a different context");
+    return expr(state_, state_->context.factor(value.node_));
 }
 
 expr operator+(const expr &a, const expr &b){
@@ -160,6 +191,14 @@ expr sqrt(const expr &value){
     require_state(value);
     return expr(value.state_, ::sqrt(value.node_));
 }
+expr abs(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::abs(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::abs(x); }, "abs");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
 expr exp(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::exp(value.node_));
@@ -169,6 +208,8 @@ expr exp(const expr &value){
         exact_value(std::move(result))));
 }
 expr ln(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::ln(value.node_));
     Number result = numeric_function(
         value, [](const Number &x){ return ::ln(x); }, "ln");
     return expr(value.state_, value.state_->context.value(
@@ -198,6 +239,30 @@ expr tan(const expr &value){
     return expr(value.state_, value.state_->context.value(
         exact_value(std::move(result))));
 }
+expr asin(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::asin(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::asin(x); }, "asin");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr acos(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::acos(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::acos(x); }, "acos");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr atan(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::atan(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::atan(x); }, "atan");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
 expr sinh(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::sinh(value.node_));
@@ -219,6 +284,46 @@ expr tanh(const expr &value){
     if(!value.is_number()) return expr(value.state_, ::tanh(value.node_));
     Number result = numeric_function(
         value, [](const Number &x){ return ::tanh(x); }, "tanh");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr asinh(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::asinh(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::asinh(x); }, "asinh");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr acosh(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::acosh(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::acosh(x); }, "acosh");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr atanh(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::atanh(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::atanh(x); }, "atanh");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr log2(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::log2(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::log2(x); }, "log2");
+    return expr(value.state_, value.state_->context.value(
+        exact_value(std::move(result))));
+}
+expr log10(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::log10(value.node_));
+    Number result = numeric_function(
+        value, [](const Number &x){ return ::log10(x); }, "log10");
     return expr(value.state_, value.state_->context.value(
         exact_value(std::move(result))));
 }

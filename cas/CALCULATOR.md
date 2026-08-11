@@ -14,6 +14,8 @@ clang++ -O3 -mavx2 -std=c++17 cas\calculator.cpp cas\src\*.cpp src\*.cpp -o cas\
 
 整数和整数构成的分数保持精确。十进制字面量和数值超越函数使用指定二进制精度的 `Number`。
 
+内置精确常量为 `pi`（圆周率）和 `e`（自然常数）。它们与近似数混合运算时，会按当前二进制精度通过 `getpi/gete` 转换为 `Number`。
+
 ## 示例
 
 ```text
@@ -40,6 +42,21 @@ x + y
 
 > approx(1/3)
 0.3333333333333333333333333333333333333333333333333333333333333333333333333333
+
+> sin(pi)
+0
+
+> ln(e)
+1
+
+> ln(e^2)
+2
+
+> sin(pi/3)
+1/2*sqrt(3)
+
+> sin(pi/4)
+1/2*sqrt(2)
 ```
 
 ## 命令
@@ -58,6 +75,23 @@ x + y
 ```
 
 `!precision` 使用二进制有效位，不是十进制小数位。`Number` 在内部保留保护位，并在最终显示时舍入到声明的二进制精度。
+
+## 函数
+
+```text
+exp, expm1
+ln
+log, log10
+log2
+sin, cos, tan
+asin, acos, atan
+sinh, cosh, tanh
+asinh, acosh, atanh
+sqrt
+expand, simplify, approx
+```
+
+`ln(x)` 是自然对数，`log(x)` 是 `log10(x)` 的别名，`log2(x)` 是以 2 为底的对数。符号参数会保留为函数节点；十进制近似参数会立即使用 `Number` 计算。
 
 ## 测试
 

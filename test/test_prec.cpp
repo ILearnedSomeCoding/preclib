@@ -197,6 +197,23 @@ static void test_mul_basic(){
 static void test_divexact(){
     expect(precn_divexact_2(make_prec({0, 2})), {0, 1});
     expect(precn_divexact_3(make_prec({3, 3})), {1, 1});
+
+    const size_t sizes[] = {1, 3, 32, 100, 257};
+    for(size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i){
+        precn_t divisor = pattern(sizes[i], (uint32_t)(101 + i));
+        divisor.a[0] |= 1;
+        precn_t quotient = pattern(sizes[i] + 7, (uint32_t)(211 + i));
+        expect_eq(precn_divexact(divisor * quotient, divisor), quotient);
+
+        precn_t even_divisor = divisor << 137;
+        expect_eq(precn_divexact(even_divisor * quotient, even_divisor), quotient);
+    }
+
+    precn_t unbalanced_divisor = pattern(64, 307);
+    unbalanced_divisor.a[0] |= 1;
+    precn_t unbalanced_quotient = pattern(200, 401);
+    expect_eq(precn_divexact(unbalanced_divisor * unbalanced_quotient,
+                            unbalanced_divisor), unbalanced_quotient);
 }
 
 static void test_division(){

@@ -7,6 +7,7 @@
 #include<iostream>
 #include<stdexcept>
 #include<string>
+#include<vector>
 
 namespace{
 
@@ -25,6 +26,55 @@ struct calculator_state{
     exact_expr answer;
     double precision = 256.0;
 };
+
+static std::string scientific_if_large(std::string text){
+    const size_t integer_limit = 120;
+    const size_t significant_digits = 80;
+    size_t sign = !text.empty() && (text[0] == '-' || text[0] == '+') ? 1 : 0;
+    size_t dot = text.find('.', sign);
+    size_t integer_end = dot == std::string::npos ? text.size() : dot;
+    if(integer_end - sign <= integer_limit) return text;
+
+    std::string digits;
+    digits.reserve(text.size());
+    for(size_t i = sign; i < text.size(); ++i){
+        if(text[i] == '.') continue;
+        if(text[i] < '0' || text[i] > '9') return text;
+        digits.push_back(text[i]);
+    }
+    size_t first = digits.find_first_not_of('0');
+    if(first == std::string::npos) return "0";
+
+    int64_t exponent = (int64_t)(integer_end - sign) - (int64_t)first - 1;
+    size_t kept = std::min(significant_digits, digits.size() - first);
+    std::string mantissa = digits.substr(first, kept);
+    if(first + kept < digits.size() && digits[first + kept] >= '5'){
+        size_t i = mantissa.size();
+        while(i && mantissa[i - 1] == '9') mantissa[--i] = '0';
+        if(i){
+            ++mantissa[i - 1];
+        }else{
+            mantissa.assign(kept, '0');
+            mantissa[0] = '1';
+            ++exponent;
+        }
+    }
+    while(mantissa.size() > 1 && mantissa.back() == '0') mantissa.pop_back();
+
+    std::string result;
+    if(sign && text[0] == '-') result.push_back('-');
+    result.push_back(mantissa[0]);
+    if(mantissa.size() > 1){
+        result.push_back('.');
+        result.append(mantissa, 1, std::string::npos);
+    }
+    result += "e+" + std::to_string(exponent);
+    return result;
+}
+
+static std::string format_answer(const exact_expr &answer){
+    return scientific_if_large(answer.to_string());
+}
 
 static void collect_garbage(calculator_state &state, bool force){
     if(!state.answer.valid()){
@@ -149,8 +199,12 @@ class parser{
 
     exact_expr function(const std::string &name, const exact_expr &argument){
         if(name == "sqrt") return state_.context.square_root(argument);
+        if(name == "abs") return state_.context.absolute_value(argument);
         if(name == "expand") return state_.context.expand(argument);
+        if(name == "factor") return state_.context.factor(argument);
         if(name == "simplify") return state_.context.simplify(argument);
+        if(name == "trigexpand") return state_.context.trig_expand(argument);
+        if(name == "trigreduce") return state_.context.trig_reduce(argument);
         if(name == "approx"){
             if(!argument.is_value())
                 throw std::runtime_error("approx requires a numeric value");
@@ -158,14 +212,27 @@ class parser{
             approximate.set_precision(state_.precision);
             return state_.context.value(exact_value(std::move(approximate)));
         }
-        if(!argument.is_value()){
+        if(!argument.is_value() || !argument.value().is_approximate()){
             if(name == "exp") return state_.context.exponential(argument);
+            if(name == "expm1")
+                return state_.context.exponential(argument) -
+                       state_.context.integer(1);
             if(name == "sin") return state_.context.sine(argument);
             if(name == "cos") return state_.context.cosine(argument);
             if(name == "tan") return state_.context.tangent(argument);
+            if(name == "asin") return state_.context.arc_sine(argument);
+            if(name == "acos") return state_.context.arc_cosine(argument);
+            if(name == "atan") return state_.context.arc_tangent(argument);
             if(name == "sinh") return state_.context.hyperbolic_sine(argument);
             if(name == "cosh") return state_.context.hyperbolic_cosine(argument);
             if(name == "tanh") return state_.context.hyperbolic_tangent(argument);
+            if(name == "asinh") return state_.context.inverse_hyperbolic_sine(argument);
+            if(name == "acosh") return state_.context.inverse_hyperbolic_cosine(argument);
+            if(name == "atanh") return state_.context.inverse_hyperbolic_tangent(argument);
+            if(name == "ln") return state_.context.natural_logarithm(argument);
+            if(name == "log2") return state_.context.logarithm_base_2(argument);
+            if(name == "log" || name == "log10")
+                return state_.context.logarithm_base_10(argument);
             throw std::runtime_error(name + " requires a numeric value");
         }
         Number value = argument.value().to_number(state_.precision);
@@ -175,6 +242,7 @@ class parser{
         else if(name == "expm1") result = expm1(value);
         else if(name == "ln") result = ln(value);
         else if(name == "log10") result = log10(value);
+        else if(name == "log") result = log10(value);
         else if(name == "log2") result = log2(value);
         else if(name == "sin") result = sin(value);
         else if(name == "cos") result = cos(value);
@@ -190,6 +258,37 @@ class parser{
         else if(name == "atanh") result = atanh(value);
         else throw std::runtime_error("unknown function: " + name);
         return state_.context.value(exact_value(std::move(result)));
+    }
+
+    exact_expr function(const std::string &name,
+                        const std::vector<exact_expr> &arguments){
+        if(name == "is_poly" || name == "ispoly"){
+            if(arguments.empty())
+                throw std::runtime_error("is_poly requires an expression");
+            std::vector<exact_expr> variables(arguments.begin() + 1,
+                                               arguments.end());
+            bool result = variables.empty()
+                ? state_.context.is_polynomial(arguments[0])
+                : state_.context.is_polynomial(arguments[0], variables);
+            return state_.context.integer(result ? 1 : 0);
+        }
+        if(name == "subs"){
+            if(arguments.size() != 3)
+                throw std::runtime_error(
+                    "subs requires expression, target, and replacement");
+            return state_.context.substitute(arguments[0], arguments[1],
+                                             arguments[2]);
+        }
+        if(name == "assume"){
+            if(arguments.size() != 2)
+                throw std::runtime_error(
+                    "assume requires a symbol and a property");
+            state_.context.assume(arguments[0], arguments[1].to_string());
+            return arguments[0];
+        }
+        if(arguments.size() != 1)
+            throw std::runtime_error(name + " requires one argument");
+        return function(name, arguments[0]);
     }
 
     exact_expr primary(){
@@ -210,10 +309,37 @@ class parser{
                 if(!state_.answer.valid()) throw std::runtime_error("ans is not set");
                 return state_.answer;
             }
+            if(name == "pi") return state_.context.pi();
+            if(name == "e") return state_.context.e();
+            if(name == "i") return state_.context.i();
             if(take('(')){
-                exact_expr argument = expression();
-                require(')');
-                return function(name, argument);
+                if(name == "solve" || name == "exact_solve"){
+                    exact_expr equation = expression();
+                    require(',');
+                    require('{');
+                    std::vector<exact_expr> variables;
+                    if(!take('}')){
+                        for(;;){
+                            variables.push_back(expression());
+                            if(take('}')) break;
+                            require(',');
+                        }
+                    }
+                    require(')');
+                    return name == "exact_solve"
+                        ? state_.context.exact_solve(equation, variables)
+                        : state_.context.solve(equation, variables,
+                                               state_.precision);
+                }
+                std::vector<exact_expr> arguments;
+                if(!take(')')){
+                    for(;;){
+                        arguments.push_back(expression());
+                        if(take(')')) break;
+                        require(',');
+                    }
+                }
+                return function(name, arguments);
             }
             return state_.context.symbol(name);
         }
@@ -269,12 +395,17 @@ static void help(){
     std::cout
         << "operators: +  -  *  /  ^  and parentheses\n"
         << "exact: integer literals, integer fractions, symbols, sqrt(integer)\n"
+        << "constants: pi, e\n"
         << "approximate: decimal literals, approx(x), and numeric functions\n"
-        << "functions: sqrt, expand, simplify, approx, exp, expm1, ln, log10, log2,\n"
+        << "functions: sqrt, expand, factor, simplify, trigexpand, trigreduce,\n"
+        << "           subs(expression, target, replacement), is_poly(expression[, vars]),\n"
+        << "           assume(symbol, none|real|nonnegative|positive),\n"
+        << "           solve(expression, {variable}), exact_solve(expression, {variable}),\n"
+        << "           exp, expm1, ln, log, log10, log2,\n"
         << "           sin, cos, tan, asin, acos, atan,\n"
-        << "           sinh, cosh, tanh, asinh, acosh, atanh\n"
+        << "           abs, sinh, cosh, tanh, asinh, acosh, atanh\n"
         << "commands: !precision BITS, !nodes, !gc, !dump [LIMIT], !info [EXPR],\n"
-        << "          !tree [EXPR], !time EXPR, !clear, !help, !quit\n";
+        << "          !tree [EXPR], !time EXPR, !full, !clear, !help, !quit\n";
 }
 
 static exact_expr debug_argument(const std::string &line, size_t command_size,
@@ -330,8 +461,12 @@ static bool command(const std::string &line, calculator_state &state){
         auto end = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = end - begin;
         collect_garbage(state, false);
-        std::cout << state.answer.to_string() << '\n'
+        std::cout << format_answer(state.answer) << '\n'
                   << "time " << elapsed.count() << " sec\n";
+    }
+    else if(line == "!full"){
+        if(!state.answer.valid()) throw std::runtime_error("ans is not set");
+        std::cout << state.answer.to_string() << '\n';
     }
     else if(line == "!clear"){
         state.context = exact_context();
@@ -368,7 +503,7 @@ int main(){
             }
             state.answer = parser(line, state).parse();
             collect_garbage(state, false);
-            std::cout << state.answer.to_string() << '\n';
+            std::cout << format_answer(state.answer) << '\n';
         }catch(const std::exception &error){
             std::cerr << "error: " << error.what() << '\n';
         }

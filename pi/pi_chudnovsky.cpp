@@ -1,10 +1,14 @@
 #include"../prec.hpp"
 
+#include<atomic>
+#include<ctime>
 #include<cstdlib>
 #include<chrono>
 #include<fstream>
 #include<iostream>
 #include<string>
+#include<thread>
+#include<unordered_map>
 #include<utility>
 #include<vector>
 
@@ -14,7 +18,105 @@
 
 static bool show_phases = false;
 static bool full_output = false;
+static bool show_progress = false;
 static std::string output_file;
+
+static std::atomic<int> progress_phase(-1);
+static std::atomic<uint64_t> progress_done(0);
+static std::atomic<uint64_t> progress_total(0);
+static std::atomic<uint64_t> progress_started_ms(0);
+static std::atomic<uint64_t> progress_started_cpu_ms(0);
+static std::atomic<bool> progress_stop(false);
+static uint64_t progress_local = 0;
+static uint64_t progress_next_publish = 0;
+static uint64_t progress_publish_step = 1;
+
+static uint64_t steady_ms(){
+    using clock_t = std::chrono::steady_clock;
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        clock_t::now().time_since_epoch()).count();
+}
+
+static uint64_t process_cpu_ms(){
+    return (uint64_t)((double)std::clock() * 1000.0 / (double)CLOCKS_PER_SEC);
+}
+
+static uint64_t binary_tracked_work(size_t terms){
+    std::unordered_map<size_t, uint64_t> memo;
+    auto work = [&](auto &&self, size_t n) -> uint64_t{
+        if(n < 64) return 0;
+        auto found = memo.find(n);
+        if(found != memo.end()) return found->second;
+        size_t left = n / 2;
+        uint64_t result = (uint64_t)n + self(self, left) + self(self, n - left);
+        memo.emplace(n, result);
+        return result;
+    };
+    return work(work, terms);
+}
+
+static void progress_begin(int phase, uint64_t total = 0){
+    if(!show_progress) return;
+    progress_local = 0;
+    progress_publish_step = std::max<uint64_t>(1, total / 2000);
+    progress_next_publish = progress_publish_step;
+    progress_done.store(0, std::memory_order_relaxed);
+    progress_total.store(total, std::memory_order_relaxed);
+    progress_started_ms.store(steady_ms(), std::memory_order_relaxed);
+    progress_started_cpu_ms.store(process_cpu_ms(), std::memory_order_relaxed);
+    progress_phase.store(phase, std::memory_order_release);
+}
+
+static void progress_add(uint64_t amount){
+    if(!show_progress) return;
+    progress_local += amount;
+    if(progress_local < progress_next_publish) return;
+    progress_done.store(progress_local, std::memory_order_relaxed);
+    progress_next_publish = progress_local + progress_publish_step;
+}
+
+static void progress_set(uint64_t done){
+    if(show_progress) progress_done.store(done, std::memory_order_relaxed);
+}
+
+static void progress_reporter(){
+    static const char *names[] = {
+        "binary_split", "sqrt_scale", "final_div", "to_decimal"
+    };
+    int previous = -2;
+    while(!progress_stop.load(std::memory_order_acquire)){
+        int phase = progress_phase.load(std::memory_order_acquire);
+        if(phase >= 0 && phase < 4){
+            if(previous != -2 && previous != phase) std::cerr << '\n';
+            previous = phase;
+            uint64_t started = progress_started_ms.load(std::memory_order_relaxed);
+            uint64_t cpu_started = progress_started_cpu_ms.load(std::memory_order_relaxed);
+            double wall_elapsed = (double)(steady_ms() - started) / 1000.0;
+            double cpu_elapsed = (double)(process_cpu_ms() - cpu_started) / 1000.0;
+            uint64_t total = progress_total.load(std::memory_order_relaxed);
+            uint64_t done = progress_done.load(std::memory_order_relaxed);
+            const int width = 30;
+            std::string bar((size_t)width, '.');
+            if(total){
+                if(done > total) done = total;
+                int filled = (int)(done * (uint64_t)width / total);
+                for(int i = 0; i < filled; ++i) bar[(size_t)i] = '#';
+                double percent = 100.0 * (double)done / (double)total;
+                std::cerr << '\r' << names[phase] << " [" << bar << "] "
+                          << percent << "%  cpu " << cpu_elapsed
+                          << " sec  wall " << wall_elapsed << " sec   " << std::flush;
+            }else{
+                int position = (int)((steady_ms() / 200) % (uint64_t)width);
+                bar[(size_t)position] = '>';
+                std::cerr << '\r' << names[phase] << " [" << bar << "] working  "
+                          << "cpu " << cpu_elapsed << " sec  wall "
+                          << wall_elapsed << " sec   " << std::flush;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    if(previous != -2) std::cerr << '\n';
+}
 
 static double now_sec(){
     using clock_t = std::chrono::steady_clock;
@@ -199,10 +301,85 @@ static size_t pow10_index(size_t digits, std::vector<pow10_entry_t> &cache){
     return cache.size() - 1;
 }
 
+static uint64_t pi_sqrt_work(size_t limbs){
+    uint64_t total = 0;
+    while(limbs > 4){
+        size_t drop = (limbs / 2) & ~(size_t)1;
+        if(drop == 0) break;
+        // Integer Newton normally takes about two full divisions per level.
+        total += (uint64_t)limbs * 2;
+        limbs -= drop;
+    }
+    return total + (uint64_t)std::max<size_t>(limbs, 1) * 4;
+}
+
+static uint64_t pi_sqrt_top_bits(const precn_t &a, size_t bits, size_t take){
+    size_t shift = bits - take;
+    size_t limb = shift / 64;
+    unsigned offset = (unsigned)(shift % 64);
+    uint64_t top = a.a[limb] >> offset;
+    if(offset && limb + 1 < a.rsiz) top |= a.a[limb + 1] << (64 - offset);
+    return top;
+}
+
+static precn_t pi_sqrt_seed(const precn_t &a){
+    size_t bits = bit_length(a);
+    size_t take = std::min<size_t>(bits, 53);
+    size_t shift = bits - take;
+    double estimate = std::sqrt((double)pi_sqrt_top_bits(a, bits, take));
+    if(shift & 1) estimate *= 1.4142135623730950488;
+    return precn_t((uint64_t)estimate + 4) << (shift / 2);
+}
+
+static void pi_sqrt_advance(uint64_t &done, uint64_t total, size_t limbs){
+    done += (uint64_t)std::max<size_t>(limbs, 1);
+    uint64_t part = total ? std::min<uint64_t>(done, total) * 850 / total : 850;
+    progress_set(150 + part);
+}
+
+static precn_t pi_sqrt_refine(const precn_t &a, precn_t x,
+                              uint64_t &done, uint64_t total){
+    for(;;){
+        precn_t y = (x + a / x) >> 1;
+        pi_sqrt_advance(done, total, a.rsiz);
+        if(y >= x) return x;
+        x = y;
+    }
+}
+
+static precn_t pi_sqrt_high_part(const precn_t &a, size_t drop){
+    precn_t high;
+    high.rsiz = a.rsiz - drop;
+    high.asiz = high.rsiz;
+    high.a = (uint64_t*)realloc(high.a, high.asiz * sizeof(uint64_t));
+    memcpy(high.a, a.a + drop, high.rsiz * sizeof(uint64_t));
+    return high;
+}
+
+static precn_t pi_sqrt_tracked_impl(const precn_t &a, uint64_t &done,
+                                    uint64_t total){
+    if(a.rsiz == 0) return precn_t();
+    if(a.rsiz <= 4) return pi_sqrt_refine(a, pi_sqrt_seed(a), done, total);
+
+    size_t drop = (a.rsiz / 2) & ~(size_t)1;
+    if(drop == 0) return pi_sqrt_refine(a, pi_sqrt_seed(a), done, total);
+    precn_t high_root = pi_sqrt_tracked_impl(pi_sqrt_high_part(a, drop),
+                                             done, total);
+    precn_t upper = (high_root + 1) << (drop * 32);
+    return pi_sqrt_refine(a, upper, done, total);
+}
+
+static precn_t pi_sqrt_tracked(const precn_t &a){
+    uint64_t done = 0;
+    precn_t root = pi_sqrt_tracked_impl(a, done, pi_sqrt_work(a.rsiz));
+    progress_set(1000);
+    return root;
+}
+
 static precn_t sqrt10005_scaled(size_t, size_t scale_index,
                                 std::vector<pow10_entry_t> &pow10_cache){
     precn_t n = mul_u32(pow10_cache[scale_index].value, 10005);
-    return precn_sqrt(n);
+    return show_progress ? pi_sqrt_tracked(n) : precn_sqrt(n);
 }
 
 // A parent only needs P from its left child to form T.  Matching ilmPi's
@@ -279,9 +456,11 @@ static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
     if(need_p){
         precn_t p = l.p * r.p;
         std::vector<factor_power_t> fp = factor_merge(l.fp, r.fp);
+        if(b - a >= 64) progress_add((uint64_t)(b - a));
         return bs_t{std::move(p), std::move(q), std::move(t),
                     std::move(fp), std::move(fq)};
     }
+    if(b - a >= 64) progress_add((uint64_t)(b - a));
     return bs_t{precn_t(), std::move(q), std::move(t),
                 std::vector<factor_power_t>(), std::move(fq)};
 }
@@ -298,6 +477,87 @@ static std::string to_dec(const precn_t &a){
     return s;
 }
 
+// Progress builds use a local copy of the multiplication-inverse division.
+// The normal operator/ currently selects divide-and-conquer first for Pi's
+// similarly sized operands, whose recursion has no progress hook.
+static size_t pi_div_bits(const precn_t &a){
+    if(a.rsiz == 0) return 0;
+    uint64_t top = a.a[a.rsiz - 1];
+    size_t bits = (a.rsiz - 1) * 64;
+    while(top){
+        ++bits;
+        top >>= 1;
+    }
+    return bits;
+}
+
+static precn_t pi_div_top_ceil(const precn_t &b, size_t divisor_bits,
+                               size_t keep_bits){
+    if(keep_bits >= divisor_bits) return b;
+    return (b >> (divisor_bits - keep_bits)) + 1;
+}
+
+static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
+    size_t divisor_bits = pi_div_bits(b);
+    if(b.rsiz == 0 || bits < divisor_bits) return precn_t();
+
+    size_t target_known = bits - divisor_bits;
+    size_t known = std::min<size_t>(target_known, 64);
+    size_t keep = std::min(divisor_bits, known + 128);
+    precn_t bt = pi_div_top_ceil(b, divisor_bits, keep);
+    size_t precision = keep + known;
+    precn_t x = div_schoolbook(precn_t(1) << precision, bt);
+    progress_set(100);
+
+    while(known < target_known){
+        size_t next_known = std::min(target_known, known * 2);
+        size_t next_keep = std::min(divisor_bits, next_known + 128);
+        precn_t next_b = pi_div_top_ceil(b, divisor_bits, next_keep);
+        size_t next = next_keep + next_known;
+        precn_t scaled_x = x << (next_known - known);
+        precn_t two_scale = precn_t(1) << (next + 1);
+        precn_t bx = next_b * scaled_x;
+        if(bx >= two_scale){
+            scaled_x = scaled_x >> 1;
+            bx = next_b * scaled_x;
+        }
+        x = (scaled_x * (two_scale - bx)) >> next;
+        known = next_known;
+        uint64_t fraction = target_known ?
+            (uint64_t)((600.0 * (double)known) / (double)target_known) : 600;
+        progress_set(100 + std::min<uint64_t>(fraction, 600));
+    }
+    return x;
+}
+
+static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
+    if(a.rsiz == 0 || b.rsiz == 0 || a < b) return precn_t();
+    if(b.rsiz == 1) return div_u64(a, b.a[0]);
+
+    size_t scale = pi_div_bits(a) + 128;
+    precn_t inverse = pi_div_reciprocal(b, scale);
+    progress_set(700);
+    precn_t q = (a * inverse) >> scale;
+    progress_set(820);
+    precn_t product = b * q;
+    progress_set(940);
+
+    while(product > a){
+        precn_t delta = div_schoolbook(product - a, b);
+        if(delta.rsiz == 0) delta = precn_t(1);
+        q = q - delta;
+        product = product - b * delta;
+    }
+    while(product + b <= a){
+        precn_t delta = div_schoolbook(a - product, b);
+        if(delta.rsiz == 0) delta = precn_t(1);
+        q = q + delta;
+        product = product + b * delta;
+    }
+    progress_set(1000);
+    return q;
+}
+
 static std::string pi_digits(size_t digits){
     size_t guard = 10;
     size_t work_digits = digits + guard;
@@ -305,23 +565,36 @@ static std::string pi_digits(size_t digits){
 
     double t0 = now_sec();
     if(terms > (UINT32_MAX - 1) / 6) return "error";
+    progress_begin(0, binary_tracked_work(terms));
     chud_factor_sieve_t sieve(6 * terms + 1);
     bs_t bs = chud_bs(0, terms, false, 0, sieve);
     bs.t += precz_t(bs.q * CHUD_A);
+    if(show_progress){
+        progress_done.store(progress_total.load(std::memory_order_relaxed),
+                            std::memory_order_relaxed);
+    }
     double t1 = now_sec();
     if(bs.t.is_negative() || bs.t.is_zero()) return "error";
 
+    progress_begin(1, show_progress ? 1000 : 0);
     std::vector<pow10_entry_t> pow10_cache;
     size_t scale_index = pow10_index(work_digits * 2, pow10_cache);
+    progress_set(150);
     precn_t sqrt_scaled = sqrt10005_scaled(work_digits, scale_index, pow10_cache);
     double t2 = now_sec();
+    progress_begin(2, show_progress ? 1000 : 0);
     precn_t numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
-    precn_t pi_scaled = numerator / bs.t.magnitude();
+    progress_set(50);
+    precn_t pi_scaled = show_progress ?
+        pi_div_mulinv(numerator, bs.t.magnitude()) :
+        numerator / bs.t.magnitude();
     pi_scaled = pi_scaled / 10000000000ULL;
     double t3 = now_sec();
 
+    progress_begin(3);
     std::string s = to_dec(pi_scaled);
     double t4 = now_sec();
+    if(show_progress) progress_phase.store(-1, std::memory_order_release);
     if(show_phases){
         std::cerr << "binary_split " << (t1 - t0) << " sec\n";
         std::cerr << "sqrt_scale " << (t2 - t1) << " sec\n";
@@ -356,11 +629,33 @@ int main(int argc, char **argv){
         std::string arg(argv[i]);
         if(arg == "--phases") show_phases = true;
         if(arg == "--full") full_output = true;
+        if(arg == "--progress") show_progress = true;
         if(arg == "--file" && i + 1 < argc) output_file = argv[++i];
     }
     double start = now_sec();
-    std::string out = pi_digits(digits);
+    uint64_t cpu_start = process_cpu_ms();
+    std::thread reporter;
+    if(show_progress){
+        progress_stop.store(false, std::memory_order_relaxed);
+        reporter = std::thread(progress_reporter);
+    }
+
+    std::string out;
+    try{
+        out = pi_digits(digits);
+    }catch(...){
+        if(reporter.joinable()){
+            progress_stop.store(true, std::memory_order_release);
+            reporter.join();
+        }
+        throw;
+    }
+    if(reporter.joinable()){
+        progress_stop.store(true, std::memory_order_release);
+        reporter.join();
+    }
     double sec = now_sec() - start;
+    double cpu_sec = (double)(process_cpu_ms() - cpu_start) / 1000.0;
 
     if(!output_file.empty()){
         std::ofstream file(output_file.c_str(), std::ios::out | std::ios::binary);
@@ -381,5 +676,6 @@ int main(int argc, char **argv){
     std::cerr << "max_fft_rounding_error " << max_fft_rounding_error << "\n";
 #endif
     std::cerr << "time " << sec << " sec\n";
+    std::cerr << "cpu_time " << cpu_sec << " sec\n";
     return 0;
 }

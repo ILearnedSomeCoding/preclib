@@ -17,6 +17,15 @@ int main(){
     assert(!mixed.is_number());
     assert(mixed.to_string().find("x") != std::string::npos);
 
+    expr pi_constant = context.pi();
+    expr e_constant = context.e();
+    assert(pi_constant.is_approximate());
+    assert(e_constant.is_approximate());
+    assert(abs(sin(pi_constant).number()) <
+           Number::from_raw(precz_t(1), 2, 220));
+    assert(abs(ln(e_constant).number() - Number(1)) <
+           Number::from_raw(precz_t(1), 2, 220));
+
     expr two = context.integer(2);
     expr fraction = (pow(x, two) - pow(y, two)) / (x - y);
     assert(context.simplify(fraction) == x + y);
@@ -32,6 +41,22 @@ int main(){
     assert(exponential.is_approximate());
     assert(sin(x).to_string() == "sin(x)");
     assert(cosh(x + y).to_string() == "cosh(x + y)");
+    assert(asin(x).to_string() == "asin(x)");
+    assert(acos(x).to_string() == "acos(x)");
+    assert(atan(x).to_string() == "atan(x)");
+    assert(asinh(x).to_string() == "asinh(x)");
+    assert(acosh(x).to_string() == "acosh(x)");
+    assert(atanh(x).to_string() == "atanh(x)");
+    assert(ln(x).to_string() == "ln(x)");
+    assert(log2(x).to_string() == "log2(x)");
+    assert(log10(x).to_string() == "log10(x)");
+
+    expr half_angle = asin(half);
+    assert(half_angle.is_approximate());
+    assert(abs(sin(half_angle).number() - Number(0.5)) < tolerance);
+    assert(abs(tanh(atanh(half)).number() - Number(0.5)) < tolerance);
+    expr two_log = context.number(Number(2));
+    assert(abs(log2(two_log).number() - Number(1)) < tolerance);
 
     puts("expr ok");
     return 0;

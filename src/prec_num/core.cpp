@@ -4,6 +4,7 @@
 #include<cmath>
 #include<cstdlib>
 #include<limits>
+#include<stdexcept>
 #include<utility>
 
 // Number is a signed integer times a power of 2^64. Keeping the radix point in
@@ -378,7 +379,8 @@ Number abs(const Number &a){
 }
 
 Number sqrt(const Number &a){
-    if(a.is_negative()) std::abort();
+    if(a.is_negative())
+        throw std::domain_error("square root of a negative number");
     if(a.is_zero()) return a;
     int64_t dotp = a.dotp_;
     precn_t mag = a.significand_.magnitude();

@@ -113,6 +113,7 @@ PRECLIB_API precn_t mul_toom24(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t mul_toom33(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t precn_divexact_2(const precn_t &a);
 PRECLIB_API precn_t precn_divexact_3(const precn_t &a);
+PRECLIB_API precn_t precn_divexact(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t mul_fft(const precn_t &a, const precn_t &b);
 #if defined(COUNT_FFTS) && COUNT_FFTS
 extern PRECLIB_API uint64_t total_fftmuls;
@@ -309,6 +310,7 @@ PRECLIB_API bool operator>=(const precz_t &a, const precz_t &b);
 PRECLIB_API precz_t abs(const precz_t &a);
 PRECLIB_API precz_t gcd(const precz_t &a, const precz_t &b);
 PRECLIB_API precz_t precz_sqrt(const precz_t &a); // returns zero for negative inputs
+PRECLIB_API precz_t precz_divexact(const precz_t &a, const precz_t &b);
 
 class PRECLIB_API precq_t{ // reduced signed rational: (-1)^neg_ * num_ / den_
     precn_t num_;

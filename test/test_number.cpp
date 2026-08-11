@@ -3,6 +3,7 @@
 #include<cassert>
 #include<cmath>
 #include<cstdio>
+#include<stdexcept>
 #include<string>
 
 static void expect(const Number &a, size_t digits, const char *value){
@@ -10,6 +11,15 @@ static void expect(const Number &a, size_t digits, const char *value){
 }
 
 int main(){
+    bool negative_sqrt = false;
+    try{
+        (void)sqrt(Number(-1.0));
+    }catch(const std::domain_error &error){
+        negative_sqrt =
+            std::string(error.what()) == "square root of a negative number";
+    }
+    assert(negative_sqrt);
+
     expect(Number(3) + Number(2), 0, "5");
     expect(Number(3) - Number(5), 0, "-2");
     expect(Number(-7) * Number(-6), 0, "42");
@@ -169,6 +179,15 @@ int main(){
     binary_round.set_precision(4);
     assert((std::string)binary_round == "1");
     assert((std::string)(-binary_round) == "-1");
+
+    Complex z(Number(1), Number(2));
+    Complex w(Number(3), Number(-4));
+    assert(z * w == Complex(Number(11), Number(2)));
+    assert((z / z) == Complex(Number(1), Number(0)));
+    assert(conjugate(z) == Complex(Number(1), Number(-2)));
+    assert(norm(z) == Number(5));
+    assert(sqrt(Complex(Number(-4))) == Complex(Number(0), Number(2)));
+    assert(pow(Complex(Number(0), Number(1)), 4) == Complex(Number(1)));
 
     puts("number ok");
     return 0;

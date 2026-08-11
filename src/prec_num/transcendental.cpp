@@ -4,6 +4,7 @@
 #include<cmath>
 #include<cstdlib>
 #include<limits>
+#include<stdexcept>
 #include<utility>
 
 namespace{
@@ -417,7 +418,12 @@ Number cos(const Number &a){
 Number tan(const Number &a){
     double target_precision = trans_precision(a);
     trig_pair_t pair = trig_pair(a);
-    if(pair.cosine.is_zero()) std::abort();
+    int64_t uncertainty_bits = target_precision > 8.0
+        ? (int64_t)std::floor(target_precision - 4.0) : 4;
+    Number uncertainty = Number(1) >> uncertainty_bits;
+    uncertainty.set_precision(target_precision);
+    if(abs(pair.cosine) <= uncertainty)
+        throw std::domain_error("tan is undefined within the current precision");
     Number result = pair.sine / pair.cosine;
     result.set_precision(target_precision);
     return result;

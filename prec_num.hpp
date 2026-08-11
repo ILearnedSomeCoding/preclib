@@ -117,3 +117,55 @@ PRECLIB_API Number tanh(const Number &a);
 PRECLIB_API Number asinh(const Number &a);
 PRECLIB_API Number acosh(const Number &a);
 PRECLIB_API Number atanh(const Number &a);
+
+class PRECLIB_API Complex{
+    Number real_;
+    Number imag_;
+
+public:
+    Complex();
+    Complex(const Number &real);
+    Complex(Number &&real);
+    Complex(const Number &real, const Number &imag);
+    Complex(Number &&real, Number &&imag);
+
+    const Number &real() const;
+    const Number &imag() const;
+    bool is_real() const;
+    bool is_zero() const;
+    void set_precision(double bits);
+    std::string to_string(size_t fractional_digits) const;
+    explicit operator std::string() const;
+
+    Complex &operator+=(const Complex &other);
+    Complex &operator-=(const Complex &other);
+    Complex &operator*=(const Complex &other);
+    Complex &operator/=(const Complex &other);
+
+    friend PRECLIB_API Complex operator+(const Complex &a, const Complex &b);
+    friend PRECLIB_API Complex operator-(const Complex &a, const Complex &b);
+    friend PRECLIB_API Complex operator-(const Complex &a);
+    friend PRECLIB_API Complex operator*(const Complex &a, const Complex &b);
+    friend PRECLIB_API Complex operator/(const Complex &a, const Complex &b);
+    friend PRECLIB_API bool operator==(const Complex &a, const Complex &b);
+    friend PRECLIB_API Complex conjugate(const Complex &a);
+    friend PRECLIB_API Number norm(const Complex &a);
+    friend PRECLIB_API Number abs(const Complex &a);
+    friend PRECLIB_API Complex sqrt(const Complex &a);
+};
+
+PRECLIB_API Complex operator+(const Complex &a, const Complex &b);
+PRECLIB_API Complex operator-(const Complex &a, const Complex &b);
+PRECLIB_API Complex operator-(const Complex &a);
+PRECLIB_API Complex operator*(const Complex &a, const Complex &b);
+PRECLIB_API Complex operator/(const Complex &a, const Complex &b);
+PRECLIB_API bool operator==(const Complex &a, const Complex &b);
+PRECLIB_API bool operator!=(const Complex &a, const Complex &b);
+PRECLIB_API Complex conjugate(const Complex &a);
+PRECLIB_API Number norm(const Complex &a);
+PRECLIB_API Number abs(const Complex &a);
+PRECLIB_API Complex sqrt(const Complex &a);
+PRECLIB_API Complex pow(const Complex &a, int64_t exponent);
+PRECLIB_API Complex exp(const Complex &a);
+PRECLIB_API Complex ln(const Complex &a);
+PRECLIB_API Complex pow(const Complex &a, const Complex &b);

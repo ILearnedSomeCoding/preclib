@@ -12,20 +12,34 @@
 #include<vector>
 
 enum class exact_opcode : uint8_t{
-    value,
-    symbol,
-    add,
-    multiply,
-    power,
-    square_root,
-    exponential,
-    sine,
-    cosine,
-    tangent,
-    hyperbolic_sine,
-    hyperbolic_cosine,
-    hyperbolic_tangent,
-    bounded_sum
+    value = 0,
+    symbol = 1,
+    add = 2,
+    multiply = 3,
+    power = 4,
+    square_root = 5,
+    exponential = 6,
+    sine = 7,
+    cosine = 8,
+    tangent = 9,
+    hyperbolic_sine = 10,
+    hyperbolic_cosine = 11,
+    hyperbolic_tangent = 12,
+    bounded_sum = 13,
+    constant_pi = 14,
+    constant_e = 15,
+    arc_sine = 16,
+    arc_cosine = 17,
+    arc_tangent = 18,
+    inverse_hyperbolic_sine = 19,
+    inverse_hyperbolic_cosine = 20,
+    inverse_hyperbolic_tangent = 21,
+    natural_logarithm = 22,
+    logarithm_base_2 = 23,
+    logarithm_base_10 = 24,
+    constant_i = 25,
+    expression_list = 26,
+    absolute_value = 27
 };
 
 const char *exact_opcode_name(exact_opcode operation);
@@ -49,6 +63,7 @@ public:
     bool is_approximate() const;
     bool is_zero() const;
     bool is_one() const;
+    bool is_minus_one() const;
     bool is_negative() const;
     const precz_t &integer() const;
     precq_t rational() const;
@@ -75,6 +90,7 @@ bool operator!=(const exact_value &a, const exact_value &b);
 struct exact_storage;
 class exact_context;
 class exact_add_builder;
+class exact_complex;
 
 class exact_expr{
     std::shared_ptr<exact_storage> storage_;
@@ -106,20 +122,63 @@ public:
     friend exact_expr operator/(const exact_expr &a, const exact_expr &b);
     friend exact_expr pow(const exact_expr &base, const exact_expr &exponent);
     friend exact_expr sqrt(const exact_expr &value);
+    friend exact_expr abs(const exact_expr &value);
     friend exact_expr exp(const exact_expr &value);
     friend exact_expr sin(const exact_expr &value);
     friend exact_expr cos(const exact_expr &value);
     friend exact_expr tan(const exact_expr &value);
+    friend exact_expr asin(const exact_expr &value);
+    friend exact_expr acos(const exact_expr &value);
+    friend exact_expr atan(const exact_expr &value);
     friend exact_expr sinh(const exact_expr &value);
     friend exact_expr cosh(const exact_expr &value);
     friend exact_expr tanh(const exact_expr &value);
+    friend exact_expr asinh(const exact_expr &value);
+    friend exact_expr acosh(const exact_expr &value);
+    friend exact_expr atanh(const exact_expr &value);
+    friend exact_expr ln(const exact_expr &value);
+    friend exact_expr log2(const exact_expr &value);
+    friend exact_expr log10(const exact_expr &value);
     friend bool operator==(const exact_expr &a, const exact_expr &b);
+    friend class exact_complex;
 };
+
+class exact_complex{
+    exact_expr real_;
+    exact_expr imag_;
+
+public:
+    exact_complex();
+    explicit exact_complex(const exact_expr &real);
+    exact_complex(const exact_expr &real, const exact_expr &imag);
+
+    const exact_expr &real() const;
+    const exact_expr &imag() const;
+    exact_expr expression() const;
+    bool valid() const;
+
+    exact_complex &operator+=(const exact_complex &other);
+    exact_complex &operator-=(const exact_complex &other);
+    exact_complex &operator*=(const exact_complex &other);
+    exact_complex &operator/=(const exact_complex &other);
+};
+
+exact_complex operator+(const exact_complex &a, const exact_complex &b);
+exact_complex operator-(const exact_complex &a, const exact_complex &b);
+exact_complex operator-(const exact_complex &a);
+exact_complex operator*(const exact_complex &a, const exact_complex &b);
+exact_complex operator/(const exact_complex &a, const exact_complex &b);
+exact_complex conjugate(const exact_complex &a);
+exact_expr norm(const exact_complex &a);
 
 class exact_context{
     std::shared_ptr<exact_storage> storage_;
 
     explicit exact_context(std::shared_ptr<exact_storage> storage);
+    exact_expr solve_polynomial_impl(
+        const exact_expr &expression,
+        const std::vector<exact_expr> &variables,
+        bool require_exact_coefficients);
 
 public:
     exact_context();
@@ -130,6 +189,10 @@ public:
     exact_expr integer(T value){ return this->value(exact_value(value)); }
     exact_expr rational(const precq_t &value);
     exact_expr symbol(const std::string &name);
+    exact_expr pi();
+    exact_expr e();
+    exact_expr i();
+    void assume(const exact_expr &symbol, const std::string &property);
 
     exact_expr add(const std::vector<exact_expr> &terms);
     exact_expr add(std::initializer_list<exact_expr> terms);
@@ -139,19 +202,43 @@ public:
     exact_expr divide(const exact_expr &a, const exact_expr &b);
     exact_expr power(const exact_expr &base, const exact_expr &exponent);
     exact_expr square_root(const exact_expr &value);
+    exact_expr absolute_value(const exact_expr &value);
     exact_expr exponential(const exact_expr &value);
     exact_expr sine(const exact_expr &value);
     exact_expr cosine(const exact_expr &value);
     exact_expr tangent(const exact_expr &value);
+    exact_expr arc_sine(const exact_expr &value);
+    exact_expr arc_cosine(const exact_expr &value);
+    exact_expr arc_tangent(const exact_expr &value);
     exact_expr hyperbolic_sine(const exact_expr &value);
     exact_expr hyperbolic_cosine(const exact_expr &value);
     exact_expr hyperbolic_tangent(const exact_expr &value);
+    exact_expr inverse_hyperbolic_sine(const exact_expr &value);
+    exact_expr inverse_hyperbolic_cosine(const exact_expr &value);
+    exact_expr inverse_hyperbolic_tangent(const exact_expr &value);
+    exact_expr natural_logarithm(const exact_expr &value);
+    exact_expr logarithm_base_2(const exact_expr &value);
+    exact_expr logarithm_base_10(const exact_expr &value);
     exact_expr bounded_sum(const exact_expr &variable, const exact_expr &lower,
                            const exact_expr &upper, const exact_expr &body);
     exact_expr expand(const exact_expr &expression,
                       size_t maximum_terms = 100000);
+    exact_expr factor(const exact_expr &expression);
     exact_expr simplify(const exact_expr &expression,
                         size_t automatic_expansion_terms = 64);
+    exact_expr trig_expand(const exact_expr &expression);
+    exact_expr trig_reduce(const exact_expr &expression);
+    exact_expr substitute(const exact_expr &expression,
+                          const exact_expr &target,
+                          const exact_expr &replacement);
+    bool is_polynomial(const exact_expr &expression) const;
+    bool is_polynomial(const exact_expr &expression,
+                       const std::vector<exact_expr> &variables) const;
+    exact_expr exact_solve(const exact_expr &expression,
+                           const std::vector<exact_expr> &variables);
+    exact_expr solve(const exact_expr &expression,
+                     const std::vector<exact_expr> &variables,
+                     double precision_bits = 256.0);
 
     // Copy only nodes reachable from the supplied roots into a fresh arena.
     // Old handles remain valid and keep the old arena alive until destroyed.
@@ -171,13 +258,23 @@ public:
     friend exact_expr operator/(const exact_expr &a, const exact_expr &b);
     friend exact_expr pow(const exact_expr &base, const exact_expr &exponent);
     friend exact_expr sqrt(const exact_expr &value);
+    friend exact_expr abs(const exact_expr &value);
     friend exact_expr exp(const exact_expr &value);
     friend exact_expr sin(const exact_expr &value);
     friend exact_expr cos(const exact_expr &value);
     friend exact_expr tan(const exact_expr &value);
+    friend exact_expr asin(const exact_expr &value);
+    friend exact_expr acos(const exact_expr &value);
+    friend exact_expr atan(const exact_expr &value);
     friend exact_expr sinh(const exact_expr &value);
     friend exact_expr cosh(const exact_expr &value);
     friend exact_expr tanh(const exact_expr &value);
+    friend exact_expr asinh(const exact_expr &value);
+    friend exact_expr acosh(const exact_expr &value);
+    friend exact_expr atanh(const exact_expr &value);
+    friend exact_expr ln(const exact_expr &value);
+    friend exact_expr log2(const exact_expr &value);
+    friend exact_expr log10(const exact_expr &value);
 };
 
 class exact_add_builder{
@@ -214,13 +311,23 @@ exact_expr operator*(const exact_expr &a, const exact_expr &b);
 exact_expr operator/(const exact_expr &a, const exact_expr &b);
 exact_expr pow(const exact_expr &base, const exact_expr &exponent);
 exact_expr sqrt(const exact_expr &value);
+exact_expr abs(const exact_expr &value);
 exact_expr exp(const exact_expr &value);
 exact_expr sin(const exact_expr &value);
 exact_expr cos(const exact_expr &value);
 exact_expr tan(const exact_expr &value);
+exact_expr asin(const exact_expr &value);
+exact_expr acos(const exact_expr &value);
+exact_expr atan(const exact_expr &value);
 exact_expr sinh(const exact_expr &value);
 exact_expr cosh(const exact_expr &value);
 exact_expr tanh(const exact_expr &value);
+exact_expr asinh(const exact_expr &value);
+exact_expr acosh(const exact_expr &value);
+exact_expr atanh(const exact_expr &value);
+exact_expr ln(const exact_expr &value);
+exact_expr log2(const exact_expr &value);
+exact_expr log10(const exact_expr &value);
 bool operator==(const exact_expr &a, const exact_expr &b);
 bool operator!=(const exact_expr &a, const exact_expr &b);
 
@@ -255,14 +362,23 @@ public:
     friend expr operator/(const expr &a, const expr &b);
     friend expr pow(const expr &base, const expr &exponent);
     friend expr sqrt(const expr &value);
+    friend expr abs(const expr &value);
     friend expr exp(const expr &value);
     friend expr ln(const expr &value);
     friend expr sin(const expr &value);
     friend expr cos(const expr &value);
     friend expr tan(const expr &value);
+    friend expr asin(const expr &value);
+    friend expr acos(const expr &value);
+    friend expr atan(const expr &value);
     friend expr sinh(const expr &value);
     friend expr cosh(const expr &value);
     friend expr tanh(const expr &value);
+    friend expr asinh(const expr &value);
+    friend expr acosh(const expr &value);
+    friend expr atanh(const expr &value);
+    friend expr log2(const expr &value);
+    friend expr log10(const expr &value);
     friend bool operator==(const expr &a, const expr &b);
 };
 
@@ -284,13 +400,17 @@ public:
              typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
     expr integer(T value);
     expr symbol(const std::string &name);
+    expr pi();
+    expr e();
 
     expr add(const std::vector<expr> &terms);
     expr multiply(const std::vector<expr> &factors);
     expr power(const expr &base, const expr &exponent);
     expr square_root(const expr &value);
+    expr absolute_value(const expr &value);
     expr simplify(const expr &value, size_t automatic_expansion_terms = 64);
     expr expand(const expr &value, size_t maximum_terms = 100000);
+    expr factor(const expr &value);
 };
 
 template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type>
@@ -305,13 +425,22 @@ expr operator*(const expr &a, const expr &b);
 expr operator/(const expr &a, const expr &b);
 expr pow(const expr &base, const expr &exponent);
 expr sqrt(const expr &value);
+expr abs(const expr &value);
 expr exp(const expr &value);
 expr ln(const expr &value);
 expr sin(const expr &value);
 expr cos(const expr &value);
 expr tan(const expr &value);
+expr asin(const expr &value);
+expr acos(const expr &value);
+expr atan(const expr &value);
 expr sinh(const expr &value);
 expr cosh(const expr &value);
 expr tanh(const expr &value);
+expr asinh(const expr &value);
+expr acosh(const expr &value);
+expr atanh(const expr &value);
+expr log2(const expr &value);
+expr log10(const expr &value);
 bool operator==(const expr &a, const expr &b);
 bool operator!=(const expr &a, const expr &b);
