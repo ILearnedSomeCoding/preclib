@@ -1,4 +1,5 @@
 #include"../prec_cas.hpp"
+#include"../src/factor_integer.hpp"
 
 #include<cassert>
 #include<cstdio>
@@ -192,6 +193,53 @@ int main(){
     assert(factored_common.operation() == exact_opcode::multiply);
     assert(context.expand(factored_common) ==
            context.integer(2) * x + context.integer(2) * y);
+    assert(context.gcd(context.integer(48), context.integer(-18)) ==
+           context.integer(6));
+    assert(context.factor_integer(context.integer(360)).to_string() ==
+           "{2^3, 3^2, 5}");
+    assert(context.factor_integer(context.integer(-12)).to_string() ==
+           "{-1, 2^2, 3}");
+    assert(context.factor_integer(context.integer(1)).to_string() == "{}");
+    assert(context.factor_integer(context.integer(UINT64_C(1000036000099)))
+               .to_string() == "{1000003, 1000033}");
+    assert(context.factor_integer(context.value(exact_value(
+               precz_t("18446799413941772685654671")))).to_string() ==
+           "{1000003, 18446744073709551557}");
+    precn_t fermat_eight = (precn_t(1) << 256) + 1;
+    assert(context.factor_integer(context.value(exact_value(
+               precz_t(fermat_eight)))).to_string() ==
+           "{1238926361552897, "
+           "93461639715357977769163558199606896584051237541638188580280321}");
+    precn_t mersenne_256 = (precn_t(1) << 256) - 1;
+    exact_expr parsed_style_mersenne =
+        context.power(context.integer(2), context.integer(256)) -
+        context.integer(1);
+    assert(parsed_style_mersenne.is_value() &&
+           parsed_style_mersenne.value().is_integer() &&
+           parsed_style_mersenne.value().integer().magnitude() == mersenne_256);
+    assert(context.factor_integer(parsed_style_mersenne).to_string() ==
+           "{3, 5, 17, 257, 641, 65537, 274177, 6700417, 67280421310721, "
+           "59649589127497217, 5704689200685129054721}");
+    precn_t qs_input("1000036000099");
+    precn_t rho_factor = cas_pollard_rho_factor(qs_input);
+    assert(rho_factor > precn_t(1) && rho_factor < qs_input &&
+           (qs_input % rho_factor).rsiz == 0);
+    precn_t siqs_factor = cas_siqs_factor(qs_input, 64, 256);
+    assert(siqs_factor > precn_t(1) && siqs_factor < qs_input &&
+           (qs_input % siqs_factor).rsiz == 0);
+    precn_t qs_factor = cas_qs_factor(qs_input);
+    assert(qs_factor > precn_t(1) && qs_factor < qs_input &&
+           (qs_input % qs_factor).rsiz == 0);
+    assert(context.gcd(context.power(x, context.integer(2)) -
+                           context.integer(1),
+                       context.power(x, context.integer(2)) -
+                           context.integer(2) * x + context.integer(1)) ==
+           x - context.integer(1));
+    exact_expr multivariate_gcd_left =
+        context.power(x + y, context.integer(2));
+    exact_expr multivariate_gcd_right =
+        (x + y) * (x - y);
+    assert(context.gcd(multivariate_gcd_left, multivariate_gcd_right) == x + y);
     assert(context.factor(context.power(x, context.integer(3)) -
                           context.integer(1)).to_string() ==
            "(x - 1)*(x^2 + x + 1)");
@@ -207,6 +255,22 @@ int main(){
     assert(context.factor(context.power(x, context.integer(2)) +
                           context.integer(2) * x + context.integer(1))
                .to_string() == "(x + 1)^2");
+    exact_expr symbolic_groebner = context.groebner(
+        {x + y - context.symbol("a"), x - y + context.symbol("b")}, {x, y});
+    assert(symbolic_groebner.operation() == exact_opcode::expression_list);
+    assert(symbolic_groebner.operand_count() == 3);
+    exact_expr symbolic_system = context.exact_solve(
+        {context.power(x, context.integer(2)) - context.symbol("a"), x - y},
+        {x, y});
+    assert(symbolic_system.operation() == exact_opcode::expression_list);
+    exact_expr nested_repeated = context.power(x, context.integer(6)) +
+        context.integer(2) * context.power(x, context.integer(5)) +
+        context.integer(3) * context.power(x, context.integer(4)) +
+        context.integer(4) * context.power(x, context.integer(3)) +
+        context.integer(3) * context.power(x, context.integer(2)) +
+        context.integer(2) * x + one;
+    assert(context.factor(nested_repeated).to_string() ==
+           "(x + 1)^2*(x^2 + 1)^2");
     exact_expr general_quartic = context.power(x, context.integer(4)) -
         context.integer(5) * context.power(x, context.integer(2)) +
         context.integer(4);
@@ -316,7 +380,7 @@ int main(){
     exact_expr quartic_roots = context.exact_solve(
         context.power(x, context.integer(4)) - one, {x});
     assert(quartic_roots.operand_count() == 4);
-    assert(quartic_roots.to_string() == "{1, -1, i, -i}");
+    assert(quartic_roots.to_string() == "{1, -1, -i, i}");
     exact_expr rounded_quartic_roots = context.solve(
         context.power(x, context.integer(4)) + x + context.integer(1), {x});
     assert(rounded_quartic_roots.operand_count() == 4);
@@ -338,6 +402,77 @@ int main(){
     assert(context.exact_solve(polynomial_xy, {x}).to_string() == "{-y}");
     assert(context.exact_solve(x / context.integer(2) - one, {x}).to_string() ==
            "{2}");
+    assert(context.exact_solve(
+        {context.power(x, context.integer(2)) +
+         context.power(y, context.integer(2)) - one}, {x}).to_string() ==
+        "{{x -> -sqrt(-y^2 + 1)}, {x -> sqrt(-y^2 + 1)}}");
+
+    exact_expr system_y = context.symbol("system_y");
+    assert(context.exact_solve(
+        {x + system_y - context.integer(3),
+         x - system_y - context.integer(1)}, {x, system_y}).to_string() ==
+        "{{x -> 2, system_y -> 1}}");
+    assert(context.exact_solve(
+        {x + system_y - context.integer(3),
+         x * system_y - context.integer(2)}, {x, system_y}).to_string() ==
+        "{{x -> 1, system_y -> 2}, {x -> 2, system_y -> 1}}");
+    assert(context.exact_solve(
+        {x + system_y, x + system_y - context.integer(1)},
+        {x, system_y}).to_string() == "{}");
+    exact_expr system_z = context.symbol("system_z");
+    assert(context.exact_solve(
+        {x + system_y + system_z - context.integer(6),
+         x - system_y, system_y - system_z},
+        {x, system_y, system_z}).to_string() ==
+        "{{x -> 2, system_y -> 2, system_z -> 2}}");
+    assert(context.exact_solve(
+        {context.power(x, context.integer(2)) - context.integer(1),
+         system_y - x}, {x, system_y}).to_string() ==
+        "{{x -> -1, system_y -> -1}, {x -> 1, system_y -> 1}}");
+    exact_expr reducible_system = context.exact_solve(
+        {context.power(x, context.integer(2)) +
+             context.power(system_y, context.integer(2)) - context.integer(5),
+         context.power(x, context.integer(2)) + x - context.integer(1) - system_y},
+        {x, system_y});
+    assert(reducible_system.to_string().find(
+        "{x -> 2^(1/3), system_y -> 2^(1/3) + 2^(2/3) - 1}") !=
+        std::string::npos);
+
+    exact_expr parametric = context.exact_solve({x + system_y}, {x, system_y});
+    assert(parametric.to_string() ==
+           "{{x -> _solve_t1, system_y -> -_solve_t1}}");
+    assert(context.simplify(parametric).to_string() == parametric.to_string());
+    exact_expr parameter = context.symbol("_solve_t1");
+    assert(context.substitute(parametric, parameter, context.integer(3)).to_string() ==
+           "{{x -> 3, system_y -> -3}}");
+    assert(context.substitute(parametric, x, context.integer(9)).to_string() ==
+           parametric.to_string());
+    assert(context.debug_dump().find("rule") != std::string::npos);
+
+    exact_expr occupied_parameter = context.symbol("_solve_t1");
+    exact_expr collision_safe = context.exact_solve(
+        {x + occupied_parameter}, {x, occupied_parameter});
+    assert(collision_safe.to_string().find("_solve_t2") != std::string::npos);
+    Number approximate_system_constant(2.0);
+    approximate_system_constant.set_precision(256);
+    exact_expr approximate_system = context.solve(
+        {x + system_y - context.value(exact_value(approximate_system_constant)),
+         x - system_y}, {x, system_y}, 256);
+    assert(approximate_system.to_string() ==
+           "{{x -> 1, system_y -> 1}}");
+    exact_expr numeric_trig = context.solve(
+        {context.sine(x), system_y - x}, {x, system_y}, 128);
+    assert(numeric_trig.to_string().find("x -> 0") != std::string::npos);
+    for(size_t i = 0; i < numeric_trig.operand_count(); ++i)
+        assert(numeric_trig.operand(i).to_string().find("sqrt") ==
+               std::string::npos);
+    exact_context compact_context;
+    exact_expr compact_x = compact_context.symbol("x");
+    exact_expr compact_y = compact_context.symbol("y");
+    exact_expr compact_solution = compact_context.exact_solve(
+        {compact_x + compact_y}, {compact_x, compact_y});
+    std::string compact_text = compact_solution.to_string();
+    assert(compact_context.compact(compact_solution).to_string() == compact_text);
     Number approximate_coefficient(0.5);
     approximate_coefficient.set_precision(256);
     bool approximate_exact_solve = false;
@@ -356,11 +491,9 @@ int main(){
         (void)context.solve(context.integer(0), {x});
     }catch(const std::domain_error &){ infinite_solutions = true; }
     assert(infinite_solutions);
-    bool unsupported_solve = false;
-    try{
-        (void)context.solve(sin(x), {x});
-    }catch(const std::invalid_argument &){ unsupported_solve = true; }
-    assert(unsupported_solve);
+    exact_expr numeric_sine = context.solve(sin(x), {x}, 128);
+    assert(numeric_sine.operand_count() > 0);
+    assert(numeric_sine.to_string().find("sqrt") == std::string::npos);
     assert(exp(x).to_string() == "exp(x)");
     assert(ln(exp(x)) == x);
     assert(exp(ln(x)) == x);
@@ -414,6 +547,341 @@ int main(){
     assert(asinh(x).to_string() == "asinh(x)");
     assert(acosh(x).to_string() == "acosh(x)");
     assert(atanh(x).to_string() == "atanh(x)");
+    assert(Si(x).to_string() == "Si(x)");
+    assert(Ci(x).to_string() == "Ci(x)");
+    assert(Ei(x).to_string() == "Ei(x)");
+    assert(erf(x).to_string() == "erf(x)");
+    assert(erfi(x).to_string() == "erfi(x)");
+    assert(partial_gamma(x, y).to_string() == "partial_gamma(x, y)");
+    exact_expr polynomial_for_diff = context.power(x, context.integer(3)) +
+                                     context.integer(2) * x;
+    assert(context.differentiate(polynomial_for_diff, x) ==
+           context.integer(3) * context.power(x, context.integer(2)) +
+           context.integer(2));
+    exact_expr elementary_integrand = context.exponential(context.integer(3) * x) +
+                                       context.sine(context.integer(2) * x) +
+                                       context.power(x, context.integer(4));
+    exact_expr elementary_antiderivative =
+        context.integrate(elementary_integrand, x);
+    assert(context.simplify(context.differentiate(
+               elementary_antiderivative, x) - elementary_integrand) ==
+           context.integer(0));
+    exact_expr special_integrand = context.sine_integral(x) +
+                                   context.cosine_integral(x) +
+                                   context.exponential_integral(x) +
+                                   context.error_function(x);
+    exact_expr special_antiderivative = context.integrate(special_integrand, x);
+    assert(context.simplify(context.differentiate(
+               special_antiderivative, x) - special_integrand) ==
+           context.integer(0));
+    assert(context.integrate(context.sine(context.power(x, context.integer(2))), x)
+               .operation() == exact_opcode::integral);
+    assert(context.integrate(context.exponential(
+               context.power(x, context.integer(2))), x) ==
+           context.square_root(context.pi()) * erfi(x) / context.integer(2));
+    assert(context.integrate(context.exponential(
+               -context.power(x, context.integer(2))), x) ==
+           context.square_root(context.pi()) * erf(x) / context.integer(2));
+    exact_expr positive_quadratic = context.power(x, context.integer(2)) *
+        context.exponential(context.power(x, context.integer(2)));
+    exact_expr negative_quadratic = context.power(x, context.integer(4)) *
+        context.exponential(-context.power(x, context.integer(2)));
+    exact_expr shifted_positive_quadratic = context.power(x, context.integer(2)) *
+        context.exponential(context.integer(3) * context.power(x, context.integer(2)) +
+                            context.integer(2) * x + context.integer(5));
+    exact_expr shifted_negative_quadratic = context.power(x, context.integer(3)) *
+        context.exponential(-context.integer(2) * context.power(x, context.integer(2)) +
+                            context.integer(3) * x - context.integer(4));
+    assert(context.simplify(context.differentiate(
+               context.integrate(positive_quadratic, x), x) -
+               positive_quadratic) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(negative_quadratic, x), x) -
+               negative_quadratic) == context.integer(0));
+    exact_expr shifted_positive_result = context.integrate(
+        shifted_positive_quadratic, x);
+    exact_expr shifted_positive_expected =
+        (x / context.integer(6) - context.integer(1) / context.integer(18)) *
+            context.exponential(context.integer(3) * context.power(x, context.integer(2)) +
+                                context.integer(2) * x + context.integer(5)) -
+        context.exponential(context.integer(14) / context.integer(3)) *
+            context.square_root(context.pi()) *
+            erfi(context.square_root(context.integer(3)) *
+                 (x + context.integer(1) / context.integer(3))) /
+            (context.integer(36) * context.square_root(context.integer(3)));
+    assert(shifted_positive_result == shifted_positive_expected);
+    assert(context.integrate(shifted_negative_quadratic, x).operation() !=
+           exact_opcode::integral);
+    exact_expr trig_inner = context.integer(3) * x + context.integer(2);
+    exact_expr sine_polynomial = context.power(x, context.integer(5)) *
+        context.sine(trig_inner);
+    exact_expr cosine_polynomial = context.power(x, context.integer(4)) *
+        context.cosine(trig_inner);
+    exact_expr sinh_polynomial = context.power(x, context.integer(3)) *
+        context.hyperbolic_sine(trig_inner);
+    exact_expr cosh_polynomial = context.power(x, context.integer(2)) *
+        context.hyperbolic_cosine(trig_inner);
+    assert(context.simplify(context.differentiate(
+               context.integrate(sine_polynomial, x), x) -
+               sine_polynomial) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(cosine_polynomial, x), x) -
+               cosine_polynomial) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(sinh_polynomial, x), x) -
+               sinh_polynomial) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(cosh_polynomial, x), x) -
+               cosh_polynomial) == context.integer(0));
+    assert(context.integrate(context.sine(x) / x, x) ==
+           context.sine_integral(x));
+    assert(context.integrate(context.cosine(x) / x, x) ==
+           context.cosine_integral(x));
+    assert(context.integrate(context.exponential(x) / x, x) ==
+           context.exponential_integral(x));
+    exact_expr shifted_ei_integrand = context.exponential(x) /
+        (x + context.integer(1));
+    assert(context.integrate(shifted_ei_integrand, x) ==
+           context.exponential(context.integer(-1)) *
+           context.exponential_integral(x + context.integer(1)));
+    exact_expr shifted_si_integrand = context.sine(x) /
+        (x + context.integer(1));
+    exact_expr shifted_si_expected =
+        context.cosine(context.integer(-1)) *
+            context.sine_integral(x + context.integer(1)) +
+        context.sine(context.integer(-1)) *
+            context.cosine_integral(x + context.integer(1));
+    assert(context.integrate(shifted_si_integrand, x) == shifted_si_expected);
+    exact_expr quadratic_inner = context.power(x, context.integer(2));
+    exact_expr sine_log_kernel = context.integer(2) * x *
+        context.sine(quadratic_inner) / quadratic_inner;
+    exact_expr cosine_log_kernel = context.integer(2) * x *
+        context.cosine(quadratic_inner) / quadratic_inner;
+    exact_expr exponential_log_kernel = context.integer(2) * x *
+        context.exponential(quadratic_inner) / quadratic_inner;
+    assert(context.integrate(sine_log_kernel, x) ==
+           context.sine_integral(quadratic_inner));
+    assert(context.integrate(cosine_log_kernel, x) ==
+           context.cosine_integral(quadratic_inner));
+    assert(context.integrate(exponential_log_kernel, x) ==
+           context.exponential_integral(quadratic_inner));
+    exact_expr exponential_generator = context.exponential(
+        context.integer(2) * x + context.integer(1));
+    exact_expr exponential_rational = context.integer(2) *
+        exponential_generator / (context.integer(1) + exponential_generator);
+    assert(context.integrate(exponential_rational, x) ==
+           context.natural_logarithm(context.absolute_value(
+               context.integer(1) + exponential_generator)));
+    exact_expr pi_exponential_generator = context.exponential(context.pi() * x);
+    exact_expr pi_exponential_rational = pi_exponential_generator /
+        (context.integer(1) + pi_exponential_generator);
+    assert(context.integrate(pi_exponential_rational, x) ==
+           context.natural_logarithm(context.absolute_value(
+               context.integer(1) + pi_exponential_generator)) / context.pi());
+    exact_expr tangent_generator = context.tangent(
+        context.integer(2) * x + context.integer(1));
+    exact_expr tangent_rational = context.integer(2) /
+        (context.integer(1) + tangent_generator);
+    exact_expr hyperbolic_tangent_generator = context.hyperbolic_tangent(
+        context.integer(3) * x - context.integer(1));
+    exact_expr hyperbolic_tangent_rational = context.integer(3) /
+        (context.integer(2) + hyperbolic_tangent_generator);
+    assert(context.integrate(tangent_rational, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(hyperbolic_tangent_rational, x).operation() !=
+           exact_opcode::integral);
+    exact_expr circular_inner = context.integer(2) * x;
+    exact_expr weierstrass_rational = context.integer(1) /
+        (context.integer(1) + context.sine(circular_inner));
+    exact_expr weierstrass_mixed = context.cosine(circular_inner) /
+        (context.integer(2) + context.sine(circular_inner));
+    assert(context.integrate(weierstrass_rational, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(weierstrass_mixed, x).operation() !=
+           exact_opcode::integral);
+    exact_expr hyperbolic_inner = context.integer(2) * x;
+    exact_expr hyperbolic_weierstrass_rational = context.integer(1) /
+        (context.integer(1) + context.hyperbolic_sine(hyperbolic_inner));
+    exact_expr hyperbolic_weierstrass_mixed =
+        context.hyperbolic_cosine(hyperbolic_inner) /
+        (context.integer(2) + context.hyperbolic_sine(hyperbolic_inner));
+    assert(context.integrate(hyperbolic_weierstrass_rational, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(hyperbolic_weierstrass_mixed, x).operation() !=
+           exact_opcode::integral);
+    exact_expr chain_sine = context.integer(2) * x *
+        context.sine(quadratic_inner);
+    exact_expr chain_logarithm = context.integer(2) * x *
+        context.natural_logarithm(quadratic_inner);
+    exact_expr chain_erfi = context.integer(2) * x * erfi(quadratic_inner);
+    assert(context.simplify(context.differentiate(
+               context.integrate(chain_sine, x), x) - chain_sine) ==
+           context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(chain_logarithm, x), x) - chain_logarithm) ==
+           context.integer(0));
+    assert(context.simplify(context.differentiate(
+               context.integrate(chain_erfi, x), x) - chain_erfi) ==
+           context.integer(0));
+    exact_expr logarithmic_integral = context.integrate(context.integer(1) /
+        context.natural_logarithm(x), x);
+    assert(logarithmic_integral ==
+           context.exponential_integral(context.natural_logarithm(x)));
+    assert(logarithmic_integral.to_string() == "Ei(ln(x))");
+    exact_expr rational_integrand = context.integer(1) /
+        (context.integer(1) + context.power(x, context.integer(2)));
+    assert(context.integrate(rational_integrand, x) == context.arc_tangent(x));
+    exact_expr inverse_sqrt_positive = context.integer(1) /
+        context.square_root(context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr inverse_sqrt_negative = context.integer(1) /
+        context.square_root(context.integer(1) - context.power(x, context.integer(2)));
+    assert(context.integrate(inverse_sqrt_positive, x) ==
+           context.inverse_hyperbolic_sine(x));
+    assert(context.integrate(inverse_sqrt_negative, x) == context.arc_sine(x));
+    exact_expr root_polynomial_linear = x /
+        context.square_root(context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr root_polynomial_quadratic = context.power(x, context.integer(2)) /
+        context.square_root(context.power(x, context.integer(2)) + context.integer(1));
+    assert(context.integrate(root_polynomial_linear, x) ==
+           context.square_root(context.power(x, context.integer(2)) + context.integer(1)));
+    assert(context.integrate(root_polynomial_quadratic, x).operation() !=
+           exact_opcode::integral);
+    exact_expr cubic_rational_integrand = context.integer(1) /
+        (context.power(x, context.integer(3)) + context.integer(1));
+    exact_expr cubic_rational_antiderivative =
+        context.integrate(cubic_rational_integrand, x);
+    exact_expr integration_root_three = context.square_root(context.integer(3));
+    exact_expr expected_cubic_antiderivative =
+        context.natural_logarithm(context.absolute_value(x + context.integer(1))) /
+            context.integer(3) -
+        context.natural_logarithm(context.absolute_value(
+            context.power(x, context.integer(2)) - x + context.integer(1))) /
+            context.integer(6) +
+        context.arc_tangent((context.integer(2) * x - context.integer(1)) /
+                            integration_root_three) /
+            integration_root_three;
+    assert(cubic_rational_antiderivative == expected_cubic_antiderivative);
+    exact_expr quartic_rational = context.integer(1) /
+        (context.power(x, context.integer(4)) - context.integer(1));
+    assert(context.integrate(quartic_rational, x).operation() !=
+           exact_opcode::integral);
+    exact_expr mixed_rational = context.integer(1) /
+        (context.power(x, context.integer(3)) + x);
+    assert(context.integrate(mixed_rational, x).operation() !=
+           exact_opcode::integral);
+    exact_expr general_quadratic = context.integer(1) /
+        (context.power(x, context.integer(2)) + context.integer(2) * x +
+         context.integer(2));
+    assert(context.integrate(general_quadratic, x).operation() !=
+           exact_opcode::integral);
+    exact_expr rational_numerator = (context.integer(2) * x +
+        context.integer(3)) /
+        (context.power(x, context.integer(2)) + x + context.integer(1));
+    assert(context.integrate(rational_numerator, x).operation() !=
+           exact_opcode::integral);
+    exact_expr improper_rational =
+        (context.power(x, context.integer(4)) + context.integer(2) * x +
+         context.integer(1)) /
+        (context.power(x, context.integer(2)) + context.integer(1));
+    assert(context.integrate(improper_rational, x).operation() !=
+           exact_opcode::integral);
+    exact_expr repeated_linear = context.integer(1) /
+        context.power(x + context.integer(1), context.integer(3));
+    assert(context.integrate(repeated_linear, x) ==
+           -context.integer(1) /
+           (context.integer(2) *
+            context.power(x + context.integer(1), context.integer(2))));
+    exact_expr repeated_quadratic = (context.integer(3) * x +
+        context.integer(2)) /
+        context.power(context.power(x, context.integer(2)) + context.integer(1),
+                      context.integer(2));
+    assert(context.integrate(repeated_quadratic, x).operation() !=
+           exact_opcode::integral);
+    exact_expr exponential_kernel = context.integer(2) * x *
+        context.exponential(context.power(x, context.integer(2)));
+    assert(context.integrate(exponential_kernel, x) ==
+           context.exponential(context.power(x, context.integer(2))));
+    assert(context.integrate(x * context.exponential(x), x) ==
+           x * context.exponential(x) - context.exponential(x));
+    assert(context.integrate(context.power(x, context.integer(2)) *
+                             context.exponential(x), x) ==
+           context.power(x, context.integer(2)) * context.exponential(x) -
+           context.integer(2) * x * context.exponential(x) +
+           context.integer(2) * context.exponential(x));
+    exact_expr e_power = context.power(context.e(), x);
+    exact_expr e_polynomial = context.power(x, context.integer(5)) +
+        context.integer(3) * context.power(x, context.integer(2)) -
+        context.integer(7);
+    exact_expr e_integrand = e_polynomial * e_power;
+    exact_expr e_antiderivative = context.integrate(e_integrand, x);
+    assert(e_antiderivative.operation() != exact_opcode::integral);
+    assert(context.simplify(context.differentiate(e_antiderivative, x) -
+                           e_integrand) == context.integer(0));
+    exact_expr logarithmic_derivative = context.cosine(x) / context.sine(x);
+    assert(context.integrate(logarithmic_derivative, x) ==
+           context.natural_logarithm(
+               context.absolute_value(context.sine(x))));
+    exact_expr logarithm_power = context.power(
+        context.natural_logarithm(x), context.integer(3)) / x;
+    assert(context.integrate(logarithm_power, x) ==
+           context.power(context.natural_logarithm(x), context.integer(4)) /
+           context.integer(4));
+    exact_expr logarithmic_tower = x * context.power(
+        context.natural_logarithm(x), context.integer(3));
+    exact_expr logarithmic_quadratic_tower = x * context.power(
+        context.natural_logarithm(context.power(x, context.integer(2)) +
+                                  context.integer(1)), context.integer(2));
+    assert(context.simplify(context.differentiate(
+               context.integrate(logarithmic_tower, x), x) -
+               logarithmic_tower) == context.integer(0));
+    assert(context.integrate(logarithmic_quadratic_tower, x).operation() !=
+           exact_opcode::integral);
+    exact_expr atan_polynomial = x * context.arc_tangent(x);
+    exact_expr si_polynomial = x * context.sine_integral(x);
+    exact_expr erfi_polynomial = x * erfi(x);
+    assert(context.integrate(atan_polynomial, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(si_polynomial, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(erfi_polynomial, x).operation() !=
+           exact_opcode::integral);
+    exact_expr log_quadratic = context.natural_logarithm(
+        context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr expected_log_quadratic = x * log_quadratic -
+        context.integer(2) * x + context.integer(2) * context.arc_tangent(x);
+    assert(context.integrate(log_quadratic, x) ==
+           context.simplify(expected_log_quadratic));
+    exact_expr x_log_x = x * context.natural_logarithm(x);
+    exact_expr expected_x_log_x =
+        context.power(x, context.integer(2)) * context.natural_logarithm(x) /
+            context.integer(2) -
+        context.power(x, context.integer(2)) / context.integer(4);
+    assert(context.integrate(x_log_x, x) == context.simplify(expected_x_log_x));
+    exact_expr polynomial_logarithm = x * log_quadratic;
+    assert(context.integrate(polynomial_logarithm, x).operation() !=
+           exact_opcode::integral);
+    assert(context.integrate(
+               context.natural_logarithm(context.sine(x)), x).operation() ==
+           exact_opcode::integral);
+    exact_expr constant_base_power = context.power(context.integer(2), x);
+    exact_expr constant_base_antiderivative =
+        context.integrate(constant_base_power, x);
+    assert(context.simplify(context.differentiate(
+               constant_base_antiderivative, x) - constant_base_power) ==
+           context.integer(0));
+    exact_expr linear_exponent_power = context.power(
+        context.integer(2), context.integer(3) * x + context.integer(1));
+    exact_expr linear_exponent_antiderivative =
+        context.integrate(linear_exponent_power, x);
+    assert(context.simplify(context.differentiate(
+               linear_exponent_antiderivative, x) - linear_exponent_power) ==
+           context.integer(0));
+    assert(context.integrate(context.power(x, x), x).operation() ==
+           exact_opcode::integral);
+    exact_expr logarithm_antiderivative =
+        context.integrate(context.natural_logarithm(x), x);
+    assert(context.simplify(context.differentiate(logarithm_antiderivative, x) -
+                            context.natural_logarithm(x)) == context.integer(0));
     assert(sin(asin(x)) == x);
     assert(cos(acos(x)) == x);
     assert(tan(atan(x)) == x);
@@ -656,6 +1124,46 @@ int main(){
     exact_expr expected_square = context.add({
         context.integer(3), context.multiply({context.integer(2), root_two})});
     assert(expanded_square == expected_square);
+    exact_expr expanded_monomial = context.expand(context.power(
+        context.multiply({context.integer(9), x}), context.integer(10)));
+    assert(expanded_monomial == context.multiply({
+        context.integer(UINT64_C(3486784401)),
+        context.power(x, context.integer(10))}));
+    assert(context.power(context.divide(context.integer(9), x),
+                         context.integer(10)).to_string() ==
+           "3486784401/x^10");
+    exact_expr a_symbol = context.symbol("a");
+    exact_expr b_symbol = context.symbol("b");
+    exact_expr scaled_difference = context.subtract(
+        context.multiply({context.integer(25), context.power(
+            a_symbol, context.integer(2))}),
+        context.power(context.multiply({context.integer(4), b_symbol}),
+                      context.integer(2)));
+    exact_expr five_a = context.multiply({context.integer(5), a_symbol});
+    exact_expr four_b = context.multiply({context.integer(4), b_symbol});
+    assert(context.factor(scaled_difference) == context.multiply({
+        context.subtract(five_a, four_b), context.add({five_a, four_b})}));
+    exact_expr three_a = context.multiply({context.integer(3), a_symbol});
+    exact_expr two_times_b = context.multiply({context.integer(2), b_symbol});
+    exact_expr scaled_cube_difference = context.subtract(
+        context.multiply({context.integer(27), context.power(
+            a_symbol, context.integer(3))}),
+        context.multiply({context.integer(8), context.power(
+            b_symbol, context.integer(3))}));
+    exact_expr cube_quotient = context.add({
+        context.power(three_a, context.integer(2)),
+        context.multiply({three_a, two_times_b}),
+        context.power(two_times_b, context.integer(2))});
+    assert(context.factor(scaled_cube_difference) == context.multiply({
+        context.subtract(three_a, two_times_b), cube_quotient}));
+    exact_expr scaled_fifth_difference = context.subtract(
+        context.multiply({context.integer(243), context.power(
+            a_symbol, context.integer(5))}),
+        context.multiply({context.integer(32), context.power(
+            b_symbol, context.integer(5))}));
+    exact_expr factored_fifth = context.factor(scaled_fifth_difference);
+    assert(factored_fifth.operation() == exact_opcode::multiply);
+    assert(context.expand(factored_fifth) == scaled_fifth_difference);
     exact_expr simplified_radicals = context.simplify(context.power(
         context.add({one, root_two, sqrt(three)}), context.integer(2)));
     exact_expr expected_radicals = context.add({

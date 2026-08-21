@@ -168,6 +168,32 @@ int main(){
     assert(cosh(Number(0)) == Number(1));
     assert(tanh(Number(0)).is_zero());
 
+    Number special_one(1);
+    special_one.set_precision(256);
+    Number special_tolerance = Number(1) >> 180;
+    special_tolerance.set_precision(256);
+    Number expected_si = Number::from_raw(
+        precz_t("946083070367183014941353313823179657812337954738111790471454773566"),
+        0, 256);
+    Number special_scale(precn_t("1000000000000000000000000000000000000000000000000000000000000000000"));
+    special_scale.set_precision(256);
+    expected_si /= special_scale;
+    assert(abs(Si(special_one) - expected_si) < special_tolerance);
+    assert(Ci(special_one).to_string(30) ==
+           "0.337403922900968134662646203889");
+    assert(Ei(special_one).to_string(30) ==
+           "1.895117816355936755466520934331");
+    assert(erf(special_one).to_string(30) ==
+           "0.842700792949714869341220635082");
+    assert(abs(partial_gamma(special_one, special_one) - exp(-special_one)) <
+           special_tolerance);
+    Number special_eight(8);
+    special_eight.set_precision(256);
+    assert(Si(special_eight).to_string(24) ==
+           "1.574186821706942052082971");
+    assert(Ci(special_eight).to_string(24) ==
+           "0.122433882532009557292295");
+
     assert(Number(-3) < Number(-2));
     assert(Number(-1).to_integer() == precz_t(-1));
     assert((Number::from_raw(precz_t(3), 1, 128) << 64).to_integer() == precz_t(3));

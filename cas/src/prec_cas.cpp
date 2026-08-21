@@ -1,4 +1,5 @@
 #include"../prec_cas.hpp"
+#include"factor_integer.hpp"
 
 #include<algorithm>
 #include<cmath>
@@ -183,6 +184,61 @@ static bool exact_cube_root(const exact_value &value, exact_value &root){
     return true;
 }
 
+static int compare_power(const precn_t &base, uint64_t exponent,
+                         const precn_t &limit){
+    precn_t result(1), factor(base);
+    while(exponent){
+        if(exponent & 1){
+            result = result * factor;
+            if(result > limit) return 1;
+        }
+        exponent >>= 1;
+        if(exponent){
+            factor = factor * factor;
+            if(factor > limit) factor = limit + precn_t(1);
+        }
+    }
+    if(result < limit) return -1;
+    return result == limit ? 0 : 1;
+}
+
+static bool perfect_nth_root(const precn_t &value, uint64_t degree,
+                             precn_t &root){
+    if(degree < 2) return false;
+    if(value.rsiz == 0){ root = precn_t(); return true; }
+    size_t bits = natural_bit_length(value);
+    if(degree >= bits){
+        if(value == precn_t(1)){ root = precn_t(1); return true; }
+        return false;
+    }
+    size_t root_bits = (bits + (size_t)degree - 1) / (size_t)degree;
+    precn_t low(1), high = precn_t(1) << root_bits;
+    while(low <= high){
+        precn_t middle = (low + high) >> 1;
+        int comparison = compare_power(middle, degree, value);
+        if(comparison == 0){ root = std::move(middle); return true; }
+        if(comparison < 0) low = middle + precn_t(1);
+        else{
+            if(middle.rsiz == 0) break;
+            high = middle - precn_t(1);
+        }
+    }
+    return false;
+}
+
+static bool exact_nth_root(const exact_value &value, uint64_t degree,
+                           exact_value &root){
+    if(value.is_approximate() || value.is_negative()) return false;
+    precq_t rational = value.rational();
+    precn_t numerator, denominator;
+    if(!perfect_nth_root(rational.numerator(), degree, numerator) ||
+       !perfect_nth_root(rational.denominator(), degree, denominator))
+        return false;
+    root = normalized_rational(precq_t(std::move(numerator),
+                                      std::move(denominator)));
+    return true;
+}
+
 static double approximate_precision(const exact_value &a,
                                     const exact_value &b){
     double precision = std::numeric_limits<double>::infinity();
@@ -225,6 +281,15 @@ const char *exact_opcode_name(exact_opcode operation){
     case exact_opcode::bounded_sum: return "sum";
     case exact_opcode::expression_list: return "list";
     case exact_opcode::absolute_value: return "abs";
+    case exact_opcode::sine_integral: return "Si";
+    case exact_opcode::cosine_integral: return "Ci";
+    case exact_opcode::exponential_integral: return "Ei";
+    case exact_opcode::error_function: return "erf";
+    case exact_opcode::imaginary_error_function: return "erfi";
+    case exact_opcode::partial_gamma: return "partial_gamma";
+    case exact_opcode::derivative: return "derivative";
+    case exact_opcode::integral: return "integrate";
+    case exact_opcode::rule: return "rule";
     }
     return "unknown";
 }
@@ -248,6 +313,11 @@ static bool exact_unary_function(exact_opcode operation){
     case exact_opcode::logarithm_base_2:
     case exact_opcode::logarithm_base_10:
     case exact_opcode::absolute_value:
+    case exact_opcode::sine_integral:
+    case exact_opcode::cosine_integral:
+    case exact_opcode::exponential_integral:
+    case exact_opcode::error_function:
+    case exact_opcode::imaginary_error_function:
         return true;
     default:
         return false;
@@ -796,6 +866,27 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
             if(integer_exponent & 1) return make_multiply({reduced, base});
             return reduced;
         }
+        if(base_copy.op == exact_opcode::multiply){
+            const uint32_t *base_factors = children(base_copy);
+            bool monomial = true;
+            for(size_t i = 0; i < base_copy.operand_count; ++i){
+                exact_opcode operation = node(base_factors[i]).op;
+                if(operation != exact_opcode::value &&
+                   operation != exact_opcode::symbol &&
+                   operation != exact_opcode::power &&
+                   operation != exact_opcode::constant_i){
+                    monomial = false;
+                    break;
+                }
+            }
+            if(monomial){
+                std::vector<uint32_t> powered;
+                powered.reserve(base_copy.operand_count);
+                for(size_t i = 0; i < base_copy.operand_count; ++i)
+                    powered.push_back(make_power(base_factors[i], exponent));
+                return make_multiply(std::move(powered));
+            }
+        }
         if(base_copy.op == exact_opcode::power){
             const uint32_t *base_args = children(base_copy);
             exact_node inner_exponent_node = node(base_args[1]);
@@ -816,9 +907,22 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
     if(base_node.op == exact_opcode::value){
         const exact_value &base_value = values[base_node.payload];
         if(base_value.is_one()) return base;
-        if(has_integer_exponent && integer_exponent >= -4096 &&
-           integer_exponent <= 4096)
+        if(has_integer_exponent && base_value.is_approximate() &&
+           integer_exponent >= -4096 && integer_exponent <= 4096)
             return intern_value(exact_pow(base_value, integer_exponent));
+        if(has_integer_exponent && !base_value.is_approximate()){
+            precq_t rational = base_value.rational();
+            size_t base_bits = natural_bit_length(rational.numerator()) +
+                               natural_bit_length(rational.denominator());
+            uint64_t magnitude = integer_exponent < 0
+                ? (uint64_t)0 - (uint64_t)integer_exponent
+                : (uint64_t)integer_exponent;
+            // Materialize useful exact powers while keeping hostile inputs
+            // from allocating an unexpectedly enormous integer.
+            const uint64_t maximum_result_bits = UINT64_C(1) << 20;
+            if(base_bits == 0 || magnitude <= maximum_result_bits / base_bits)
+                return intern_value(exact_pow(base_value, integer_exponent));
+        }
     }
     return intern_compound(exact_opcode::power, {base, exponent});
 }
@@ -881,6 +985,61 @@ uint32_t exact_storage::make_sqrt(uint32_t value){
                     exact_opcode::square_root,
                     {intern_value(exact_value(inside))});
                 return make_multiply({coefficient, radical});
+            }
+        }
+    }
+    if(source.op == exact_opcode::add && source.operand_count > 1){
+        const uint32_t *term_data = children(source);
+        std::vector<uint32_t> terms(
+            term_data, term_data + source.operand_count);
+        const size_t term_count = terms.size();
+        uint64_t common = 0;
+        for(size_t i = 0; i < term_count; ++i){
+            uint32_t term = terms[i];
+            const exact_node &term_node = node(term);
+            int64_t coefficient = 1;
+            bool found_coefficient = false;
+            if(term_node.op == exact_opcode::value){
+                found_coefficient = integer_i64(
+                    values[term_node.payload], coefficient);
+            }else if(term_node.op == exact_opcode::multiply){
+                const uint32_t *factors = children(term_node);
+                for(size_t j = 0; j < term_node.operand_count; ++j){
+                    const exact_node &factor = node(factors[j]);
+                    if(factor.op == exact_opcode::value && integer_i64(
+                           values[factor.payload], coefficient)){
+                        found_coefficient = true;
+                        break;
+                    }
+                }
+            }
+            if(!found_coefficient) coefficient = 1;
+            uint64_t magnitude = coefficient < 0
+                ? (uint64_t)0 - (uint64_t)coefficient
+                : (uint64_t)coefficient;
+            if(magnitude == 0) continue;
+            if(common == 0) common = magnitude;
+            else{
+                uint64_t a = common, b = magnitude;
+                while(b){ uint64_t next = a % b; a = b; b = next; }
+                common = a;
+            }
+            if(common == 1) break;
+        }
+        if(common > 1){
+            uint64_t outside = (uint64_t)std::sqrt((long double)common);
+            while(outside && outside > common / outside) --outside;
+            while(outside + 1 <= common / (outside + 1)) ++outside;
+            if(outside > 1 && outside * outside == common){
+                uint32_t inverse = intern_value(exact_value(precq_t(
+                    precn_t(1), precn_t(common))));
+                std::vector<uint32_t> reduced;
+                reduced.reserve(term_count);
+                for(size_t i = 0; i < term_count; ++i)
+                    reduced.push_back(make_multiply({terms[i], inverse}));
+                uint32_t inner = make_add(std::move(reduced));
+                return make_multiply({intern_value(exact_value(outside)),
+                                      make_sqrt(inner)});
             }
         }
     }
@@ -1299,6 +1458,11 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             else if(operation == exact_opcode::inverse_hyperbolic_tangent) number = ::atanh(number);
             else if(operation == exact_opcode::natural_logarithm) number = ::ln(number);
             else if(operation == exact_opcode::logarithm_base_2) number = ::log2(number);
+            else if(operation == exact_opcode::sine_integral) number = ::Si(number);
+            else if(operation == exact_opcode::cosine_integral) number = ::Ci(number);
+            else if(operation == exact_opcode::exponential_integral) number = ::Ei(number);
+            else if(operation == exact_opcode::error_function) number = ::erf(number);
+            else if(operation == exact_opcode::imaginary_error_function) number = ::erfi(number);
             else number = ::log10(number);
             return intern_value(exact_value(std::move(number)));
         }
@@ -1371,6 +1535,7 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
                current.op == exact_opcode::multiply ||
                current.op == exact_opcode::power ||
                current.op == exact_opcode::square_root ||
+               current.op == exact_opcode::partial_gamma ||
                exact_unary_function(current.op);
     };
     if(!numeric_tree(numeric_tree, expression) || !saw_approximate)
@@ -1512,6 +1677,19 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
                 result = ::acosh(self(self, args[0]));
             }else if(current.op == exact_opcode::inverse_hyperbolic_tangent){
                 result = ::atanh(self(self, args[0]));
+            }else if(current.op == exact_opcode::sine_integral){
+                result = ::Si(self(self, args[0]));
+            }else if(current.op == exact_opcode::cosine_integral){
+                result = ::Ci(self(self, args[0]));
+            }else if(current.op == exact_opcode::exponential_integral){
+                result = ::Ei(self(self, args[0]));
+            }else if(current.op == exact_opcode::error_function){
+                result = ::erf(self(self, args[0]));
+            }else if(current.op == exact_opcode::imaginary_error_function){
+                result = ::erfi(self(self, args[0]));
+            }else if(current.op == exact_opcode::partial_gamma){
+                result = ::partial_gamma(self(self, args[0]),
+                                         self(self, args[1]));
             }else if(current.op == exact_opcode::natural_logarithm){
                 result = ::ln(self(self, args[0]));
             }else if(current.op == exact_opcode::logarithm_base_2){
@@ -1531,6 +1709,7 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
 }
 
 static unsigned expression_precedence(exact_opcode op){
+    if(op == exact_opcode::rule) return 0;
     if(op == exact_opcode::add) return 1;
     if(op == exact_opcode::multiply) return 2;
     if(op == exact_opcode::power) return 3;
@@ -1557,6 +1736,11 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
             result += print(args[i]);
         }
         result.push_back('}');
+    }else if(current.op == exact_opcode::rule){
+        if(current.operand_count != 2)
+            throw std::logic_error("rule node must have two operands");
+        const uint32_t *args = children(current);
+        result = print(args[0], 1) + " -> " + print(args[1], 0);
     }else if(current.op == exact_opcode::add){
         const uint32_t *args = children(current);
         std::vector<uint32_t> ordered(args, args + current.operand_count);
@@ -1850,6 +2034,12 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
     }else if(exact_unary_function(current.op)){
         result = std::string(exact_opcode_name(current.op)) + "(" +
                  print(children(current)[0]) + ")";
+    }else if(current.op == exact_opcode::partial_gamma ||
+             current.op == exact_opcode::derivative ||
+             current.op == exact_opcode::integral){
+        const uint32_t *args = children(current);
+        result = std::string(exact_opcode_name(current.op)) + "(" +
+                 print(args[0]) + ", " + print(args[1]) + ")";
     }else{
         const uint32_t *args = children(current);
         result = "sum(" + print(args[3]) + ", " + print(args[0]) + "=" +
@@ -2250,6 +2440,1766 @@ exact_expr exact_context::logarithm_base_10(const exact_expr &value){
                                                value.root_);
     return exact_expr(storage_, storage_->promote_approximate(result));
 }
+exact_expr exact_context::sine_integral(const exact_expr &value){
+    if(!value.valid() || value.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    uint32_t result = storage_->make_function(exact_opcode::sine_integral,
+                                               value.root_);
+    return exact_expr(storage_, storage_->promote_approximate(result));
+}
+exact_expr exact_context::cosine_integral(const exact_expr &value){
+    if(!value.valid() || value.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    uint32_t result = storage_->make_function(exact_opcode::cosine_integral,
+                                               value.root_);
+    return exact_expr(storage_, storage_->promote_approximate(result));
+}
+exact_expr exact_context::exponential_integral(const exact_expr &value){
+    if(!value.valid() || value.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    uint32_t result = storage_->make_function(exact_opcode::exponential_integral,
+                                               value.root_);
+    return exact_expr(storage_, storage_->promote_approximate(result));
+}
+exact_expr exact_context::error_function(const exact_expr &value){
+    if(!value.valid() || value.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    uint32_t result = storage_->make_function(exact_opcode::error_function,
+                                               value.root_);
+    return exact_expr(storage_, storage_->promote_approximate(result));
+}
+exact_expr exact_context::imaginary_error_function(const exact_expr &value){
+    if(!value.valid() || value.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    uint32_t result = storage_->make_function(
+        exact_opcode::imaginary_error_function, value.root_);
+    return exact_expr(storage_, storage_->promote_approximate(result));
+}
+exact_expr exact_context::partial_gamma(const exact_expr &a,
+                                        const exact_expr &x){
+    if(!a.valid() || !x.valid() || a.storage_ != storage_ ||
+       x.storage_ != storage_)
+        throw std::invalid_argument("exact expressions belong to different contexts");
+    uint32_t result;
+    if(a.is_value() && x.is_value() &&
+       (a.value().is_approximate() || x.value().is_approximate())){
+        double precision = approximate_precision(a.value(), x.value());
+        Number number = ::partial_gamma(a.value().to_number(precision),
+                                        x.value().to_number(precision));
+        number.set_precision(precision);
+        result = storage_->intern_value(exact_value(std::move(number)));
+    }else{
+        result = storage_->intern_compound(exact_opcode::partial_gamma,
+                                            {a.root_, x.root_});
+    }
+    return exact_expr(storage_, result);
+}
+
+exact_expr exact_context::differentiate(const exact_expr &expression,
+                                        const exact_expr &variable){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != storage_ || variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "differentiate requires an expression and a symbol in one context");
+
+    std::unordered_map<uint32_t, bool> dependency_memo;
+    auto depends = [&](auto &&self, uint32_t id) -> bool{
+        if(id == variable.root_) return true;
+        auto cached = dependency_memo.find(id);
+        if(cached != dependency_memo.end()) return cached->second;
+        // Building a derivative interns new nodes and may reallocate storage.
+        // Copies keep recursive calls from invalidating the current operands.
+        exact_node node = storage_->node(id);
+        const uint32_t *child_data = storage_->children(node);
+        std::vector<uint32_t> args(child_data,
+                                   child_data + node.operand_count);
+        bool result = false;
+        for(size_t i = 0; i < node.operand_count; ++i)
+            if(self(self, args[i])){ result = true; break; }
+        dependency_memo.emplace(id, result);
+        return result;
+    };
+
+    std::unordered_map<uint32_t, exact_expr> memo;
+    std::function<exact_expr(uint32_t)> derivative = [&](uint32_t id){
+        auto cached = memo.find(id);
+        if(cached != memo.end()) return cached->second;
+        exact_expr source(storage_, id);
+        // Recursive derivatives intern nodes and can reallocate both arena
+        // vectors. Never retain references or child pointers across a call.
+        exact_node node = storage_->node(id);
+        const uint32_t *child_data = storage_->children(node);
+        std::vector<uint32_t> args(child_data,
+                                   child_data + node.operand_count);
+        exact_expr result;
+        if(!depends(depends, id)){
+            result = integer(0);
+        }else if(id == variable.root_){
+            result = integer(1);
+        }else if(node.op == exact_opcode::add){
+            std::vector<exact_expr> terms;
+            terms.reserve(node.operand_count);
+            for(size_t i = 0; i < node.operand_count; ++i)
+                terms.push_back(derivative(args[i]));
+            result = add(terms);
+        }else if(node.op == exact_opcode::multiply){
+            std::vector<exact_expr> terms;
+            for(size_t differentiated = 0; differentiated < node.operand_count;
+                ++differentiated){
+                if(!depends(depends, args[differentiated])) continue;
+                std::vector<exact_expr> factors;
+                factors.reserve(node.operand_count);
+                for(size_t i = 0; i < node.operand_count; ++i)
+                    factors.push_back(i == differentiated
+                        ? derivative(args[i]) : exact_expr(storage_, args[i]));
+                terms.push_back(multiply(factors));
+            }
+            result = add(terms);
+        }else if(node.op == exact_opcode::power){
+            exact_expr base(storage_, args[0]), exponent(storage_, args[1]);
+            exact_expr db = derivative(args[0]);
+            if(!depends(depends, args[1])){
+                result = exponent * power(base, exponent - integer(1)) * db;
+            }else{
+                exact_expr de = derivative(args[1]);
+                result = power(base, exponent) *
+                    (de * natural_logarithm(base) + exponent * db / base);
+            }
+        }else if(node.op == exact_opcode::square_root){
+            exact_expr inner(storage_, args[0]);
+            result = derivative(args[0]) /
+                     (integer(2) * square_root(inner));
+        }else if(exact_unary_function(node.op)){
+            exact_expr inner(storage_, args[0]);
+            exact_expr di = derivative(args[0]);
+            exact_expr one = integer(1);
+            if(node.op == exact_opcode::exponential)
+                result = exponential(inner) * di;
+            else if(node.op == exact_opcode::sine)
+                result = cosine(inner) * di;
+            else if(node.op == exact_opcode::cosine)
+                result = -sine(inner) * di;
+            else if(node.op == exact_opcode::tangent)
+                result = di / power(cosine(inner), integer(2));
+            else if(node.op == exact_opcode::arc_sine)
+                result = di / square_root(one - power(inner, integer(2)));
+            else if(node.op == exact_opcode::arc_cosine)
+                result = -di / square_root(one - power(inner, integer(2)));
+            else if(node.op == exact_opcode::arc_tangent)
+                result = di / (one + power(inner, integer(2)));
+            else if(node.op == exact_opcode::hyperbolic_sine)
+                result = hyperbolic_cosine(inner) * di;
+            else if(node.op == exact_opcode::hyperbolic_cosine)
+                result = hyperbolic_sine(inner) * di;
+            else if(node.op == exact_opcode::hyperbolic_tangent)
+                result = di / power(hyperbolic_cosine(inner), integer(2));
+            else if(node.op == exact_opcode::inverse_hyperbolic_sine)
+                result = di / square_root(power(inner, integer(2)) + one);
+            else if(node.op == exact_opcode::inverse_hyperbolic_cosine)
+                result = di / (square_root(inner - one) *
+                               square_root(inner + one));
+            else if(node.op == exact_opcode::inverse_hyperbolic_tangent)
+                result = di / (one - power(inner, integer(2)));
+            else if(node.op == exact_opcode::natural_logarithm)
+                result = di / inner;
+            else if(node.op == exact_opcode::logarithm_base_2)
+                result = di / (inner * natural_logarithm(integer(2)));
+            else if(node.op == exact_opcode::logarithm_base_10)
+                result = di / (inner * natural_logarithm(integer(10)));
+            else if(node.op == exact_opcode::sine_integral)
+                result = sine(inner) * di / inner;
+            else if(node.op == exact_opcode::cosine_integral)
+                result = cosine(inner) * di / inner;
+            else if(node.op == exact_opcode::exponential_integral)
+                result = exponential(inner) * di / inner;
+            else if(node.op == exact_opcode::error_function)
+                result = integer(2) * exponential(-power(inner, integer(2))) * di /
+                         square_root(pi());
+            else if(node.op == exact_opcode::imaginary_error_function)
+                result = integer(2) * exponential(power(inner, integer(2))) * di /
+                         square_root(pi());
+            else
+                result = exact_expr(storage_, storage_->intern_compound(
+                    exact_opcode::derivative, {id, variable.root_}));
+        }else if(node.op == exact_opcode::partial_gamma &&
+                 !depends(depends, args[0])){
+            exact_expr a(storage_, args[0]), x(storage_, args[1]);
+            result = -power(x, a - integer(1)) * exponential(-x) *
+                     derivative(args[1]);
+        }else{
+            result = exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::derivative, {id, variable.root_}));
+        }
+        memo.emplace(id, result);
+        return result;
+    };
+    return simplify(derivative(expression.root_));
+}
+
+namespace{
+
+using integration_poly = std::vector<exact_value>;
+
+static void integration_trim(integration_poly &a){
+    while(a.size() > 1 && a.back().is_zero()) a.pop_back();
+}
+
+static integration_poly integration_add(const integration_poly &a,
+                                         const integration_poly &b){
+    integration_poly r(std::max(a.size(), b.size()), exact_value(0));
+    for(size_t i = 0; i < a.size(); ++i) r[i] = r[i] + a[i];
+    for(size_t i = 0; i < b.size(); ++i) r[i] = r[i] + b[i];
+    integration_trim(r);
+    return r;
+}
+
+static integration_poly integration_mul(const integration_poly &a,
+                                         const integration_poly &b){
+    integration_poly r(a.size() + b.size() - 1, exact_value(0));
+    for(size_t i = 0; i < a.size(); ++i)
+        for(size_t j = 0; j < b.size(); ++j)
+            r[i + j] = r[i + j] + a[i] * b[j];
+    integration_trim(r);
+    return r;
+}
+
+static bool integration_exponent(const exact_expr &value, size_t &result){
+    if(!value.is_value() || !value.value().is_integer()) return false;
+    exact_value exact = value.value();
+    const precz_t &integer = exact.integer();
+    if(integer.is_negative() || integer.magnitude().rsiz > 1) return false;
+    result = integer.magnitude().rsiz ? (size_t)integer.magnitude().a[0] : 0;
+    return true;
+}
+
+static bool integration_parse_poly(const exact_expr &expression,
+                                   const exact_expr &variable,
+                                   integration_poly &result){
+    if(expression == variable){
+        result = {exact_value(0), exact_value(1)};
+        return true;
+    }
+    if(expression.is_value() && !expression.value().is_approximate()){
+        result = {expression.value()};
+        return true;
+    }
+    if(expression.operation() == exact_opcode::add){
+        result = {exact_value(0)};
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            integration_poly term;
+            if(!integration_parse_poly(expression.operand(i), variable, term))
+                return false;
+            result = integration_add(result, term);
+        }
+        return true;
+    }
+    if(expression.operation() == exact_opcode::multiply){
+        result = {exact_value(1)};
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            integration_poly factor;
+            if(!integration_parse_poly(expression.operand(i), variable, factor))
+                return false;
+            result = integration_mul(result, factor);
+        }
+        return true;
+    }
+    if(expression.operation() == exact_opcode::power){
+        size_t exponent = 0;
+        if(!integration_exponent(expression.operand(1), exponent) || exponent > 64)
+            return false;
+        integration_poly base;
+        if(!integration_parse_poly(expression.operand(0), variable, base))
+            return false;
+        result = {exact_value(1)};
+        while(exponent){
+            if(exponent & 1) result = integration_mul(result, base);
+            exponent >>= 1;
+            if(exponent) base = integration_mul(base, base);
+        }
+        return true;
+    }
+    return false;
+}
+
+static exact_expr integration_poly_expr(exact_context &context,
+                                        const integration_poly &poly,
+                                        const exact_expr &variable){
+    std::vector<exact_expr> terms;
+    for(size_t i = 0; i < poly.size(); ++i){
+        if(poly[i].is_zero()) continue;
+        exact_expr term = context.value(poly[i]);
+        if(i) term = term * (i == 1 ? variable :
+            context.power(variable, context.integer(i)));
+        terms.push_back(term);
+    }
+    return terms.empty() ? context.integer(0) : context.add(terms);
+}
+
+static bool integration_divide_poly(integration_poly numerator,
+                                    const integration_poly &denominator,
+                                    integration_poly &quotient){
+    if(denominator.empty() || denominator.back().is_zero()) return false;
+    quotient.assign(numerator.size() >= denominator.size()
+        ? numerator.size() - denominator.size() + 1 : 1, exact_value(0));
+    while(numerator.size() >= denominator.size() &&
+          !(numerator.size() == 1 && numerator[0].is_zero())){
+        size_t shift = numerator.size() - denominator.size();
+        exact_value scale = numerator.back() / denominator.back();
+        quotient[shift] = quotient[shift] + scale;
+        for(size_t i = 0; i < denominator.size(); ++i)
+            numerator[i + shift] = numerator[i + shift] -
+                                   scale * denominator[i];
+        integration_trim(numerator);
+    }
+    integration_trim(quotient);
+    return numerator.size() == 1 && numerator[0].is_zero();
+}
+
+static bool integration_divmod_poly(integration_poly numerator,
+                                    const integration_poly &denominator,
+                                    integration_poly &quotient,
+                                    integration_poly &remainder){
+    if(denominator.empty() || denominator.back().is_zero()) return false;
+    quotient.assign(numerator.size() >= denominator.size()
+        ? numerator.size() - denominator.size() + 1 : 1, exact_value(0));
+    while(numerator.size() >= denominator.size() &&
+          !(numerator.size() == 1 && numerator[0].is_zero())){
+        size_t shift = numerator.size() - denominator.size();
+        exact_value scale = numerator.back() / denominator.back();
+        quotient[shift] = quotient[shift] + scale;
+        for(size_t i = 0; i < denominator.size(); ++i)
+            numerator[i + shift] = numerator[i + shift] -
+                                   scale * denominator[i];
+        integration_trim(numerator);
+    }
+    integration_trim(quotient);
+    remainder = std::move(numerator);
+    return true;
+}
+
+static bool integration_signed_exponent(const exact_expr &value,
+                                        int64_t &result){
+    if(!value.is_value() || !value.value().is_integer()) return false;
+    exact_value exact = value.value();
+    const precz_t &integer = exact.integer();
+    if(integer.magnitude().rsiz > 1 ||
+       (integer.magnitude().rsiz &&
+        integer.magnitude().a[0] > (uint64_t)INT64_MAX)) return false;
+    result = integer.magnitude().rsiz ?
+        (int64_t)integer.magnitude().a[0] : 0;
+    if(integer.is_negative()) result = -result;
+    return true;
+}
+
+static integration_poly integration_pow_poly(integration_poly base,
+                                             size_t exponent){
+    integration_poly result{exact_value(1)};
+    while(exponent){
+        if(exponent & 1) result = integration_mul(result, base);
+        exponent >>= 1;
+        if(exponent) base = integration_mul(base, base);
+    }
+    return result;
+}
+
+static bool integration_parse_rational(const exact_expr &expression,
+                                       const exact_expr &variable,
+                                       integration_poly &numerator,
+                                       integration_poly &denominator){
+    if(integration_parse_poly(expression, variable, numerator)){
+        denominator = {exact_value(1)};
+        return true;
+    }
+    if(expression.operation() == exact_opcode::multiply){
+        numerator = {exact_value(1)};
+        denominator = {exact_value(1)};
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            integration_poly child_numerator, child_denominator;
+            if(!integration_parse_rational(expression.operand(i), variable,
+                                           child_numerator,
+                                           child_denominator)) return false;
+            numerator = integration_mul(numerator, child_numerator);
+            denominator = integration_mul(denominator, child_denominator);
+        }
+        return true;
+    }
+    if(expression.operation() == exact_opcode::add){
+        numerator = {exact_value(0)};
+        denominator = {exact_value(1)};
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            integration_poly child_numerator, child_denominator;
+            if(!integration_parse_rational(expression.operand(i), variable,
+                                           child_numerator,
+                                           child_denominator)) return false;
+            numerator = integration_add(
+                integration_mul(numerator, child_denominator),
+                integration_mul(child_numerator, denominator));
+            denominator = integration_mul(denominator, child_denominator);
+        }
+        return true;
+    }
+    if(expression.operation() == exact_opcode::power){
+        int64_t exponent = 0;
+        integration_poly base_numerator, base_denominator;
+        if(!integration_signed_exponent(expression.operand(1), exponent) ||
+           exponent < -32 || exponent > 32 ||
+           !integration_parse_rational(expression.operand(0), variable,
+                                       base_numerator, base_denominator))
+            return false;
+        if(exponent == 0){
+            numerator = {exact_value(1)};
+            denominator = {exact_value(1)};
+        }else if(exponent > 0){
+            numerator = integration_pow_poly(base_numerator, (size_t)exponent);
+            denominator = integration_pow_poly(base_denominator, (size_t)exponent);
+        }else{
+            numerator = integration_pow_poly(base_denominator, (size_t)-exponent);
+            denominator = integration_pow_poly(base_numerator, (size_t)-exponent);
+        }
+        return true;
+    }
+    return false;
+}
+
+static void integration_factor_list(const exact_expr &expression,
+                                    std::vector<exact_expr> &factors){
+    if(expression.operation() == exact_opcode::multiply){
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            integration_factor_list(expression.operand(i), factors);
+    }else factors.push_back(expression);
+}
+
+struct integration_factor{
+    integration_poly polynomial;
+    size_t multiplicity;
+};
+
+static exact_expr integration_squarefree_rational(
+    exact_context &context, const integration_poly &numerator,
+    const exact_expr &denominator,
+    const exact_expr &variable){
+    integration_poly denominator_poly;
+    if(!integration_parse_poly(denominator, variable, denominator_poly) ||
+       denominator_poly.size() < 2) return exact_expr();
+
+    exact_expr factored = context.factor(denominator);
+    std::vector<exact_expr> factor_exprs;
+    integration_factor_list(factored, factor_exprs);
+    std::vector<integration_factor> factors;
+    for(const exact_expr &factor_expr : factor_exprs){
+        exact_expr base = factor_expr;
+        size_t multiplicity = 1;
+        if(factor_expr.operation() == exact_opcode::power){
+            if(!integration_exponent(factor_expr.operand(1), multiplicity) ||
+               multiplicity < 2 || multiplicity > 32) return exact_expr();
+            base = factor_expr.operand(0);
+        }
+        integration_poly factor;
+        if(!integration_parse_poly(base, variable, factor))
+            return exact_expr();
+        if(factor.size() == 1) continue;
+        if(factor.size() > 3) return exact_expr();
+        factors.push_back({std::move(factor), multiplicity});
+    }
+    if(factors.empty()) return exact_expr();
+    size_t unknowns = 0;
+    for(const integration_factor &factor : factors)
+        unknowns += (factor.polynomial.size() - 1) * factor.multiplicity;
+    if(unknowns + 1 != denominator_poly.size()) return exact_expr();
+
+    std::vector<std::vector<exact_value>> matrix(
+        unknowns, std::vector<exact_value>(unknowns + 1, exact_value(0)));
+    size_t column = 0;
+    for(const integration_factor &entry : factors){
+        integration_poly divisor{exact_value(1)};
+        for(size_t order = 1; order <= entry.multiplicity; ++order){
+            divisor = integration_mul(divisor, entry.polynomial);
+            integration_poly cofactor;
+            if(!integration_divide_poly(denominator_poly, divisor, cofactor))
+                return exact_expr();
+            for(size_t power = 0; power + 1 < entry.polynomial.size();
+                ++power, ++column)
+                for(size_t degree = 0; degree < cofactor.size(); ++degree)
+                    matrix[degree + power][column] =
+                        matrix[degree + power][column] + cofactor[degree];
+        }
+    }
+    for(size_t degree = 0; degree < numerator.size(); ++degree)
+        matrix[degree][unknowns] = numerator[degree];
+    for(size_t pivot = 0; pivot < unknowns; ++pivot){
+        size_t row = pivot;
+        while(row < unknowns && matrix[row][pivot].is_zero()) ++row;
+        if(row == unknowns) return exact_expr();
+        if(row != pivot) std::swap(matrix[row], matrix[pivot]);
+        exact_value divisor = matrix[pivot][pivot];
+        for(size_t j = pivot; j <= unknowns; ++j)
+            matrix[pivot][j] = matrix[pivot][j] / divisor;
+        for(size_t i = 0; i < unknowns; ++i){
+            if(i == pivot || matrix[i][pivot].is_zero()) continue;
+            exact_value scale = matrix[i][pivot];
+            for(size_t j = pivot; j <= unknowns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot][j];
+        }
+    }
+
+    exact_expr result = context.integer(0);
+    column = 0;
+    for(const integration_factor &entry : factors){
+        const integration_poly &factor = entry.polynomial;
+        size_t degree = factor.size() - 1;
+        exact_expr factor_expression =
+            integration_poly_expr(context, factor, variable);
+        for(size_t order = 1; order <= entry.multiplicity; ++order){
+            if(degree == 1){
+                exact_value numerator = matrix[column++][unknowns];
+                if(order == 1){
+                    result = result + context.value(numerator / factor[1]) *
+                        context.natural_logarithm(
+                            context.absolute_value(factor_expression));
+                }else{
+                    exact_value coefficient = numerator /
+                        (factor[1] * exact_value(1 - (int64_t)order));
+                    result = result + context.value(coefficient) *
+                        context.power(factor_expression,
+                                      context.integer(1 - (int64_t)order));
+                }
+                continue;
+            }
+            exact_value constant = matrix[column++][unknowns];
+            exact_value linear = matrix[column++][unknowns];
+            exact_value alpha = linear / (exact_value(2) * factor[2]);
+            exact_value residual = constant - alpha * factor[1];
+            if(order == 1){
+                result = result + context.value(alpha) *
+                    context.natural_logarithm(
+                        context.absolute_value(factor_expression));
+            }else{
+                result = result + context.value(
+                    alpha / exact_value(1 - (int64_t)order)) *
+                    context.power(factor_expression,
+                                  context.integer(1 - (int64_t)order));
+            }
+            exact_value discriminant = exact_value(4) * factor[2] * factor[0] -
+                                       factor[1] * factor[1];
+            if(discriminant.is_zero()) return exact_expr();
+            exact_expr linear_term = context.value(exact_value(2) * factor[2]) *
+                                     variable + context.value(factor[1]);
+            exact_expr j;
+            if(!discriminant.is_negative()){
+                exact_expr root = context.square_root(context.value(discriminant));
+                j = context.integer(2) * context.arc_tangent(linear_term / root) /
+                    root;
+            }else{
+                exact_expr root = context.square_root(context.value(-discriminant));
+                j = context.natural_logarithm(context.absolute_value(
+                    (linear_term - root) / (linear_term + root))) / root;
+            }
+            for(size_t k = 2; k <= order; ++k){
+                exact_expr boundary = linear_term /
+                    (context.value(exact_value((uint64_t)k - 1) * discriminant) *
+                     context.power(factor_expression, context.integer(k - 1)));
+                exact_value recurrence = exact_value(2) * factor[2] *
+                    exact_value((uint64_t)(2 * k - 3)) /
+                    (exact_value((uint64_t)k - 1) * discriminant);
+                j = boundary + context.value(recurrence) * j;
+            }
+            result = result + context.value(residual) * j;
+        }
+    }
+    return result;
+}
+
+static exact_expr integration_rational_antiderivative(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable){
+    integration_poly numerator, denominator;
+    if(!integration_parse_rational(expression, variable,
+                                   numerator, denominator)) return exact_expr();
+    integration_poly quotient, remainder;
+    if(!integration_divmod_poly(numerator, denominator,
+                               quotient, remainder)) return exact_expr();
+
+    exact_expr polynomial_part = context.integer(0);
+    for(size_t degree = 0; degree < quotient.size(); ++degree){
+        if(quotient[degree].is_zero()) continue;
+        exact_value coefficient = quotient[degree] /
+                                  exact_value((uint64_t)degree + 1);
+        polynomial_part = polynomial_part + context.value(coefficient) *
+            context.power(variable, context.integer(degree + 1));
+    }
+    if(remainder.size() == 1 && remainder[0].is_zero())
+        return polynomial_part;
+
+    exact_expr denominator_expression =
+        integration_poly_expr(context, denominator, variable);
+    exact_expr proper = integration_squarefree_rational(
+        context, remainder, denominator_expression, variable);
+    if(!proper.valid()) return exact_expr();
+    return polynomial_part + proper;
+}
+
+static integration_poly integration_derivative_poly(
+    const integration_poly &source){
+    if(source.size() <= 1) return {exact_value(0)};
+    integration_poly result(source.size() - 1, exact_value(0));
+    for(size_t i = 1; i < source.size(); ++i)
+        result[i - 1] = source[i] * exact_value((uint64_t)i);
+    integration_trim(result);
+    return result;
+}
+
+static bool integration_depends_on(const exact_expr &expression,
+                                   const exact_expr &variable){
+    if(expression == variable) return true;
+    for(size_t i = 0; i < expression.operand_count(); ++i)
+        if(integration_depends_on(expression.operand(i), variable)) return true;
+    return false;
+}
+
+// The polynomial solvers work over rational coefficients.  Keep arbitrary
+// expressions independent of the integration variable outside that solver;
+// they are constants of the differential field (pi, sqrt(pi), parameters,
+// and so on).
+static exact_expr integration_extract_constants(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &variable, exact_expr &constant){
+    std::vector<exact_expr> constants, dependent;
+    if(cofactor.operation() == exact_opcode::multiply){
+        for(size_t i = 0; i < cofactor.operand_count(); ++i){
+            exact_expr factor = cofactor.operand(i);
+            (integration_depends_on(factor, variable) ? dependent : constants)
+                .push_back(factor);
+        }
+    }else if(integration_depends_on(cofactor, variable)){
+        dependent.push_back(cofactor);
+    }else{
+        constants.push_back(cofactor);
+    }
+    constant = constants.empty() ? context.integer(1) :
+        context.multiply(constants);
+    return dependent.empty() ? context.integer(1) : context.multiply(dependent);
+}
+
+static exact_expr integration_hyperexponential_polynomial(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable){
+    integration_poly p, g;
+    exact_expr constant;
+    exact_expr polynomial_cofactor = integration_extract_constants(
+        context, cofactor, variable, constant);
+    if(!integration_parse_poly(polynomial_cofactor, variable, p) ||
+       !integration_parse_poly(inner, variable, g)) return exact_expr();
+    integration_poly dg = integration_derivative_poly(g);
+    if(dg.size() == 1 && dg[0].is_zero()) return exact_expr();
+    size_t degree_p = p.size() - 1;
+    size_t degree_dg = dg.size() - 1;
+    size_t degree_r;
+    if(degree_dg == 0) degree_r = degree_p;
+    else{
+        if(degree_p < degree_dg) return exact_expr();
+        degree_r = degree_p - degree_dg;
+    }
+    size_t columns = degree_r + 1;
+    size_t rows = std::max(degree_r ? degree_r : 0,
+                           degree_r + degree_dg) + 1;
+    rows = std::max(rows, p.size());
+    std::vector<std::vector<exact_value>> matrix(
+        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    for(size_t column = 0; column < columns; ++column){
+        if(column) matrix[column - 1][column] =
+            matrix[column - 1][column] + exact_value((uint64_t)column);
+        for(size_t j = 0; j < dg.size(); ++j)
+            matrix[column + j][column] = matrix[column + j][column] + dg[j];
+    }
+    for(size_t i = 0; i < p.size(); ++i) matrix[i][columns] = p[i];
+
+    size_t pivot_row = 0;
+    std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
+    for(size_t column = 0; column < columns; ++column){
+        size_t row = pivot_row;
+        while(row < rows && matrix[row][column].is_zero()) ++row;
+        if(row == rows) continue;
+        if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
+        exact_value pivot = matrix[pivot_row][column];
+        for(size_t j = column; j <= columns; ++j)
+            matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
+        for(size_t i = 0; i < rows; ++i){
+            if(i == pivot_row || matrix[i][column].is_zero()) continue;
+            exact_value scale = matrix[i][column];
+            for(size_t j = column; j <= columns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
+        }
+        pivot_for_column[column] = pivot_row++;
+    }
+    for(size_t i = 0; i < rows; ++i){
+        bool all_zero = true;
+        for(size_t j = 0; j < columns; ++j)
+            if(!matrix[i][j].is_zero()){ all_zero = false; break; }
+        if(all_zero && !matrix[i][columns].is_zero()) return exact_expr();
+    }
+    integration_poly r(columns, exact_value(0));
+    for(size_t column = 0; column < columns; ++column){
+        if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
+        r[column] = matrix[pivot_for_column[column]][columns];
+    }
+    return constant * integration_poly_expr(context, r, variable) *
+        context.exponential(inner);
+}
+
+// Hermite reduction in the quadratic exponential extension. For
+// P(x)*exp(a*x^2+b*x+d), solve P = R' + (2*a*x+b)*R + k. The first two
+// terms are d(R*exp(...))/dx; the one-dimensional residual k is integrated
+// through erf or erfi after completing the square. This is a
+// differential-algebra reduction, not a collection of power rules.
+static exact_expr integration_quadratic_hyperexponential(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable){
+    integration_poly p, g;
+    exact_expr constant;
+    exact_expr polynomial_cofactor = integration_extract_constants(
+        context, cofactor, variable, constant);
+    if(!integration_parse_poly(polynomial_cofactor, variable, p) ||
+       !integration_parse_poly(inner, variable, g) ||
+       g.size() != 3 || g[2].is_zero()) return exact_expr();
+
+    const size_t degree_p = p.size() - 1;
+    const size_t r_columns = degree_p;
+    const size_t residual_column = r_columns;
+    const size_t columns = r_columns + 1;
+    const size_t rows = degree_p + 1;
+    std::vector<std::vector<exact_value>> matrix(
+        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    const exact_value twice_a = exact_value(2) * g[2];
+    for(size_t column = 0; column < r_columns; ++column){
+        if(column)
+            matrix[column - 1][column] = matrix[column - 1][column] +
+                exact_value((uint64_t)column);
+        matrix[column][column] = matrix[column][column] + g[1];
+        matrix[column + 1][column] = matrix[column + 1][column] + twice_a;
+    }
+    matrix[0][residual_column] = exact_value(1);
+    for(size_t row = 0; row < p.size(); ++row)
+        matrix[row][columns] = p[row];
+
+    size_t pivot_row = 0;
+    std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
+    for(size_t column = 0; column < columns; ++column){
+        size_t row = pivot_row;
+        while(row < rows && matrix[row][column].is_zero()) ++row;
+        if(row == rows) continue;
+        if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
+        exact_value pivot = matrix[pivot_row][column];
+        for(size_t j = column; j <= columns; ++j)
+            matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
+        for(size_t i = 0; i < rows; ++i){
+            if(i == pivot_row || matrix[i][column].is_zero()) continue;
+            exact_value scale = matrix[i][column];
+            for(size_t j = column; j <= columns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
+        }
+        pivot_for_column[column] = pivot_row++;
+    }
+    for(size_t row = 0; row < rows; ++row){
+        bool empty = true;
+        for(size_t column = 0; column < columns; ++column)
+            if(!matrix[row][column].is_zero()){
+                empty = false;
+                break;
+            }
+        if(empty && !matrix[row][columns].is_zero()) return exact_expr();
+    }
+    for(size_t column = 0; column < columns; ++column)
+        if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
+
+    integration_poly r(r_columns ? r_columns : 1, exact_value(0));
+    for(size_t column = 0; column < r_columns; ++column)
+        r[column] = matrix[pivot_for_column[column]][columns];
+    exact_value residual = matrix[pivot_for_column[residual_column]][columns];
+    exact_expr result = integration_poly_expr(context, r, variable) *
+                        context.exponential(inner);
+    if(residual.is_zero()) return constant * result;
+
+    const bool negative = g[2].is_negative();
+    exact_expr magnitude = context.value(negative ? -g[2] : g[2]);
+    exact_expr root = context.square_root(magnitude);
+    exact_expr shift = variable + context.value(g[1] /
+        (exact_value(2) * g[2]));
+    exact_value completed_constant = g[0] - g[1] * g[1] /
+        (exact_value(4) * g[2]);
+    exact_expr base = context.square_root(context.pi()) /
+        (context.integer(2) * root);
+    base = context.exponential(context.value(completed_constant)) * base;
+    base = negative ? base * context.error_function(root * shift)
+                    : base * context.imaginary_error_function(root * shift);
+    return constant * (result + context.value(residual) * base);
+}
+
+// Algebraic Hermite base case for a reciprocal square root of a quadratic.
+// Complete the square using L=2*a*x+b and D=4*a*c-b^2, then select a real
+// inverse circular/hyperbolic primitive from the signs of a and D.
+static exact_expr integration_quadratic_inverse_sqrt(
+    exact_context &context, const exact_expr &radicand,
+    const exact_expr &variable){
+    integration_poly q;
+    if(!integration_parse_poly(radicand, variable, q) || q.size() != 3 ||
+       q[2].is_zero()) return exact_expr();
+    const exact_value a = q[2];
+    const exact_value discriminant = exact_value(4) * a * q[0] - q[1] * q[1];
+    exact_expr linear = context.value(exact_value(2) * a) * variable +
+        context.value(q[1]);
+    if(a.is_negative()){
+        if(!discriminant.is_negative()) return exact_expr();
+        exact_expr root_a = context.square_root(context.value(-a));
+        exact_expr root_discriminant = context.square_root(
+            context.value(-discriminant));
+        return context.arc_sine(-linear / root_discriminant) / root_a;
+    }
+    exact_expr root_a = context.square_root(context.value(a));
+    if(!discriminant.is_negative() && !discriminant.is_zero()){
+        exact_expr root_discriminant = context.square_root(
+            context.value(discriminant));
+        return context.inverse_hyperbolic_sine(linear / root_discriminant) /
+            root_a;
+    }
+    if(discriminant.is_zero())
+        return context.natural_logarithm(context.absolute_value(linear)) / root_a;
+    exact_expr root_discriminant = context.square_root(context.value(-discriminant));
+    return context.inverse_hyperbolic_cosine(linear / root_discriminant) /
+        root_a;
+}
+
+// Hermite reduction in Q(x,sqrt(q)) for a quadratic q.  For a polynomial P,
+// solve P = R'*q + R*q'/2 + k. The first two terms are the derivative of
+// R*sqrt(q); k times the reciprocal-square-root primitive is the only
+// remaining basis term.
+static exact_expr integration_quadratic_root_polynomial(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &radicand, const exact_expr &variable){
+    integration_poly p, q;
+    if(!integration_parse_poly(cofactor, variable, p) ||
+       !integration_parse_poly(radicand, variable, q) || q.size() != 3 ||
+       q[2].is_zero()) return exact_expr();
+    const size_t degree_p = p.size() - 1;
+    const size_t r_columns = degree_p;
+    const size_t residual_column = r_columns;
+    const size_t columns = r_columns + 1;
+    const size_t rows = degree_p + 1;
+    std::vector<std::vector<exact_value>> matrix(
+        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    for(size_t column = 0; column < r_columns; ++column){
+        if(column){
+            for(size_t j = 0; j < q.size(); ++j)
+                matrix[column - 1 + j][column] =
+                    matrix[column - 1 + j][column] +
+                    exact_value((uint64_t)column) * q[j];
+        }
+        matrix[column][column] = matrix[column][column] + q[1] / exact_value(2);
+        matrix[column + 1][column] = matrix[column + 1][column] + q[2];
+    }
+    matrix[0][residual_column] = exact_value(1);
+    for(size_t row = 0; row < p.size(); ++row)
+        matrix[row][columns] = p[row];
+
+    size_t pivot_row = 0;
+    std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
+    for(size_t column = 0; column < columns; ++column){
+        size_t row = pivot_row;
+        while(row < rows && matrix[row][column].is_zero()) ++row;
+        if(row == rows) continue;
+        if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
+        exact_value pivot = matrix[pivot_row][column];
+        for(size_t j = column; j <= columns; ++j)
+            matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
+        for(size_t i = 0; i < rows; ++i){
+            if(i == pivot_row || matrix[i][column].is_zero()) continue;
+            exact_value scale = matrix[i][column];
+            for(size_t j = column; j <= columns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
+        }
+        pivot_for_column[column] = pivot_row++;
+    }
+    for(size_t column = 0; column < columns; ++column)
+        if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
+
+    integration_poly r(r_columns ? r_columns : 1, exact_value(0));
+    for(size_t column = 0; column < r_columns; ++column)
+        r[column] = matrix[pivot_for_column[column]][columns];
+    exact_value residual = matrix[pivot_for_column[residual_column]][columns];
+    exact_expr result = integration_poly_expr(context, r, variable) *
+        context.square_root(radicand);
+    if(residual.is_zero()) return result;
+    exact_expr base = integration_quadratic_inverse_sqrt(
+        context, radicand, variable);
+    return base.valid() ? result + context.value(residual) * base : exact_expr();
+}
+
+// In the exponential differential fields generated by exp(+-(a*x+b)), write
+// an antiderivative as A(x)*f(g) + B(x)*h(g), where (f,h) is either
+// (sin,cos) or (sinh,cosh). Matching derivatives gives a finite rational
+// linear system for A and B, covering every polynomial cofactor without a
+// table of integration-by-parts identities.
+static exact_expr integration_linear_function_polynomial(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable,
+    exact_opcode operation){
+    integration_poly p, g;
+    if(!integration_parse_poly(cofactor, variable, p) ||
+       !integration_parse_poly(inner, variable, g) || g.size() != 2 ||
+       g[1].is_zero() ||
+       (operation != exact_opcode::sine && operation != exact_opcode::cosine &&
+        operation != exact_opcode::hyperbolic_sine &&
+        operation != exact_opcode::hyperbolic_cosine)) return exact_expr();
+    const bool circular = operation == exact_opcode::sine ||
+                          operation == exact_opcode::cosine;
+    const bool first = operation == exact_opcode::sine ||
+                       operation == exact_opcode::hyperbolic_sine;
+    const size_t degree = p.size() - 1;
+    const size_t polynomial_size = degree + 1;
+    const size_t columns = polynomial_size * 2;
+    const size_t rows = columns;
+    std::vector<std::vector<exact_value>> matrix(
+        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    const exact_value a = g[1];
+    for(size_t degree_r = 0; degree_r < polynomial_size; ++degree_r){
+        const size_t a_column = degree_r;
+        const size_t b_column = polynomial_size + degree_r;
+        // Coefficient of sin(g) or sinh(g): A' - a*B for circular
+        // functions, and A' + a*B for hyperbolic functions.
+        if(degree_r)
+            matrix[degree_r - 1][a_column] =
+                matrix[degree_r - 1][a_column] +
+                exact_value((uint64_t)degree_r);
+        matrix[degree_r][b_column] = circular
+            ? matrix[degree_r][b_column] - a
+            : matrix[degree_r][b_column] + a;
+        // Coefficient of cos(g) or cosh(g): a*A + B'.
+        matrix[polynomial_size + degree_r][a_column] =
+            matrix[polynomial_size + degree_r][a_column] + a;
+        if(degree_r)
+            matrix[polynomial_size + degree_r - 1][b_column] =
+                matrix[polynomial_size + degree_r - 1][b_column] +
+                exact_value((uint64_t)degree_r);
+    }
+    for(size_t degree_r = 0; degree_r < p.size(); ++degree_r)
+        matrix[(first ? 0 : polynomial_size) + degree_r][columns] =
+            p[degree_r];
+
+    size_t pivot_row = 0;
+    std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
+    for(size_t column = 0; column < columns; ++column){
+        size_t row = pivot_row;
+        while(row < rows && matrix[row][column].is_zero()) ++row;
+        if(row == rows) continue;
+        if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
+        exact_value pivot = matrix[pivot_row][column];
+        for(size_t j = column; j <= columns; ++j)
+            matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
+        for(size_t i = 0; i < rows; ++i){
+            if(i == pivot_row || matrix[i][column].is_zero()) continue;
+            exact_value scale = matrix[i][column];
+            for(size_t j = column; j <= columns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
+        }
+        pivot_for_column[column] = pivot_row++;
+    }
+    for(size_t column = 0; column < columns; ++column)
+        if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
+
+    integration_poly sine_coefficient(polynomial_size, exact_value(0));
+    integration_poly cosine_coefficient(polynomial_size, exact_value(0));
+    for(size_t degree_r = 0; degree_r < polynomial_size; ++degree_r){
+        sine_coefficient[degree_r] =
+            matrix[pivot_for_column[degree_r]][columns];
+        cosine_coefficient[degree_r] = matrix[pivot_for_column[
+            polynomial_size + degree_r]][columns];
+    }
+    exact_expr first_function = circular ? context.sine(inner)
+                                         : context.hyperbolic_sine(inner);
+    exact_expr second_function = circular ? context.cosine(inner)
+                                          : context.hyperbolic_cosine(inner);
+    return integration_poly_expr(context, sine_coefficient, variable) *
+               first_function +
+           integration_poly_expr(context, cosine_coefficient, variable) *
+               second_function;
+}
+
+// Primitive with respect to the immediate argument.  The caller verifies the
+// chain-rule condition cofactor / inner' is constant, so these identities
+// apply to arbitrary nested inner expressions rather than only to x.
+static exact_expr integration_unary_argument_primitive(
+    exact_context &context, exact_opcode operation, const exact_expr &inner){
+    if(operation == exact_opcode::exponential) return context.exponential(inner);
+    if(operation == exact_opcode::sine) return -context.cosine(inner);
+    if(operation == exact_opcode::cosine) return context.sine(inner);
+    if(operation == exact_opcode::tangent)
+        return -context.natural_logarithm(context.absolute_value(
+            context.cosine(inner)));
+    if(operation == exact_opcode::hyperbolic_sine)
+        return context.hyperbolic_cosine(inner);
+    if(operation == exact_opcode::hyperbolic_cosine)
+        return context.hyperbolic_sine(inner);
+    if(operation == exact_opcode::hyperbolic_tangent)
+        return context.natural_logarithm(context.hyperbolic_cosine(inner));
+    if(operation == exact_opcode::natural_logarithm)
+        return inner * context.natural_logarithm(inner) - inner;
+    if(operation == exact_opcode::logarithm_base_2)
+        return (inner * context.natural_logarithm(inner) - inner) /
+            context.natural_logarithm(context.integer(2));
+    if(operation == exact_opcode::logarithm_base_10)
+        return (inner * context.natural_logarithm(inner) - inner) /
+            context.natural_logarithm(context.integer(10));
+    if(operation == exact_opcode::error_function)
+        return inner * context.error_function(inner) +
+            context.exponential(-context.power(inner, context.integer(2))) /
+            context.square_root(context.pi());
+    if(operation == exact_opcode::imaginary_error_function)
+        return inner * context.imaginary_error_function(inner) -
+            context.exponential(context.power(inner, context.integer(2))) /
+            context.square_root(context.pi());
+    if(operation == exact_opcode::sine_integral)
+        return inner * context.sine_integral(inner) + context.cosine(inner);
+    if(operation == exact_opcode::cosine_integral)
+        return inner * context.cosine_integral(inner) - context.sine(inner);
+    if(operation == exact_opcode::exponential_integral)
+        return inner * context.exponential_integral(inner) -
+            context.exponential(inner);
+    return exact_expr();
+}
+
+static exact_expr integration_polynomial_primitive(
+    exact_context &context, const integration_poly &polynomial,
+    const exact_expr &variable){
+    exact_expr result = context.integer(0);
+    for(size_t degree = 0; degree < polynomial.size(); ++degree){
+        if(polynomial[degree].is_zero()) continue;
+        exact_value coefficient = polynomial[degree] /
+                                  exact_value((uint64_t)degree + 1);
+        result = result + context.value(coefficient) *
+            context.power(variable, context.integer(degree + 1));
+    }
+    return result;
+}
+
+static exact_expr integration_logarithmic_polynomial(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable){
+    integration_poly polynomial;
+    if(!integration_parse_poly(cofactor, variable, polynomial))
+        return exact_expr();
+    integration_poly inner_polynomial;
+    if(!integration_parse_poly(inner, variable, inner_polynomial))
+        return exact_expr();
+    exact_expr primitive = integration_polynomial_primitive(
+        context, polynomial, variable);
+    exact_expr derivative_inner = integration_poly_expr(
+        context, integration_derivative_poly(inner_polynomial), variable);
+    exact_expr remainder_integrand = primitive * derivative_inner / inner;
+    exact_expr remainder = integration_rational_antiderivative(
+        context, remainder_integrand, variable);
+    if(!remainder.valid()) return exact_expr();
+    return primitive * context.natural_logarithm(inner) - remainder;
+}
+
+// Reduction of a logarithmic monomial in a differential tower.  Integration
+// by parts lowers the log exponent on every recursive call:
+// int(P*L^n) = A*L^n - n*int(A*q'/q*L^(n-1)), where A'=P and L=log(q).
+static exact_expr integration_logarithmic_polynomial_power(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, size_t exponent, const exact_expr &variable){
+    if(exponent == 0 || exponent > 64) return exact_expr();
+    integration_poly polynomial, inner_polynomial;
+    if(!integration_parse_poly(cofactor, variable, polynomial) ||
+       !integration_parse_poly(inner, variable, inner_polynomial))
+        return exact_expr();
+    exact_expr primitive = integration_polynomial_primitive(
+        context, polynomial, variable);
+    exact_expr logarithm = context.natural_logarithm(inner);
+    exact_expr lower_power = exponent == 1 ? context.integer(1) :
+        context.power(logarithm, context.integer(exponent - 1));
+    exact_expr derivative_inner = integration_poly_expr(
+        context, integration_derivative_poly(inner_polynomial), variable);
+    exact_expr remainder_integrand = context.integer(exponent) * primitive *
+        derivative_inner * lower_power / inner;
+    exact_expr remainder = context.integrate(remainder_integrand, variable);
+    if(!remainder.valid() || remainder.operation() == exact_opcode::integral)
+        return exact_expr();
+    return primitive * context.power(logarithm, context.integer(exponent)) -
+        remainder;
+}
+
+// A generic reduction for polynomial multiples of a known unary extension.
+// If A'=P, integration by parts changes int(P*F) into A*F-int(A*F').  The
+// recursive integral has one fewer occurrence of F and can be handled by the
+// rational, exponential, trigonometric, or special-function layers.
+static exact_expr integration_polynomial_function_by_parts(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &function, const exact_expr &variable){
+    integration_poly polynomial;
+    if(!integration_parse_poly(cofactor, variable, polynomial))
+        return exact_expr();
+    exact_expr primitive = integration_polynomial_primitive(
+        context, polynomial, variable);
+    exact_expr remainder = context.integrate(
+        primitive * context.differentiate(function, variable), variable);
+    if(!remainder.valid() || remainder.operation() == exact_opcode::integral)
+        return exact_expr();
+    return primitive * function - remainder;
+}
+
+} // namespace
+
+exact_expr exact_context::integrate(const exact_expr &expression,
+                                    const exact_expr &variable){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != storage_ || variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "integrate requires an expression and a symbol in one context");
+    std::unordered_map<uint32_t, bool> dependency_memo;
+    auto depends = [&](auto &&self, uint32_t id) -> bool{
+        if(id == variable.root_) return true;
+        auto cached = dependency_memo.find(id);
+        if(cached != dependency_memo.end()) return cached->second;
+        const exact_node &node = storage_->node(id);
+        const uint32_t *args = storage_->children(node);
+        bool result = false;
+        for(size_t i = 0; i < node.operand_count; ++i)
+            if(self(self, args[i])){ result = true; break; }
+        dependency_memo.emplace(id, result);
+        return result;
+    };
+    auto unresolved = [&](uint32_t id){
+        return exact_expr(storage_, storage_->intern_compound(
+            exact_opcode::integral, {id, variable.root_}));
+    };
+    auto constant_ratio = [&](const exact_expr &numerator,
+                              const exact_expr &denominator,
+                              exact_expr &ratio){
+        if(denominator.is_value() && denominator.value().is_zero()) return false;
+        ratio = simplify(numerator / denominator);
+        return !depends(depends, ratio.root_);
+    };
+    std::unordered_map<uint32_t, exact_expr> memo;
+    std::function<exact_expr(uint32_t)> antiderivative = [&](uint32_t id){
+        auto cached = memo.find(id);
+        if(cached != memo.end()) return cached->second;
+        // Antiderivatives also intern nodes, so storage references cannot be
+        // held across recursive differentiation or integration calls.
+        exact_node node = storage_->node(id);
+        const uint32_t *child_data = storage_->children(node);
+        std::vector<uint32_t> args(child_data,
+                                   child_data + node.operand_count);
+        exact_expr source(storage_, id), result;
+        // Special-function kernels.  These are kept before rational
+        // integration because the denominator is the integration variable,
+        // while the numerator is transcendental rather than a polynomial.
+        exact_expr multiplied_by_variable = simplify(source * variable);
+        if(multiplied_by_variable == sine(variable)){
+            result = sine_integral(variable);
+        }else if(multiplied_by_variable == cosine(variable)){
+            result = cosine_integral(variable);
+        }else if(multiplied_by_variable == exponential(variable)){
+            result = exponential_integral(variable);
+        }else if(simplify(source * natural_logarithm(variable)) == integer(1)){
+            // li(x) is represented through Ei(log(x)); this keeps the
+            // existing special-function vocabulary instead of adding a
+            // second node for the logarithmic integral.
+            result = exponential_integral(natural_logarithm(variable));
+        }
+        if(!result.valid() && node.op == exact_opcode::exponential){
+            // exp(c*x^2) is the first non-elementary hyperexponential
+            // extension.  Detect it through f'/x = 2c, then verify f=c*x^2
+            // before selecting erf (c<0) or erfi (otherwise).
+            exact_expr inner(storage_, args[0]), slope, coefficient;
+            if(constant_ratio(differentiate(inner, variable), variable, slope)){
+                coefficient = simplify(slope / integer(2));
+                exact_expr remainder = simplify(inner - coefficient *
+                    power(variable, integer(2)));
+                if(remainder == integer(0) && coefficient != integer(0)){
+                    bool negative = coefficient.is_value() &&
+                        coefficient.value().is_negative();
+                    exact_expr magnitude = negative ? -coefficient : coefficient;
+                    exact_expr root = square_root(magnitude);
+                    exact_expr scale = square_root(pi()) /
+                        (integer(2) * root);
+                    result = negative ? scale * error_function(root * variable)
+                                      : scale * imaginary_error_function(root * variable);
+                }
+            }
+        }
+        if(!result.valid()){
+            // Rational functions of one elementary generator belong to a
+            // simple differential extension.  For t = exp(u), tan(u), or
+            // tanh(u), divide by respectively u'*t, u'*(1+t^2), or
+            // u'*(1-t^2), integrate rationally, then restore t. The rational
+            // parser rejects any expression with x or another generator left.
+            std::vector<uint32_t> generator_nodes;
+            std::unordered_map<uint32_t, bool> generator_seen;
+            std::function<void(uint32_t)> find_generators = [&](uint32_t current){
+                if(!generator_seen.emplace(current, true).second) return;
+                exact_node current_node = storage_->node(current);
+                if(current_node.op == exact_opcode::exponential ||
+                   current_node.op == exact_opcode::tangent ||
+                   current_node.op == exact_opcode::hyperbolic_tangent)
+                    generator_nodes.push_back(current);
+                const uint32_t *children = storage_->children(current_node);
+                for(size_t i = 0; i < current_node.operand_count; ++i)
+                    find_generators(children[i]);
+            };
+            find_generators(id);
+            for(uint32_t generator_id : generator_nodes){
+                exact_expr generator(storage_, generator_id);
+                exact_expr inner = generator.operand(0);
+                exact_expr derivative_inner = differentiate(inner, variable);
+                if(depends(depends, derivative_inner.root_) ||
+                   (derivative_inner.is_value() &&
+                    derivative_inner.value().is_zero())) continue;
+
+                exact_expr temporary;
+                for(size_t suffix = 0;; ++suffix){
+                    temporary = symbol("_risch_exp_" + std::to_string(suffix));
+                    std::unordered_map<uint32_t, bool> contains_memo;
+                    std::function<bool(uint32_t)> contains_t = [&](uint32_t current){
+                        if(current == temporary.root_) return true;
+                        auto cached = contains_memo.find(current);
+                        if(cached != contains_memo.end()) return cached->second;
+                        exact_node current_node = storage_->node(current);
+                        const uint32_t *children = storage_->children(current_node);
+                        bool found = false;
+                        for(size_t i = 0; i < current_node.operand_count; ++i)
+                            if(contains_t(children[i])){ found = true; break; }
+                        contains_memo.emplace(current, found);
+                        return found;
+                    };
+                    if(!contains_t(id)) break;
+                }
+                exact_expr transformed = substitute(source, generator, temporary);
+                exact_expr jacobian;
+                if(generator.operation() == exact_opcode::exponential)
+                    jacobian = temporary;
+                else if(generator.operation() == exact_opcode::tangent)
+                    jacobian = integer(1) + power(temporary, integer(2));
+                else jacobian = integer(1) - power(temporary, integer(2));
+                exact_expr rational_primitive = integration_rational_antiderivative(
+                    *this, transformed / jacobian, temporary);
+                if(!rational_primitive.valid()) continue;
+                result = substitute(rational_primitive, temporary, generator) /
+                    derivative_inner;
+                break;
+            }
+        }
+        bool elementary_logarithmic = false;
+        if(!result.valid() && node.op == exact_opcode::multiply){
+            for(size_t i = 0; i < node.operand_count; ++i){
+                exact_expr factor(storage_, args[i]);
+                if(factor.operation() != exact_opcode::power ||
+                   factor.operand(1) != integer(-1)) continue;
+                exact_expr base = factor.operand(0), ratio;
+                if(constant_ratio(source,
+                                  differentiate(base, variable) / base, ratio)){
+                    elementary_logarithmic = true;
+                    break;
+                }
+            }
+        }
+        if(!result.valid() && !elementary_logarithmic &&
+           node.op != exact_opcode::sine && node.op != exact_opcode::cosine){
+            // Weierstrass substitution for the circular elementary
+            // extension. With t = tan(u/2), sin(u)=2t/(1+t^2),
+            // cos(u)=(1-t^2)/(1+t^2), and du=2dt/(1+t^2). This handles a
+            // rational expression in sin(u) and cos(u) as one object.
+            std::vector<uint32_t> circular_nodes;
+            std::unordered_map<uint32_t, bool> circular_seen;
+            std::function<void(uint32_t)> find_circular = [&](uint32_t current){
+                if(!circular_seen.emplace(current, true).second) return;
+                exact_node current_node = storage_->node(current);
+                if(current_node.op == exact_opcode::sine ||
+                   current_node.op == exact_opcode::cosine)
+                    circular_nodes.push_back(current);
+                const uint32_t *children = storage_->children(current_node);
+                for(size_t i = 0; i < current_node.operand_count; ++i)
+                    find_circular(children[i]);
+            };
+            find_circular(id);
+            for(uint32_t circular_id : circular_nodes){
+                exact_expr circular(storage_, circular_id);
+                exact_expr inner = circular.operand(0);
+                exact_expr derivative_inner = differentiate(inner, variable);
+                if(depends(depends, derivative_inner.root_) ||
+                   (derivative_inner.is_value() &&
+                    derivative_inner.value().is_zero())) continue;
+
+                exact_expr temporary;
+                for(size_t suffix = 0;; ++suffix){
+                    temporary = symbol("_risch_trig_" + std::to_string(suffix));
+                    std::unordered_map<uint32_t, bool> contains_memo;
+                    std::function<bool(uint32_t)> contains_t = [&](uint32_t current){
+                        if(current == temporary.root_) return true;
+                        auto cached = contains_memo.find(current);
+                        if(cached != contains_memo.end()) return cached->second;
+                        exact_node current_node = storage_->node(current);
+                        const uint32_t *children = storage_->children(current_node);
+                        bool found = false;
+                        for(size_t i = 0; i < current_node.operand_count; ++i)
+                            if(contains_t(children[i])){ found = true; break; }
+                        contains_memo.emplace(current, found);
+                        return found;
+                    };
+                    if(!contains_t(id)) break;
+                }
+                exact_expr denominator = integer(1) + power(temporary, integer(2));
+                exact_expr sine_inner = sine(inner);
+                exact_expr cosine_inner = cosine(inner);
+                exact_expr transformed = substitute(source, sine_inner,
+                    integer(2) * temporary / denominator);
+                transformed = substitute(transformed, cosine_inner,
+                    (integer(1) - power(temporary, integer(2))) / denominator);
+                exact_expr rational_primitive = integration_rational_antiderivative(
+                    *this, integer(2) * transformed / denominator, temporary);
+                if(!rational_primitive.valid()) continue;
+                result = substitute(rational_primitive, temporary,
+                                    tangent(inner / integer(2))) /
+                    derivative_inner;
+                break;
+            }
+        }
+        if(!result.valid() && !elementary_logarithmic &&
+           node.op != exact_opcode::hyperbolic_sine &&
+           node.op != exact_opcode::hyperbolic_cosine){
+            // Hyperbolic Weierstrass substitution. With t = tanh(u/2),
+            // sinh(u)=2t/(1-t^2), cosh(u)=(1+t^2)/(1-t^2), and
+            // du=2dt/(1-t^2), so rational functions in one sinh/cosh pair
+            // reduce to the rational integration layer as well.
+            std::vector<uint32_t> hyperbolic_nodes;
+            std::unordered_map<uint32_t, bool> hyperbolic_seen;
+            std::function<void(uint32_t)> find_hyperbolic = [&](uint32_t current){
+                if(!hyperbolic_seen.emplace(current, true).second) return;
+                exact_node current_node = storage_->node(current);
+                if(current_node.op == exact_opcode::hyperbolic_sine ||
+                   current_node.op == exact_opcode::hyperbolic_cosine)
+                    hyperbolic_nodes.push_back(current);
+                const uint32_t *children = storage_->children(current_node);
+                for(size_t i = 0; i < current_node.operand_count; ++i)
+                    find_hyperbolic(children[i]);
+            };
+            find_hyperbolic(id);
+            for(uint32_t hyperbolic_id : hyperbolic_nodes){
+                exact_expr hyperbolic(storage_, hyperbolic_id);
+                exact_expr inner = hyperbolic.operand(0);
+                exact_expr derivative_inner = differentiate(inner, variable);
+                if(depends(depends, derivative_inner.root_) ||
+                   (derivative_inner.is_value() &&
+                    derivative_inner.value().is_zero())) continue;
+
+                exact_expr temporary;
+                for(size_t suffix = 0;; ++suffix){
+                    temporary = symbol("_risch_hyperbolic_" +
+                                       std::to_string(suffix));
+                    std::unordered_map<uint32_t, bool> contains_memo;
+                    std::function<bool(uint32_t)> contains_t = [&](uint32_t current){
+                        if(current == temporary.root_) return true;
+                        auto cached = contains_memo.find(current);
+                        if(cached != contains_memo.end()) return cached->second;
+                        exact_node current_node = storage_->node(current);
+                        const uint32_t *children = storage_->children(current_node);
+                        bool found = false;
+                        for(size_t i = 0; i < current_node.operand_count; ++i)
+                            if(contains_t(children[i])){ found = true; break; }
+                        contains_memo.emplace(current, found);
+                        return found;
+                    };
+                    if(!contains_t(id)) break;
+                }
+                exact_expr denominator = integer(1) - power(temporary, integer(2));
+                exact_expr sinh_inner = hyperbolic_sine(inner);
+                exact_expr cosh_inner = hyperbolic_cosine(inner);
+                exact_expr transformed = substitute(source, sinh_inner,
+                    integer(2) * temporary / denominator);
+                transformed = substitute(transformed, cosh_inner,
+                    (integer(1) + power(temporary, integer(2))) / denominator);
+                exact_expr rational_primitive = integration_rational_antiderivative(
+                    *this, integer(2) * transformed / denominator, temporary);
+                if(!rational_primitive.valid()) continue;
+                result = substitute(rational_primitive, temporary,
+                                    hyperbolic_tangent(inner / integer(2))) /
+                    derivative_inner;
+                break;
+            }
+        }
+        exact_expr rational = depends(depends, id)
+            ? integration_rational_antiderivative(*this, source, variable)
+            : exact_expr();
+        if(result.valid()){
+            // A recognized special-function primitive has priority.
+        }else if(!depends(depends, id)){
+            result = source * variable;
+        }else if(rational.valid()){
+            result = rational;
+        }else if(id == variable.root_){
+            result = power(variable, integer(2)) / integer(2);
+        }else if(node.op == exact_opcode::add){
+            std::vector<exact_expr> terms;
+            terms.reserve(node.operand_count);
+            bool failed = false;
+            for(size_t i = 0; i < node.operand_count; ++i){
+                exact_expr term = antiderivative(args[i]);
+                if(term.operation() == exact_opcode::integral) failed = true;
+                terms.push_back(term);
+            }
+            result = failed ? unresolved(id) : add(terms);
+        }else if(node.op == exact_opcode::multiply){
+            // Risch tower kernels: c*f'*exp(f), c*f'/f, and
+            // c*f'/f*ln(f)^n. The quotient test makes these structural
+            // differential-field rules rather than expression templates.
+            bool tower_integrated = false;
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                if(factor.operation() != exact_opcode::power ||
+                   factor.operand(1) != integer(-1) ||
+                   factor.operand(0).operation() != exact_opcode::square_root)
+                    continue;
+                exact_expr radicand = factor.operand(0).operand(0);
+                exact_expr cofactor = simplify(source / factor);
+                exact_expr primitive = integration_quadratic_root_polynomial(
+                    *this, cofactor, radicand, variable);
+                if(primitive.valid()){
+                    result = primitive;
+                    tower_integrated = true;
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                if(!exact_unary_function(factor.operation())) continue;
+                exact_expr inner = factor.operand(0);
+                exact_expr primitive = integration_unary_argument_primitive(
+                    *this, factor.operation(), inner);
+                if(!primitive.valid()) continue;
+                exact_expr ratio;
+                if(constant_ratio(source / factor,
+                                  differentiate(inner, variable), ratio)){
+                    result = ratio * primitive;
+                    tower_integrated = true;
+                }
+            }
+            // Liouvillian special-function extensions use the same
+            // logarithmic-derivative test: f'(x)/f(x).  Thus this handles
+            // Si(u), Ci(u), and Ei(u) for an arbitrary differentiable inner
+            // u, rather than recognizing only the spelling u == x.
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                exact_opcode operation = factor.operation();
+                if(operation != exact_opcode::sine &&
+                   operation != exact_opcode::cosine &&
+                   operation != exact_opcode::exponential) continue;
+                exact_expr inner = factor.operand(0);
+                exact_expr logarithmic_derivative =
+                    differentiate(inner, variable) / inner;
+                exact_expr ratio;
+                if(constant_ratio(source / factor, logarithmic_derivative,
+                                  ratio)){
+                    if(operation == exact_opcode::sine)
+                        result = ratio * sine_integral(inner);
+                    else if(operation == exact_opcode::cosine)
+                        result = ratio * cosine_integral(inner);
+                    else result = ratio * exponential_integral(inner);
+                    tower_integrated = true;
+                }
+                for(size_t j = 0; j < node.operand_count && !tower_integrated; ++j){
+                    if(operation == exact_opcode::exponential) break;
+                    exact_expr denominator_factor(storage_, args[j]);
+                    if(denominator_factor.operation() != exact_opcode::power ||
+                       denominator_factor.operand(1) != integer(-1)) continue;
+                    exact_expr denominator = denominator_factor.operand(0);
+                    exact_expr shift = simplify(inner - denominator);
+                    if(depends(depends, shift.root_)) continue;
+                    if(!constant_ratio(source / factor,
+                                       differentiate(denominator, variable) /
+                                       denominator, ratio)) continue;
+                    if(operation == exact_opcode::sine){
+                        result = ratio * (cosine(shift) *
+                            sine_integral(denominator) + sine(shift) *
+                            cosine_integral(denominator));
+                    }else{
+                        result = ratio * (cosine(shift) *
+                            cosine_integral(denominator) - sine(shift) *
+                            sine_integral(denominator));
+                    }
+                    tower_integrated = true;
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                if(factor.operation() != exact_opcode::sine &&
+                   factor.operation() != exact_opcode::cosine &&
+                   factor.operation() != exact_opcode::hyperbolic_sine &&
+                   factor.operation() != exact_opcode::hyperbolic_cosine)
+                    continue;
+                exact_expr solution = integration_linear_function_polynomial(
+                    *this, simplify(source / factor), factor.operand(0),
+                    variable, factor.operation());
+                if(solution.valid()){
+                    result = solution;
+                    tower_integrated = true;
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                exact_expr inner, exponential_factor;
+                if(factor.operation() == exact_opcode::exponential){
+                    inner = factor.operand(0);
+                    exponential_factor = factor;
+                }else if(factor.operation() == exact_opcode::power &&
+                         factor.operand(0).operation() == exact_opcode::constant_e){
+                    // The parser stores e^u as a power node, but it is the
+                    // same exponential differential generator as exp(u).
+                    inner = factor.operand(1);
+                    exponential_factor = exponential(inner);
+                }else continue;
+                exact_expr derivative_inner = differentiate(inner, variable);
+                exact_expr ratio;
+                if(!depends(depends, derivative_inner.root_) &&
+                   !derivative_inner.is_value()) continue;
+                for(size_t j = 0; j < node.operand_count && !tower_integrated; ++j){
+                    exact_expr denominator_factor(storage_, args[j]);
+                    if(denominator_factor.operation() != exact_opcode::power ||
+                       denominator_factor.operand(1) != integer(-1)) continue;
+                    exact_expr denominator = denominator_factor.operand(0);
+                    exact_expr shift = simplify(inner - denominator);
+                    if(depends(depends, shift.root_)) continue;
+                    if(constant_ratio(source / factor,
+                                      differentiate(denominator, variable) /
+                                      denominator, ratio)){
+                        // exp(inner)/denominator has an Ei primitive when
+                        // inner = denominator + constant.
+                        result = ratio * exponential(shift) *
+                            exponential_integral(denominator);
+                        tower_integrated = true;
+                    }
+                }
+                if(tower_integrated) break;
+                if(constant_ratio(source / factor, derivative_inner, ratio)){
+                    result = ratio * factor;
+                    tower_integrated = true;
+                }else{
+                    exact_expr polynomial_solution =
+                        integration_hyperexponential_polynomial(
+                            *this, simplify(source / factor), inner, variable);
+                    if(polynomial_solution.valid()){
+                        result = substitute(polynomial_solution,
+                                            exponential_factor, factor);
+                        tower_integrated = true;
+                    }else{
+                        exact_expr reduced_solution =
+                            integration_quadratic_hyperexponential(
+                                *this, simplify(source / factor), inner,
+                                variable);
+                        if(reduced_solution.valid()){
+                            result = substitute(reduced_solution,
+                                                exponential_factor, factor);
+                            tower_integrated = true;
+                        }
+                    }
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                if(factor.operation() != exact_opcode::power ||
+                   factor.operand(1) != integer(-1)) continue;
+                exact_expr base = factor.operand(0);
+                exact_expr derivative_base = differentiate(base, variable);
+                exact_expr ratio;
+                if(constant_ratio(source, derivative_base / base, ratio)){
+                    result = ratio * natural_logarithm(absolute_value(base));
+                    tower_integrated = true;
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]), logarithm, exponent;
+                if(factor.operation() == exact_opcode::natural_logarithm){
+                    logarithm = factor;
+                    exponent = integer(1);
+                }else if(factor.operation() == exact_opcode::power &&
+                         factor.operand(0).operation() ==
+                             exact_opcode::natural_logarithm &&
+                         !depends(depends, factor.operand(1).root_)){
+                    logarithm = factor.operand(0);
+                    exponent = factor.operand(1);
+                }else continue;
+                exact_expr base = logarithm.operand(0);
+                exact_expr derivative_base = differentiate(base, variable);
+                exact_expr ratio;
+                if(constant_ratio(source / factor,
+                                  derivative_base / base, ratio)){
+                    exact_expr next = exponent + integer(1);
+                    if(next != integer(0)){
+                        result = ratio * power(logarithm, next) / next;
+                        tower_integrated = true;
+                    }
+                }else{
+                    size_t logarithm_power = 0;
+                    if(!integration_exponent(exponent, logarithm_power) ||
+                       logarithm_power == 0) continue;
+                    exact_expr next = exponent + integer(1);
+                    if(constant_ratio(source / factor, derivative_base, ratio) &&
+                       next != integer(0)){
+                        result = ratio * power(logarithm, next) / next;
+                        tower_integrated = true;
+                    }else{
+                        exact_expr by_parts =
+                            integration_logarithmic_polynomial_power(
+                                *this, simplify(source / factor), base,
+                                logarithm_power, variable);
+                        if(by_parts.valid()){
+                            result = by_parts;
+                            tower_integrated = true;
+                        }
+                    }
+                }
+            }
+            for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
+                exact_expr factor(storage_, args[i]);
+                switch(factor.operation()){
+                case exact_opcode::arc_sine:
+                case exact_opcode::arc_cosine:
+                case exact_opcode::arc_tangent:
+                case exact_opcode::inverse_hyperbolic_sine:
+                case exact_opcode::inverse_hyperbolic_cosine:
+                case exact_opcode::inverse_hyperbolic_tangent:
+                case exact_opcode::sine_integral:
+                case exact_opcode::cosine_integral:
+                case exact_opcode::exponential_integral:
+                case exact_opcode::error_function:
+                case exact_opcode::imaginary_error_function:
+                    break;
+                default:
+                    continue;
+                }
+                exact_expr by_parts = integration_polynomial_function_by_parts(
+                    *this, simplify(source / factor), factor, variable);
+                if(by_parts.valid()){
+                    result = by_parts;
+                    tower_integrated = true;
+                }
+            }
+            if(tower_integrated){
+                memo.emplace(id, result);
+                return result;
+            }
+            std::vector<exact_expr> constants, dependent;
+            for(size_t i = 0; i < node.operand_count; ++i)
+                (depends(depends, args[i]) ? dependent : constants)
+                    .push_back(exact_expr(storage_, args[i]));
+            if(dependent.size() == 1){
+                exact_expr inner = antiderivative(dependent[0].root_);
+                result = inner.operation() == exact_opcode::integral
+                    ? unresolved(id) : multiply(constants) * inner;
+            }else result = unresolved(id);
+        }else if(node.op == exact_opcode::power){
+            exact_expr base(storage_, args[0]), exponent(storage_, args[1]);
+            if(exponent == integer(-1) &&
+               base.operation() == exact_opcode::square_root)
+                result = integration_quadratic_inverse_sqrt(
+                    *this, base.operand(0), variable);
+            else if(exponent == integer(-1) / integer(2))
+                result = integration_quadratic_inverse_sqrt(
+                    *this, base, variable);
+            if(!result.valid() && !depends(depends, args[1])){
+                exact_expr db = differentiate(base, variable);
+                if(!depends(depends, db.root_)){
+                    if(exponent == integer(-1))
+                        result = natural_logarithm(absolute_value(base)) / db;
+                    else{
+                        exact_expr next = exponent + integer(1);
+                        result = power(base, next) / (next * db);
+                    }
+                }else result = unresolved(id);
+            }else if(!result.valid() && !depends(depends, args[0])){
+                exact_expr de = differentiate(exponent, variable);
+                result = depends(depends, de.root_)
+                    ? unresolved(id)
+                    : power(base, exponent) /
+                      (de * natural_logarithm(base));
+            }else if(!result.valid()){
+                result = unresolved(id);
+            }
+        }else if(exact_unary_function(node.op)){
+            exact_expr inner(storage_, args[0]);
+            exact_expr di = differentiate(inner, variable);
+            exact_expr logarithmic_by_parts;
+            if(node.op == exact_opcode::natural_logarithm)
+                logarithmic_by_parts = integration_logarithmic_polynomial(
+                    *this, integer(1), inner, variable);
+            if(logarithmic_by_parts.valid()){
+                result = logarithmic_by_parts;
+            }else if(depends(depends, di.root_)){
+                result = unresolved(id);
+            }else if(node.op == exact_opcode::exponential)
+                result = exponential(inner) / di;
+            else if(node.op == exact_opcode::sine)
+                result = -cosine(inner) / di;
+            else if(node.op == exact_opcode::cosine)
+                result = sine(inner) / di;
+            else if(node.op == exact_opcode::tangent)
+                result = -natural_logarithm(absolute_value(cosine(inner))) / di;
+            else if(node.op == exact_opcode::hyperbolic_sine)
+                result = hyperbolic_cosine(inner) / di;
+            else if(node.op == exact_opcode::hyperbolic_cosine)
+                result = hyperbolic_sine(inner) / di;
+            else if(node.op == exact_opcode::hyperbolic_tangent)
+                result = natural_logarithm(hyperbolic_cosine(inner)) / di;
+            else if(node.op == exact_opcode::natural_logarithm)
+                result = (inner * natural_logarithm(inner) - inner) / di;
+            else if(node.op == exact_opcode::logarithm_base_2)
+                result = (inner * natural_logarithm(inner) - inner) /
+                         (di * natural_logarithm(integer(2)));
+            else if(node.op == exact_opcode::logarithm_base_10)
+                result = (inner * natural_logarithm(inner) - inner) /
+                         (di * natural_logarithm(integer(10)));
+            else if(node.op == exact_opcode::arc_sine)
+                result = (inner * arc_sine(inner) +
+                          square_root(integer(1) - power(inner, integer(2)))) / di;
+            else if(node.op == exact_opcode::arc_cosine)
+                result = (inner * arc_cosine(inner) -
+                          square_root(integer(1) - power(inner, integer(2)))) / di;
+            else if(node.op == exact_opcode::arc_tangent)
+                result = (inner * arc_tangent(inner) -
+                          natural_logarithm(integer(1) + power(inner, integer(2))) /
+                          integer(2)) / di;
+            else if(node.op == exact_opcode::inverse_hyperbolic_sine)
+                result = (inner * inverse_hyperbolic_sine(inner) -
+                          square_root(power(inner, integer(2)) + integer(1))) / di;
+            else if(node.op == exact_opcode::inverse_hyperbolic_cosine)
+                result = (inner * inverse_hyperbolic_cosine(inner) -
+                          square_root(inner - integer(1)) *
+                          square_root(inner + integer(1))) / di;
+            else if(node.op == exact_opcode::inverse_hyperbolic_tangent)
+                result = (inner * inverse_hyperbolic_tangent(inner) +
+                          natural_logarithm(integer(1) - power(inner, integer(2))) /
+                          integer(2)) / di;
+            else if(node.op == exact_opcode::sine_integral)
+                result = (inner * sine_integral(inner) + cosine(inner)) / di;
+            else if(node.op == exact_opcode::cosine_integral)
+                result = (inner * cosine_integral(inner) - sine(inner)) / di;
+            else if(node.op == exact_opcode::exponential_integral)
+                result = (inner * exponential_integral(inner) -
+                          exponential(inner)) / di;
+            else if(node.op == exact_opcode::error_function)
+                result = (inner * error_function(inner) +
+                          exponential(-power(inner, integer(2))) /
+                          square_root(pi())) / di;
+            else if(node.op == exact_opcode::imaginary_error_function)
+                result = (inner * imaginary_error_function(inner) -
+                          exponential(power(inner, integer(2))) /
+                          square_root(pi())) / di;
+            else result = unresolved(id);
+        }else result = unresolved(id);
+        memo.emplace(id, result);
+        return result;
+    };
+    exact_expr expanded = expand(expression, 100000);
+    return simplify(antiderivative(expanded.root_));
+}
 exact_expr exact_context::bounded_sum(const exact_expr &variable,
                                       const exact_expr &lower,
                                       const exact_expr &upper,
@@ -2484,7 +4434,8 @@ class exact_factor_simplifier{
     bool multivariate_gcd_quotients(uint32_t numerator_id,
                                     uint32_t denominator_id,
                                     uint32_t &numerator_result,
-                                    uint32_t &denominator_result){
+                                    uint32_t &denominator_result,
+                                    uint32_t *common_result = nullptr){
         using coefficient_polynomial =
             std::map<size_t, multivariate_polynomial>;
         multivariate_polynomial numerator, denominator;
@@ -2817,8 +4768,10 @@ class exact_factor_simplifier{
         };
 
         multivariate_polynomial common;
-        if(!gcd(numerator, denominator, common, 0) || is_unit(common))
-            return false;
+        if(!gcd(numerator, denominator, common, 0)) return false;
+        make_monic(common);
+        if(common_result) *common_result = multivariate_expression(common);
+        if(is_unit(common)) return common_result != nullptr;
         multivariate_polynomial numerator_quotient, denominator_quotient;
         if(!exact_divide(numerator, common, numerator_quotient) ||
            !exact_divide(denominator, common, denominator_quotient))
@@ -3071,29 +5024,36 @@ class exact_factor_simplifier{
         }else{
             symbolic.push_back(term);
         }
-        if(coefficient == exact_value(1)) sign = 1;
-        else if(coefficient == exact_value(-1)) sign = -1;
-        else return false;
         if(symbolic.empty()){
             base = storage_.intern_value(exact_value(1));
             exponent = 1;
-            return true;
+        }else{
+            if(symbolic.size() != 1) return false;
+            base = symbolic[0];
+            exponent = 1;
+            exact_node power = storage_.node(base);
+            if(power.op == exact_opcode::power){
+                const uint32_t *args = storage_.children(power);
+                exact_node exponent_node = storage_.node(args[1]);
+                int64_t integer_exponent = 0;
+                if(exponent_node.op != exact_opcode::value ||
+                   !integer_i64(storage_.values[exponent_node.payload],
+                                integer_exponent) || integer_exponent <= 0)
+                    return false;
+                base = args[0];
+                exponent = (uint64_t)integer_exponent;
+            }
         }
-        if(symbolic.size() != 1) return false;
-        base = symbolic[0];
-        exponent = 1;
-        exact_node power = storage_.node(base);
-        if(power.op == exact_opcode::power){
-            const uint32_t *args = storage_.children(power);
-            exact_node exponent_node = storage_.node(args[1]);
-            int64_t integer_exponent = 0;
-            if(exponent_node.op != exact_opcode::value ||
-               !integer_i64(storage_.values[exponent_node.payload],
-                            integer_exponent) || integer_exponent <= 0)
-                return false;
-            base = args[0];
-            exponent = (uint64_t)integer_exponent;
-        }
+        sign = coefficient.is_negative() ? -1 : 1;
+        if(sign < 0) coefficient = -coefficient;
+        if(coefficient == exact_value(1)) return true;
+
+        // Absorb any exact nth-power coefficient into the symbolic base, so
+        // one rule handles scaled differences of squares, cubes, fifths, etc.
+        exact_value root_value;
+        if(!exact_nth_root(coefficient, exponent, root_value)) return false;
+        uint32_t root = storage_.intern_value(std::move(root_value));
+        base = storage_.make_multiply({root, base});
         return true;
     }
 
@@ -3432,6 +5392,11 @@ class exact_factor_simplifier{
                 uint32_t factor_id = polynomial_expression(sparse, variable);
                 uint32_t rational = factor_rational_roots(factor_id);
                 if(rational != UINT32_MAX) factor_id = rational;
+                // Square-free decomposition can leave a repeated composite
+                // factor behind.  Factor that component as well; otherwise a
+                // product such as (x + 1)^2*(x^2 + 1)^2 stops at the quartic.
+                uint32_t quartic = factor_monic_quartic(factor_id);
+                if(quartic != UINT32_MAX) factor_id = quartic;
                 if(multiplicity != 1)
                     factor_id = storage_.make_power(factor_id,
                         storage_.intern_value(exact_value(multiplicity)));
@@ -3995,12 +5960,29 @@ class exact_factor_simplifier{
             if(difference != UINT32_MAX) return difference;
             uint32_t expression = storage_.make_add(terms);
             if(!full_factorization_) return expression;
+            auto refactor_product = [&](uint32_t candidate){
+                exact_node product = storage_.node(candidate);
+                if(product.op != exact_opcode::multiply) return candidate;
+                const uint32_t *parts = storage_.children(product);
+                std::vector<uint32_t> result;
+                result.reserve(product.operand_count);
+                for(size_t i = 0; i < product.operand_count; ++i){
+                    exact_node part = storage_.node(parts[i]);
+                    if(part.op == exact_opcode::add){
+                        const uint32_t *args = storage_.children(part);
+                        result.push_back(factor_add(std::vector<uint32_t>(
+                            args, args + part.operand_count)));
+                    }else result.push_back(parts[i]);
+                }
+                return storage_.make_multiply(std::move(result));
+            };
             uint32_t rational_roots = factor_rational_roots(expression);
-            if(rational_roots != UINT32_MAX) return rational_roots;
+            if(rational_roots != UINT32_MAX)
+                return refactor_product(rational_roots);
             uint32_t quartic = factor_monic_quartic(expression);
             if(quartic != UINT32_MAX) return quartic;
             uint32_t modular = factor_modular_search(expression);
-            if(modular != UINT32_MAX) return modular;
+            if(modular != UINT32_MAX) return refactor_product(modular);
             uint32_t square_free = factor_square_free(expression);
             if(square_free != UINT32_MAX) return square_free;
             uint32_t variable = UINT32_MAX;
@@ -4047,7 +6029,11 @@ class exact_factor_simplifier{
             std::vector<uint32_t> quotient(1, term);
             quotient.insert(quotient.end(), inverse_factors.begin(),
                             inverse_factors.end());
-            reduced.push_back(storage_.make_multiply(std::move(quotient)));
+            // Normalize the quotient before recursing.  Without this step the
+            // inverse common factors hide the polynomial structure from the
+            // next factoring pass (for example, (x + 1)^2*(x^2 + 1)^2).
+            reduced.push_back(simplify(storage_.make_multiply(
+                std::move(quotient))));
         }
         common_factors.push_back(factor_add(std::move(reduced)));
         return storage_.make_multiply(std::move(common_factors));
@@ -4418,6 +6404,27 @@ public:
                                      bool full_factorization = false)
         : storage_(storage), full_factorization_(full_factorization){}
 
+    uint32_t polynomial_gcd(uint32_t left, uint32_t right){
+        const exact_node &left_node = storage_.node(left);
+        const exact_node &right_node = storage_.node(right);
+        if(left_node.op == exact_opcode::value &&
+           right_node.op == exact_opcode::value){
+            const exact_value &a = storage_.values[left_node.payload];
+            const exact_value &b = storage_.values[right_node.payload];
+            if(!a.is_integer() || !b.is_integer())
+                throw std::invalid_argument(
+                    "gcd numeric arguments must be exact integers");
+            return storage_.intern_value(exact_value(::gcd(a.integer(),
+                                                            b.integer())));
+        }
+        uint32_t ignored_left = 0, ignored_right = 0, common = 0;
+        if(!multivariate_gcd_quotients(left, right, ignored_left,
+                                      ignored_right, &common))
+            throw std::invalid_argument(
+                "gcd requires exact polynomial arguments");
+        return common;
+    }
+
     uint32_t simplify(uint32_t expression){
         auto cached = memo_.find(expression);
         if(cached != memo_.end()) return cached->second;
@@ -4444,12 +6451,16 @@ public:
             result = storage_.make_sqrt(children[0]);
         else if(exact_unary_function(source.op))
             result = storage_.make_function(source.op, children[0]);
+        else if(source.op == exact_opcode::partial_gamma ||
+                source.op == exact_opcode::derivative ||
+                source.op == exact_opcode::integral)
+            result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
                                        children[2], children[3]);
-        else if(source.op == exact_opcode::expression_list)
-            result = storage_.intern_compound(exact_opcode::expression_list,
-                                              children);
+        else if(source.op == exact_opcode::expression_list ||
+                source.op == exact_opcode::rule)
+            result = storage_.intern_compound(source.op, children);
         memo_.emplace(expression, result);
         return result;
     }
@@ -4533,8 +6544,8 @@ public:
             int64_t power = 0;
             bool integral = exponent_node.op == exact_opcode::value &&
                 integer_i64(storage_.values[exponent_node.payload], power);
-            if(integral && power >= 0 &&
-               storage_.node(base).op == exact_opcode::add){
+            exact_node base_node = storage_.node(base);
+            if(integral && power >= 0 && base_node.op == exact_opcode::add){
                 uint32_t accumulated = storage_.intern_value(exact_value(1));
                 uint32_t factor = base;
                 uint64_t bits = (uint64_t)power;
@@ -4544,6 +6555,14 @@ public:
                     if(bits) factor = multiply(factor, factor);
                 }
                 result = accumulated;
+            }else if(integral && power > 0 &&
+                     base_node.op == exact_opcode::multiply){
+                const uint32_t *factors = storage_.children(base_node);
+                std::vector<uint32_t> powered;
+                powered.reserve(base_node.operand_count);
+                for(size_t i = 0; i < base_node.operand_count; ++i)
+                    powered.push_back(storage_.make_power(factors[i], exponent));
+                result = storage_.make_multiply(std::move(powered));
             }else{
                 result = storage_.make_power(base, exponent);
             }
@@ -4551,14 +6570,19 @@ public:
             result = storage_.make_sqrt(expand(children[0]));
         }else if(exact_unary_function(source.op)){
             result = storage_.make_function(source.op, expand(children[0]));
+        }else if(source.op == exact_opcode::partial_gamma ||
+                 source.op == exact_opcode::derivative ||
+                 source.op == exact_opcode::integral){
+            for(uint32_t &child : children) child = expand(child);
+            result = storage_.intern_compound(source.op, children);
         }else if(source.op == exact_opcode::bounded_sum){
             for(uint32_t &child : children) child = expand(child);
             result = storage_.make_sum(children[0], children[1],
                                        children[2], children[3]);
-        }else if(source.op == exact_opcode::expression_list){
+        }else if(source.op == exact_opcode::expression_list ||
+                 source.op == exact_opcode::rule){
             for(uint32_t &child : children) child = expand(child);
-            result = storage_.intern_compound(exact_opcode::expression_list,
-                                              children);
+            result = storage_.intern_compound(source.op, children);
         }
         memo_.emplace(expression, result);
         return result;
@@ -4757,12 +6781,16 @@ public:
         else if(exact_unary_function(source.op))
             result = expand_ ? expand_function(source.op, children[0])
                              : function(source.op, children[0]);
+        else if(source.op == exact_opcode::partial_gamma ||
+                source.op == exact_opcode::derivative ||
+                source.op == exact_opcode::integral)
+            result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
                                        children[2], children[3]);
-        else if(source.op == exact_opcode::expression_list)
-            result = storage_.intern_compound(exact_opcode::expression_list,
-                                              children);
+        else if(source.op == exact_opcode::expression_list ||
+                source.op == exact_opcode::rule)
+            result = storage_.intern_compound(source.op, children);
         memo_.emplace(expression, result);
         return result;
     }
@@ -4814,6 +6842,11 @@ public:
                 body = rewrite(body);
             }
             result = storage_.make_sum(variable, lower, upper, body);
+        }else if(source.op == exact_opcode::rule){
+            if(source.operand_count != 2)
+                throw std::logic_error("rule node must have two operands");
+            result = storage_.intern_compound(
+                exact_opcode::rule, {args[0], rewrite(args[1])});
         }else if(source.operand_count){
             std::vector<uint32_t> children;
             children.reserve(source.operand_count);
@@ -4829,9 +6862,13 @@ public:
                 result = storage_.make_sqrt(children[0]);
             else if(exact_unary_function(source.op))
                 result = storage_.make_function(source.op, children[0]);
-            else if(source.op == exact_opcode::expression_list)
-                result = storage_.intern_compound(exact_opcode::expression_list,
-                                                  children);
+            else if(source.op == exact_opcode::partial_gamma ||
+                    source.op == exact_opcode::derivative ||
+                    source.op == exact_opcode::integral)
+                result = storage_.intern_compound(source.op, children);
+            else if(source.op == exact_opcode::expression_list ||
+                    source.op == exact_opcode::rule)
+                result = storage_.intern_compound(source.op, children);
         }
         memo_.emplace(expression, result);
         return result;
@@ -4940,6 +6977,53 @@ exact_expr exact_context::factor(const exact_expr &expression){
     exact_factor_simplifier factorer(*storage_, true);
     return exact_expr(storage_, factorer.simplify(expression.root_));
 }
+exact_expr exact_context::factor_integer(const exact_expr &expression){
+    if(!expression.valid() || expression.storage_ != storage_)
+        throw std::invalid_argument(
+            "exact expression belongs to a different context");
+    const exact_node &node = storage_->node(expression.root_);
+    if(node.op != exact_opcode::value ||
+       !storage_->values[node.payload].is_integer())
+        throw std::invalid_argument("factorint requires an exact integer");
+    const precz_t &integer = storage_->values[node.payload].integer();
+    bool negative = integer.is_negative();
+    precn_t magnitude(integer.magnitude());
+    if(magnitude.rsiz == 0)
+        throw std::domain_error("factorint is undefined for zero");
+    std::vector<uint32_t> result;
+    if(negative)
+        result.push_back(storage_->intern_value(exact_value(-1)));
+    std::vector<precn_t> factors;
+    if(!cas_factor_big(magnitude, factors)){
+        throw std::runtime_error(
+            "ECM and quadratic sieve did not find a factor");
+    }
+    std::sort(factors.begin(), factors.end());
+    for(size_t begin = 0; begin < factors.size();){
+        size_t end = begin + 1;
+        while(end < factors.size() && factors[end] == factors[begin]) ++end;
+        uint32_t prime = storage_->intern_value(exact_value(
+            precz_t(factors[begin])));
+        size_t exponent = end - begin;
+        result.push_back(exponent == 1 ? prime : storage_->intern_compound(
+            exact_opcode::power, {prime, storage_->intern_value(
+                exact_value((uint64_t)exponent))}));
+        begin = end;
+    }
+    return exact_expr(storage_, storage_->intern_compound(
+        exact_opcode::expression_list, result));
+}
+exact_expr exact_context::gcd(const exact_expr &left, const exact_expr &right){
+    if(!left.valid() || !right.valid() || left.storage_ != storage_ ||
+       right.storage_ != storage_)
+        throw std::invalid_argument(
+            "exact expressions belong to different contexts");
+    exact_factor_simplifier factorer(*storage_);
+    uint32_t left_expanded = exact_expander(*storage_, 100000).expand(left.root_);
+    uint32_t right_expanded = exact_expander(*storage_, 100000).expand(right.root_);
+    return exact_expr(storage_, factorer.polynomial_gcd(left_expanded,
+                                                        right_expanded));
+}
 exact_expr exact_context::simplify(const exact_expr &expression,
                                    size_t automatic_expansion_terms){
     if(!expression.valid() || expression.storage_ != storage_)
@@ -4989,6 +7073,172 @@ exact_expr exact_context::trig_reduce(const exact_expr &expression){
         throw std::invalid_argument("exact expression belongs to a different context");
     exact_trig_rewriter rewriter(*storage_, false);
     return exact_expr(storage_, rewriter.rewrite(expression.root_));
+}
+
+exact_expr exact_context::groebner(
+        const std::vector<exact_expr> &polynomials,
+        const std::vector<exact_expr> &variables){
+    if(polynomials.empty() || variables.empty())
+        throw std::invalid_argument("groebner requires polynomials and variables");
+    std::vector<uint32_t> ids;
+    for(const exact_expr &v : variables){
+        if(!v.valid() || v.storage_ != storage_ ||
+           storage_->node(v.root_).op != exact_opcode::symbol)
+            throw std::invalid_argument("groebner variables must be symbols");
+        ids.push_back(v.root_);
+    }
+    using monomial = std::vector<uint16_t>;
+    using polynomial = std::map<monomial, exact_expr>;
+    exact_expr zero = integer(0), one = integer(1);
+    auto is_zero = [&](const exact_expr &v){
+        exact_expr s = simplify(v);
+        const exact_node &n = storage_->node(s.root_);
+        return n.op == exact_opcode::value &&
+            storage_->values[n.payload].is_zero();
+    };
+    auto add_term = [&](polynomial &p, const monomial &m,
+                        const exact_expr &c){
+        if(is_zero(c)) return;
+        auto it = p.find(m);
+        if(it == p.end()) p.emplace(m, c);
+        else{
+            it->second = simplify(it->second + c);
+            if(is_zero(it->second)) p.erase(it);
+        }
+    };
+    std::unordered_map<uint32_t, bool> has_variable;
+    auto contains = [&](auto &&self, uint32_t id) -> bool{
+        auto it = has_variable.find(id);
+        if(it != has_variable.end()) return it->second;
+        if(std::find(ids.begin(), ids.end(), id) != ids.end()){
+            has_variable[id] = true; return true;
+        }
+        const exact_node &n = storage_->node(id);
+        const uint32_t *a = storage_->children(n);
+        bool result = false;
+        for(size_t i = 0; i < n.operand_count; ++i)
+            if(self(self, a[i])){ result = true; break; }
+        has_variable[id] = result;
+        return result;
+    };
+    std::unordered_set<uint32_t> failed;
+    auto parse = [&](auto &&self, uint32_t id, polynomial &out) -> bool{
+        if(failed.count(id)) return false;
+        if(!contains(contains, id)){ out.clear(); add_term(out, monomial(ids.size()),
+            exact_expr(storage_, id)); return true; }
+        auto found = std::find(ids.begin(), ids.end(), id);
+        if(found != ids.end()){
+            out.clear(); monomial m(ids.size());
+            m[(size_t)(found - ids.begin())] = 1;
+            out.emplace(std::move(m), one); return true;
+        }
+        const exact_node &n = storage_->node(id);
+        const uint32_t *a = storage_->children(n);
+        if(n.op == exact_opcode::add){
+            out.clear();
+            for(size_t i = 0; i < n.operand_count; ++i){
+                polynomial q; if(!self(self, a[i], q)){ failed.insert(id); return false; }
+                for(auto &t : q) add_term(out, t.first, t.second);
+            }
+            return true;
+        }
+        if(n.op == exact_opcode::multiply){
+            out.clear(); add_term(out, monomial(ids.size()), one);
+            for(size_t i = 0; i < n.operand_count; ++i){
+                polynomial q; if(!self(self, a[i], q)){ failed.insert(id); return false; }
+                polynomial next;
+                for(const auto &x : out) for(const auto &y : q){
+                    monomial m(ids.size());
+                    for(size_t k = 0; k < m.size(); ++k){
+                        uint32_t e = (uint32_t)x.first[k] + y.first[k];
+                        if(e > UINT16_MAX){ failed.insert(id); return false; }
+                        m[k] = (uint16_t)e;
+                    }
+                    add_term(next, m, x.second * y.second);
+                }
+                out = std::move(next);
+            }
+            return true;
+        }
+        if(n.op == exact_opcode::power){
+            exact_node e = storage_->node(a[1]); int64_t power = -1;
+            if(e.op != exact_opcode::value ||
+               !integer_i64(storage_->values[e.payload], power) || power < 0 || power > 32){
+                failed.insert(id); return false;
+            }
+            polynomial base; if(!self(self, a[0], base)){ failed.insert(id); return false; }
+            out.clear(); add_term(out, monomial(ids.size()), one);
+            for(int64_t i = 0; i < power; ++i){
+                polynomial next;
+                for(const auto &x : out) for(const auto &y : base){
+                    monomial m(ids.size());
+                    for(size_t k = 0; k < m.size(); ++k){
+                        uint32_t e2 = (uint32_t)x.first[k] + y.first[k];
+                        if(e2 > UINT16_MAX){ failed.insert(id); return false; }
+                        m[k] = (uint16_t)e2;
+                    }
+                    add_term(next, m, x.second * y.second);
+                }
+                out = std::move(next);
+            }
+            return true;
+        }
+        failed.insert(id); return false;
+    };
+    std::vector<polynomial> basis;
+    for(const exact_expr &f : polynomials){
+        polynomial p;
+        if(!parse(parse, f.root_, p))
+            throw std::invalid_argument("groebner requires polynomial expressions");
+        if(!p.empty()) basis.push_back(std::move(p));
+    }
+    auto divides = [](const monomial &a, const monomial &b){
+        for(size_t i = 0; i < a.size(); ++i) if(a[i] > b[i]) return false;
+        return true;
+    };
+    auto sub = [](const monomial &a, const monomial &b){
+        monomial r(a.size()); for(size_t i = 0; i < r.size(); ++i) r[i] = a[i] - b[i]; return r;
+    };
+    auto scale_add = [&](polynomial &p, const polynomial &q,
+                         const monomial &shift, const exact_expr &scale){
+        for(const auto &t : q){ monomial m(t.first.size());
+            for(size_t i = 0; i < m.size(); ++i) m[i] = t.first[i] + shift[i];
+            add_term(p, m, t.second * scale); }
+    };
+    auto reduce = [&](polynomial p, const std::vector<polynomial> &bs){
+        polynomial r;
+        while(!p.empty()){
+            auto lead = std::prev(p.end()); bool changed = false;
+            for(const polynomial &q : bs) if(!q.empty() && divides(q.rbegin()->first, lead->first)){
+                scale_add(p, q, sub(lead->first, q.rbegin()->first),
+                          -(lead->second / q.rbegin()->second));
+                changed = true; break;
+            }
+            if(!changed){ add_term(r, lead->first, lead->second); p.erase(lead); }
+        }
+        return r;
+    };
+    std::vector<std::pair<size_t,size_t>> pairs;
+    for(size_t i=0;i<basis.size();++i) for(size_t j=0;j<i;++j) pairs.emplace_back(j,i);
+    for(size_t pi=0; pi<pairs.size(); ++pi){
+        size_t i=pairs[pi].first,j=pairs[pi].second; monomial l(basis[i].rbegin()->first.size());
+        for(size_t k=0;k<l.size();++k) l[k]=std::max(basis[i].rbegin()->first[k],basis[j].rbegin()->first[k]);
+        polynomial s;
+        scale_add(s,basis[i],sub(l,basis[i].rbegin()->first),one/basis[i].rbegin()->second);
+        scale_add(s,basis[j],sub(l,basis[j].rbegin()->first),-one/basis[j].rbegin()->second);
+        s=reduce(std::move(s),basis); if(s.empty()) continue;
+        size_t n=basis.size(); basis.push_back(std::move(s));
+        for(size_t k=0;k<n;++k) pairs.emplace_back(k,n);
+    }
+    std::vector<uint32_t> result;
+    for(const polynomial &p : basis){ std::vector<uint32_t> terms;
+        for(const auto &t:p){ std::vector<uint32_t> factors{t.second.root_};
+            for(size_t i=0;i<ids.size();++i) if(t.first[i]) factors.push_back(
+                t.first[i]==1?ids[i]:storage_->make_power(ids[i],integer(t.first[i]).root_));
+            terms.push_back(storage_->make_multiply(std::move(factors))); }
+        result.push_back(storage_->make_add(std::move(terms)));
+    }
+    return exact_expr(storage_, storage_->intern_compound(exact_opcode::expression_list,result));
 }
 
 exact_expr exact_context::substitute(const exact_expr &expression,
@@ -5185,6 +7435,85 @@ exact_expr exact_context::solve_polynomial_impl(
         return exact_expr(storage_, storage_->intern_compound(
             exact_opcode::expression_list, {}));
 
+    // Before invoking Cardano or Ferrari, remove an easy integer linear
+    // factor.  This keeps reducible quartics such as
+    // x^4+2*x^3-2*x-4 = (x+2)(x^3-2) out of the much larger quartic formula.
+    if(coefficients.size() >= 4){
+        std::vector<int64_t> integer_coefficients;
+        integer_coefficients.reserve(coefficients.size());
+        bool integer_polynomial = true;
+        for(uint32_t coefficient : coefficients){
+            const exact_node &node = storage_->node(coefficient);
+            int64_t value = 0;
+            if(node.op != exact_opcode::value ||
+               !integer_i64(storage_->values[node.payload], value)){
+                integer_polynomial = false;
+                break;
+            }
+            integer_coefficients.push_back(value);
+        }
+        int64_t leading = integer_polynomial
+            ? integer_coefficients.back() : 0;
+        uint64_t constant_magnitude = integer_polynomial
+            ? (integer_coefficients[0] < 0
+                ? (uint64_t)0 - (uint64_t)integer_coefficients[0]
+                : (uint64_t)integer_coefficients[0]) : 0;
+        if((leading == 1 || leading == -1) &&
+           constant_magnitude > 0 && constant_magnitude <= 1000000){
+            std::vector<int64_t> candidates;
+            for(uint64_t divisor = 1;
+                divisor <= constant_magnitude / divisor; ++divisor){
+                if(constant_magnitude % divisor) continue;
+                candidates.push_back((int64_t)divisor);
+                candidates.push_back(-(int64_t)divisor);
+                uint64_t paired = constant_magnitude / divisor;
+                if(paired != divisor){
+                    candidates.push_back((int64_t)paired);
+                    candidates.push_back(-(int64_t)paired);
+                }
+            }
+            for(int64_t candidate : candidates){
+                exact_value evaluation(0);
+                for(size_t i = integer_coefficients.size(); i-- > 0;)
+                    evaluation = evaluation * exact_value(candidate) +
+                                 exact_value(integer_coefficients[i]);
+                if(!evaluation.is_zero()) continue;
+
+                size_t degree = integer_coefficients.size() - 1;
+                std::vector<exact_value> quotient(degree, exact_value(0));
+                quotient[degree - 1] = exact_value(integer_coefficients[degree]);
+                for(size_t i = degree - 1; i > 0; --i)
+                    quotient[i - 1] = exact_value(integer_coefficients[i]) +
+                        exact_value(candidate) * quotient[i];
+                std::vector<uint32_t> quotient_terms;
+                for(size_t i = 0; i < quotient.size(); ++i){
+                    if(quotient[i].is_zero()) continue;
+                    uint32_t coefficient = storage_->intern_value(quotient[i]);
+                    if(i == 0) quotient_terms.push_back(coefficient);
+                    else quotient_terms.push_back(storage_->make_multiply({
+                        coefficient, i == 1 ? variable : storage_->make_power(
+                            variable, storage_->intern_value(
+                                exact_value((uint64_t)i)))}));
+                }
+                exact_expr remaining = solve_polynomial_impl(
+                    exact_expr(storage_, storage_->make_add(
+                        std::move(quotient_terms))), variables,
+                    require_exact_coefficients);
+                const exact_node &remaining_list = storage_->node(remaining.root_);
+                const uint32_t *remaining_data = storage_->children(remaining_list);
+                std::vector<uint32_t> remaining_roots(
+                    remaining_data,
+                    remaining_data + remaining_list.operand_count);
+                std::vector<uint32_t> roots;
+                roots.push_back(storage_->intern_value(exact_value(candidate)));
+                roots.insert(roots.end(), remaining_roots.begin(),
+                             remaining_roots.end());
+                return exact_expr(storage_, storage_->intern_compound(
+                    exact_opcode::expression_list, roots));
+            }
+        }
+    }
+
     uint32_t minus_one = storage_->intern_value(exact_value(-1));
     auto integer = [&](int64_t value){
         return storage_->intern_value(exact_value(value));
@@ -5194,6 +7523,14 @@ exact_expr exact_context::solve_polynomial_impl(
             denominator, minus_one)});
     };
     auto negate = [&](uint32_t value){
+        const exact_node &node = storage_->node(value);
+        if(node.op == exact_opcode::add){
+            const uint32_t *data = storage_->children(node);
+            std::vector<uint32_t> terms(data, data + node.operand_count);
+            for(uint32_t &term : terms)
+                term = storage_->make_multiply({minus_one, term});
+            return storage_->make_add(std::move(terms));
+        }
         return storage_->make_multiply({minus_one, value});
     };
     auto square = [&](uint32_t value){
@@ -5224,7 +7561,7 @@ exact_expr exact_context::solve_polynomial_impl(
     uint32_t b = coefficients[1];
     std::vector<uint32_t> solutions;
     if(coefficients.size() == 2){
-        solutions.push_back(divide(storage_->make_multiply({minus_one, c}), b));
+        solutions.push_back(divide(negate(c), b));
     }else if(coefficients.size() == 3){
         uint32_t a = coefficients[2];
         uint32_t discriminant = storage_->make_add({
@@ -5251,6 +7588,28 @@ exact_expr exact_context::solve_polynomial_impl(
         uint32_t B = coefficients[2];
         uint32_t Ccoef = coefficients[1];
         uint32_t D = coefficients[0];
+        if(is_zero(B) && is_zero(Ccoef)){
+            uint32_t radicand = divide(negate(D), A);
+            uint32_t root;
+            const exact_node &radicand_node = storage_->node(radicand);
+            if(radicand_node.op == exact_opcode::value &&
+               storage_->values[radicand_node.payload].is_negative())
+                root = negate(cube_root(negate(radicand)));
+            else root = cube_root(radicand);
+            if(is_zero(radicand)){
+                solutions.push_back(root);
+            }else{
+                uint32_t sqrt_three_i = storage_->make_sqrt(integer(-3));
+                uint32_t omega = divide(
+                    storage_->make_add({minus_one, sqrt_three_i}), integer(2));
+                uint32_t omega2 = divide(
+                    storage_->make_add({minus_one, negate(sqrt_three_i)}),
+                    integer(2));
+                solutions.push_back(root);
+                solutions.push_back(storage_->make_multiply({root, omega}));
+                solutions.push_back(storage_->make_multiply({root, omega2}));
+            }
+        }else{
         uint32_t delta0 = storage_->make_add({square(B),
             negate(storage_->make_multiply({integer(3), A, Ccoef}))});
         uint32_t delta1 = storage_->make_add({
@@ -5280,6 +7639,7 @@ exact_expr exact_context::solve_polynomial_impl(
                 uint32_t numerator = negate(storage_->make_add({B, uC, correction}));
                 append_unique(solutions, divide(numerator, denominator));
             }
+        }
         }
     }else{
         // Ferrari after shifting x = y-b/(4a).  beta==0 is solved as a
@@ -5372,10 +7732,765 @@ exact_expr exact_context::solve_polynomial_impl(
         exact_opcode::expression_list, solutions));
 }
 
+exact_expr exact_context::solve_system_impl(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables,
+        bool require_exact_coefficients){
+    if(equations.empty())
+        throw std::invalid_argument("solve requires at least one equation");
+    if(variables.empty())
+        throw std::invalid_argument("solve requires at least one variable");
+    for(const exact_expr &equation : equations)
+        if(!equation.valid() || equation.storage_ != storage_)
+            throw std::invalid_argument("equations belong to a different context");
+    std::vector<uint32_t> variable_ids;
+    variable_ids.reserve(variables.size());
+    for(const exact_expr &variable : variables){
+        if(!variable.valid() || variable.storage_ != storage_ ||
+           storage_->node(variable.root_).op != exact_opcode::symbol)
+            throw std::invalid_argument("solve variables must be symbols");
+        if(std::find(variable_ids.begin(), variable_ids.end(), variable.root_) !=
+           variable_ids.end())
+            throw std::invalid_argument("solve variables must be distinct");
+        variable_ids.push_back(variable.root_);
+    }
+
+    // A linear system can have symbolic exact coefficients (for example
+    // x + y - a = 0).  The Groebner-style path below intentionally requires
+    // rational coefficients, so handle this common case with symbolic
+    // Gaussian elimination first.
+    if(equations.size() == variables.size() && variables.size() > 1){
+        const exact_expr zero_expr = integer(0);
+        auto is_zero_expr = [&](const exact_expr &value){
+            exact_expr reduced = simplify(value);
+            const exact_node &node = storage_->node(reduced.root_);
+            return node.op == exact_opcode::value &&
+                storage_->values[node.payload].is_zero();
+        };
+        std::vector<std::vector<exact_expr>> matrix(
+            equations.size(), std::vector<exact_expr>(variables.size() + 1,
+                                                       zero_expr));
+        bool linear = true;
+        for(size_t row = 0; row < equations.size() && linear; ++row){
+            exact_expr constant = equations[row];
+            for(const exact_expr &variable : variables)
+                constant = substitute(constant, variable, zero_expr);
+            matrix[row].back() = simplify(constant);
+            for(size_t column = 0; column < variables.size(); ++column){
+                exact_expr coefficient = differentiate(
+                    equations[row], variables[column]);
+                for(const exact_expr &variable : variables)
+                    coefficient = substitute(coefficient, variable, zero_expr);
+                coefficient = simplify(coefficient);
+                matrix[row][column] = coefficient;
+            }
+        }
+        if(linear){
+            bool solved = true;
+            for(size_t column = 0; column < variables.size(); ++column){
+                size_t pivot = column;
+                while(pivot < equations.size() &&
+                      is_zero_expr(matrix[pivot][column])) ++pivot;
+                if(pivot == equations.size()) { solved = false; break; }
+                std::swap(matrix[pivot], matrix[column]);
+                exact_expr divisor = matrix[column][column];
+                for(size_t j = column; j <= variables.size(); ++j)
+                    matrix[column][j] = simplify(matrix[column][j] / divisor);
+                for(size_t row = 0; row < equations.size(); ++row){
+                    if(row == column) continue;
+                    exact_expr factor = matrix[row][column];
+                    if(is_zero_expr(factor)) continue;
+                    for(size_t j = column; j <= variables.size(); ++j)
+                        matrix[row][j] = simplify(
+                            matrix[row][j] - factor * matrix[column][j]);
+                }
+            }
+            if(solved){
+                std::vector<uint32_t> rules;
+                for(size_t i = 0; i < variables.size(); ++i){
+                    if(!is_zero_expr(matrix[i][i] - integer(1))){
+                        solved = false;
+                        break;
+                    }
+                    exact_expr solution = simplify(-matrix[i].back());
+                    rules.push_back(storage_->intern_compound(
+                        exact_opcode::rule,
+                        {variable_ids[i], solution.root_}));
+                }
+                if(solved){
+                    uint32_t row = storage_->intern_compound(
+                        exact_opcode::expression_list, rules);
+                    return exact_expr(storage_, storage_->intern_compound(
+                        exact_opcode::expression_list, {row}));
+                }
+            }
+        }
+    }
+    if(variables.size() == 1 && equations.size() == 1){
+        exact_expr roots = solve_polynomial_impl(
+            equations[0], variables, require_exact_coefficients);
+        const exact_node &root_list = storage_->node(roots.root_);
+        const uint32_t *root_data = storage_->children(root_list);
+        std::vector<uint32_t> root_ids(
+            root_data, root_data + root_list.operand_count);
+        std::vector<uint32_t> solutions;
+        solutions.reserve(root_ids.size());
+        for(uint32_t root : root_ids){
+            uint32_t rule = storage_->intern_compound(
+                exact_opcode::rule, {variable_ids[0], root});
+            solutions.push_back(storage_->intern_compound(
+                exact_opcode::expression_list, {rule}));
+        }
+        return exact_expr(storage_, storage_->intern_compound(
+            exact_opcode::expression_list, solutions));
+    }
+    const std::vector<uint32_t> requested_variable_ids = variable_ids;
+    std::vector<exact_expr> solver_variables = variables;
+    std::reverse(variable_ids.begin(), variable_ids.end());
+    std::reverse(solver_variables.begin(), solver_variables.end());
+
+    using monomial = std::vector<uint16_t>;
+    struct lex_order{
+        bool operator()(const monomial &a, const monomial &b) const{
+            return std::lexicographical_compare(a.begin(), a.end(),
+                                                b.begin(), b.end());
+        }
+    };
+    using polynomial = std::map<monomial, exact_value, lex_order>;
+    const size_t maximum_terms = 20000;
+    auto add_term = [](polynomial &p, const monomial &m, const exact_value &c){
+        if(c.is_zero()) return;
+        auto found = p.find(m);
+        if(found == p.end()) p.emplace(m, c);
+        else{
+            found->second = found->second + c;
+            if(found->second.is_zero()) p.erase(found);
+        }
+    };
+    auto multiply = [&](const polynomial &a, const polynomial &b,
+                        polynomial &out){
+        out.clear();
+        if(a.empty() || b.empty()) return true;
+        if(a.size() > maximum_terms / b.size()) return false;
+        for(const auto &left : a) for(const auto &right : b){
+            monomial m(variables.size());
+            for(size_t i = 0; i < m.size(); ++i){
+                uint32_t exponent = (uint32_t)left.first[i] + right.first[i];
+                if(exponent > UINT16_MAX) return false;
+                m[i] = (uint16_t)exponent;
+            }
+            add_term(out, m, left.second * right.second);
+            if(out.size() > maximum_terms) return false;
+        }
+        return true;
+    };
+    std::unordered_map<uint32_t, polynomial> parse_memo;
+    std::unordered_set<uint32_t> parse_failed;
+    auto parse = [&](auto &&self, uint32_t id, polynomial &out) -> bool{
+        auto cached = parse_memo.find(id);
+        if(cached != parse_memo.end()){ out = cached->second; return true; }
+        if(parse_failed.count(id)) return false;
+        exact_node node = storage_->node(id);
+        const uint32_t *args = storage_->children(node);
+        bool ok = true;
+        out.clear();
+        if(node.op == exact_opcode::value){
+            const exact_value &coefficient = storage_->values[node.payload];
+            ok = !coefficient.is_approximate() || !require_exact_coefficients;
+            if(ok)
+                add_term(out, monomial(variables.size()), coefficient);
+        }else if(node.op == exact_opcode::symbol){
+            auto found = std::find(variable_ids.begin(), variable_ids.end(), id);
+            if(found == variable_ids.end()) ok = false;
+            else{
+                monomial m(variables.size());
+                m[(size_t)(found - variable_ids.begin())] = 1;
+                add_term(out, m, exact_value(1));
+            }
+        }else if(node.op == exact_opcode::add){
+            for(size_t i = 0; i < node.operand_count && ok; ++i){
+                polynomial child;
+                ok = self(self, args[i], child);
+                if(ok) for(const auto &term : child)
+                    add_term(out, term.first, term.second);
+            }
+        }else if(node.op == exact_opcode::multiply){
+            out.emplace(monomial(variables.size()), exact_value(1));
+            for(size_t i = 0; i < node.operand_count && ok; ++i){
+                polynomial child, product;
+                ok = self(self, args[i], child) && multiply(out, child, product);
+                if(ok) out.swap(product);
+            }
+        }else if(node.op == exact_opcode::power){
+            exact_node exponent_node = storage_->node(args[1]);
+            int64_t exponent = -1;
+            ok = exponent_node.op == exact_opcode::value &&
+                 integer_i64(storage_->values[exponent_node.payload], exponent) &&
+                 exponent >= 0 && exponent <= 4096;
+            polynomial base;
+            if(ok) ok = self(self, args[0], base);
+            out.emplace(monomial(variables.size()), exact_value(1));
+            uint64_t bits = (uint64_t)std::max<int64_t>(exponent, 0);
+            while(bits && ok){
+                if(bits & 1){
+                    polynomial product;
+                    ok = multiply(out, base, product);
+                    if(ok) out.swap(product);
+                }
+                bits >>= 1;
+                if(bits){
+                    polynomial square;
+                    ok = multiply(base, base, square);
+                    if(ok) base.swap(square);
+                }
+            }
+        }else ok = false;
+        if(!ok){ parse_failed.insert(id); return false; }
+        parse_memo.emplace(id, out);
+        return true;
+    };
+
+    std::vector<polynomial> input;
+    for(const exact_expr &equation : equations){
+        polynomial p;
+        if(!parse(parse, equation.root_, p)){
+            if(!require_exact_coefficients)
+                throw std::invalid_argument(
+                    "system solving requires polynomial expressions");
+
+            // Symbolic coefficient fallback: compute a Groebner basis over
+            // exact_expr coefficients, then solve its triangular univariate
+            // members and substitute the roots into the remaining equations.
+            exact_expr basis_expr = groebner(equations, variables);
+            std::vector<exact_expr> basis;
+            for(size_t i = 0; i < basis_expr.operand_count(); ++i)
+                basis.push_back(basis_expr.operand(i));
+            struct candidate{ std::vector<exact_expr> values; };
+            std::vector<candidate> candidates(1);
+            for(size_t column = 0; column < variables.size(); ++column){
+                std::vector<candidate> next;
+                for(const candidate &state : candidates){
+                    exact_expr relation;
+                    for(const exact_expr &raw : basis){
+                        exact_expr reduced = raw;
+                        for(size_t k = 0; k < state.values.size(); ++k)
+                            reduced = substitute(reduced, variables[k],
+                                                 state.values[k]);
+                        if(!is_polynomial(reduced, {variables[column]})) continue;
+                        exact_expr derivative = simplify(differentiate(
+                            reduced, variables[column]));
+                        const exact_node &dn = storage_->node(derivative.root_);
+                        bool nonconstant = !(dn.op == exact_opcode::value &&
+                            storage_->values[dn.payload].is_zero());
+                        if(nonconstant){ relation = reduced; break; }
+                    }
+                    if(!relation.valid()) continue;
+                    exact_expr roots = solve_polynomial_impl(
+                        relation, {variables[column]}, true);
+                    for(size_t r = 0; r < roots.operand_count(); ++r){
+                        candidate child = state;
+                        child.values.push_back(roots.operand(r));
+                        next.push_back(std::move(child));
+                    }
+                }
+                candidates = std::move(next);
+                if(candidates.empty()) break;
+            }
+            std::vector<uint32_t> maps;
+            for(const candidate &state : candidates){
+                if(state.values.size() != variables.size()) continue;
+                bool valid_solution = true;
+                for(const exact_expr &original : equations){
+                    exact_expr value = original;
+                    for(size_t k = 0; k < variables.size(); ++k)
+                        value = substitute(value, variables[k], state.values[k]);
+                    exact_expr reduced = simplify(value);
+                    const exact_node &node = storage_->node(reduced.root_);
+                    if(node.op != exact_opcode::value ||
+                       !storage_->values[node.payload].is_zero()){
+                        valid_solution = false; break;
+                    }
+                }
+                if(!valid_solution) continue;
+                std::vector<uint32_t> rules;
+                for(size_t k = 0; k < variables.size(); ++k)
+                    rules.push_back(storage_->intern_compound(
+                        exact_opcode::rule,
+                        {requested_variable_ids[k], state.values[k].root_}));
+                maps.push_back(storage_->intern_compound(
+                    exact_opcode::expression_list, rules));
+            }
+            return exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::expression_list, maps));
+        }
+        if(!p.empty()) input.push_back(std::move(p));
+    }
+    auto make_list = [&](const std::vector<uint32_t> &items){
+        return storage_->intern_compound(exact_opcode::expression_list, items);
+    };
+    auto make_solution_map = [&](const std::vector<uint32_t> &values){
+        if(values.size() != variable_ids.size())
+            throw std::logic_error("solution has the wrong number of values");
+        std::vector<uint32_t> rules;
+        rules.reserve(values.size());
+        for(size_t i = 0; i < requested_variable_ids.size(); ++i){
+            auto found = std::find(variable_ids.begin(), variable_ids.end(),
+                                   requested_variable_ids[i]);
+            size_t value_index = (size_t)(found - variable_ids.begin());
+            rules.push_back(storage_->intern_compound(
+                exact_opcode::rule,
+                {requested_variable_ids[i], values[value_index]}));
+        }
+        return make_list(rules);
+    };
+    if(input.empty())
+        throw std::domain_error("equation system has infinitely many solutions");
+
+    // Linear systems are both common and much cheaper to solve directly than
+    // through Buchberger.  RREF also gives useful parametric solutions.
+    bool linear = true;
+    bool approximate_coefficients = false;
+    for(const polynomial &p : input) for(const auto &term : p){
+        if(term.second.is_approximate()) approximate_coefficients = true;
+        size_t degree = 0;
+        for(uint16_t e : term.first) degree += e;
+        if(degree > 1) linear = false;
+    }
+    if(linear){
+        const size_t rows = input.size(), columns = variables.size();
+        std::vector<std::vector<exact_value>> matrix(
+            rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+        monomial constant(columns);
+        for(size_t r = 0; r < rows; ++r) for(const auto &term : input[r]){
+            if(term.first == constant) matrix[r][columns] = -term.second;
+            else for(size_t c = 0; c < columns; ++c)
+                if(term.first[c] == 1) matrix[r][c] = term.second;
+        }
+        std::vector<int> pivot_column(rows, -1);
+        size_t pivot_row = 0;
+        for(size_t column = 0; column < columns && pivot_row < rows; ++column){
+            size_t selected = pivot_row;
+            while(selected < rows && matrix[selected][column].is_zero()) ++selected;
+            if(selected == rows) continue;
+            std::swap(matrix[selected], matrix[pivot_row]);
+            exact_value pivot = matrix[pivot_row][column];
+            for(size_t c = column; c <= columns; ++c)
+                matrix[pivot_row][c] = matrix[pivot_row][c] / pivot;
+            for(size_t r = 0; r < rows; ++r){
+                if(r == pivot_row || matrix[r][column].is_zero()) continue;
+                exact_value factor = matrix[r][column];
+                for(size_t c = column; c <= columns; ++c)
+                    matrix[r][c] = matrix[r][c] - factor * matrix[pivot_row][c];
+            }
+            pivot_column[pivot_row++] = (int)column;
+        }
+        for(size_t r = pivot_row; r < rows; ++r){
+            bool all_zero = true;
+            for(size_t c = 0; c < columns; ++c)
+                if(!matrix[r][c].is_zero()) all_zero = false;
+            if(all_zero && !matrix[r][columns].is_zero())
+                return exact_expr(storage_, make_list({}));
+        }
+        std::vector<bool> pivoted(columns, false);
+        for(size_t r = 0; r < pivot_row; ++r)
+            pivoted[(size_t)pivot_column[r]] = true;
+
+        // Free variables become fresh, parseable symbols instead of mapping
+        // back to themselves.  Only names reachable from this system matter
+        // for capture; unrelated symbols elsewhere in the arena are harmless.
+        std::unordered_set<std::string> occupied_names;
+        std::unordered_set<uint32_t> visited_symbols;
+        std::vector<uint32_t> pending_symbols;
+        for(const exact_expr &equation : equations)
+            pending_symbols.push_back(equation.root_);
+        pending_symbols.insert(pending_symbols.end(), variable_ids.begin(),
+                               variable_ids.end());
+        while(!pending_symbols.empty()){
+            uint32_t id = pending_symbols.back();
+            pending_symbols.pop_back();
+            if(!visited_symbols.insert(id).second) continue;
+            const exact_node &node = storage_->node(id);
+            if(node.op == exact_opcode::symbol)
+                occupied_names.insert(storage_->symbols[node.payload]);
+            const uint32_t *children = storage_->children(node);
+            pending_symbols.insert(pending_symbols.end(), children,
+                                   children + node.operand_count);
+        }
+        std::vector<uint32_t> values(columns, UINT32_MAX);
+        size_t parameter_index = 1;
+        for(size_t column = 0; column < columns; ++column){
+            if(pivoted[column]) continue;
+            std::string name;
+            do{
+                name = "_solve_t" + std::to_string(parameter_index++);
+            }while(occupied_names.count(name));
+            occupied_names.insert(name);
+            values[column] = storage_->intern_symbol(name);
+        }
+        for(size_t r = pivot_row; r-- > 0;){
+            size_t pivot = (size_t)pivot_column[r];
+            std::vector<uint32_t> terms;
+            terms.push_back(storage_->intern_value(matrix[r][columns]));
+            for(size_t c = pivot + 1; c < columns; ++c){
+                if(matrix[r][c].is_zero()) continue;
+                terms.push_back(storage_->make_multiply({
+                    storage_->intern_value(-matrix[r][c]), values[c]}));
+            }
+            values[pivot] = storage_->make_add(std::move(terms));
+        }
+        return exact_expr(storage_, make_list({make_solution_map(values)}));
+    }
+    if(approximate_coefficients)
+        throw std::invalid_argument(
+            "nonlinear approximate systems require a numerical solver");
+
+    auto monomial_divides = [](const monomial &a, const monomial &b){
+        for(size_t i = 0; i < a.size(); ++i) if(a[i] > b[i]) return false;
+        return true;
+    };
+    auto monomial_difference = [](const monomial &a, const monomial &b){
+        monomial result(a.size());
+        for(size_t i = 0; i < a.size(); ++i) result[i] = a[i] - b[i];
+        return result;
+    };
+    auto scaled_add = [&](polynomial &target, const polynomial &source,
+                          const monomial &shift, const exact_value &scale){
+        for(const auto &term : source){
+            monomial m(term.first.size());
+            for(size_t i = 0; i < m.size(); ++i)
+                m[i] = term.first[i] + shift[i];
+            add_term(target, m, term.second * scale);
+        }
+    };
+    auto make_monic = [](polynomial &p){
+        exact_value lead = p.rbegin()->second;
+        for(auto &term : p) term.second = term.second / lead;
+    };
+    auto reduce = [&](polynomial p, const std::vector<polynomial> &basis){
+        polynomial remainder;
+        size_t steps = 0;
+        while(!p.empty()){
+            if(++steps > 200000)
+                throw std::runtime_error("Groebner reduction budget exceeded");
+            bool reduced = false;
+            auto lead = std::prev(p.end());
+            for(const polynomial &divisor : basis){
+                if(divisor.empty() ||
+                   !monomial_divides(divisor.rbegin()->first, lead->first)) continue;
+                monomial shift = monomial_difference(
+                    lead->first, divisor.rbegin()->first);
+                exact_value scale = -(lead->second / divisor.rbegin()->second);
+                scaled_add(p, divisor, shift, scale);
+                reduced = true;
+                break;
+            }
+            if(!reduced){
+                add_term(remainder, lead->first, lead->second);
+                p.erase(lead);
+            }
+        }
+        return remainder;
+    };
+    std::vector<polynomial> basis;
+    for(polynomial p : input){
+        p = reduce(std::move(p), basis);
+        if(!p.empty()){ make_monic(p); basis.push_back(std::move(p)); }
+    }
+    std::vector<std::pair<size_t, size_t>> pairs;
+    for(size_t i = 0; i < basis.size(); ++i)
+        for(size_t j = 0; j < i; ++j) pairs.emplace_back(j, i);
+    size_t pair_index = 0;
+    while(pair_index < pairs.size()){
+        if(pairs.size() > 50000 || basis.size() > 256)
+            throw std::runtime_error("Groebner basis budget exceeded");
+        size_t i = pairs[pair_index].first, j = pairs[pair_index++].second;
+        const monomial &a = basis[i].rbegin()->first;
+        const monomial &b = basis[j].rbegin()->first;
+        monomial lcm(a.size());
+        bool relatively_prime = true;
+        for(size_t k = 0; k < a.size(); ++k){
+            lcm[k] = std::max(a[k], b[k]);
+            if(a[k] && b[k]) relatively_prime = false;
+        }
+        if(relatively_prime) continue;
+        polynomial s;
+        scaled_add(s, basis[i], monomial_difference(lcm, a),
+                   exact_value(1) / basis[i].rbegin()->second);
+        scaled_add(s, basis[j], monomial_difference(lcm, b),
+                   exact_value(-1) / basis[j].rbegin()->second);
+        s = reduce(std::move(s), basis);
+        if(s.empty()) continue;
+        make_monic(s);
+        size_t next = basis.size();
+        for(size_t k = 0; k < next; ++k) pairs.emplace_back(k, next);
+        basis.push_back(std::move(s));
+    }
+    for(const polynomial &p : basis)
+        if(p.size() == 1 && p.begin()->first == monomial(variables.size()))
+            return exact_expr(storage_, make_list({}));
+
+    auto polynomial_expression = [&](const polynomial &p){
+        std::vector<uint32_t> terms;
+        for(const auto &term : p){
+            std::vector<uint32_t> factors;
+            factors.push_back(storage_->intern_value(term.second));
+            for(size_t i = 0; i < variables.size(); ++i) if(term.first[i])
+                factors.push_back(term.first[i] == 1 ? variable_ids[i] :
+                    storage_->make_power(variable_ids[i], storage_->intern_value(
+                        exact_value((uint64_t)term.first[i]))));
+            terms.push_back(storage_->make_multiply(std::move(factors)));
+        }
+        return storage_->make_add(std::move(terms));
+    };
+    std::vector<uint32_t> basis_expressions;
+    for(const polynomial &p : basis)
+        basis_expressions.push_back(polynomial_expression(p));
+    std::vector<std::vector<uint32_t>> solutions;
+    std::vector<uint32_t> assignment(variables.size(), UINT32_MAX);
+    auto triangular_solve = [&](auto &&self, int index) -> void{
+        if(index < 0){ solutions.push_back(assignment); return; }
+        const polynomial *selected = nullptr;
+        size_t selected_degree = SIZE_MAX;
+        for(const polynomial &p : basis){
+            size_t degree = 0;
+            bool suitable = true;
+            for(const auto &term : p){
+                for(int i = 0; i < index; ++i)
+                    if(term.first[(size_t)i]) suitable = false;
+                degree = std::max<size_t>(degree, term.first[(size_t)index]);
+            }
+            if(suitable && degree > 0 && degree <= 4 && degree < selected_degree){
+                selected = &p;
+                selected_degree = degree;
+            }
+        }
+        if(!selected)
+            throw std::domain_error(
+                "Groebner basis is not a zero-dimensional triangular system of degree <= 4");
+        uint32_t equation_id = polynomial_expression(*selected);
+        exact_expr equation(storage_, equation_id);
+        for(size_t i = (size_t)index + 1; i < variables.size(); ++i)
+            equation = substitute(equation, solver_variables[i],
+                                  exact_expr(storage_, assignment[i]));
+        exact_expr roots = solve_polynomial_impl(
+            equation, {solver_variables[(size_t)index]},
+            require_exact_coefficients);
+        exact_node root_list = storage_->node(roots.root_);
+        const uint32_t *data = storage_->children(root_list);
+        std::vector<uint32_t> root_ids(data, data + root_list.operand_count);
+        for(uint32_t root : root_ids){
+            assignment[(size_t)index] = root;
+            self(self, index - 1);
+        }
+        assignment[(size_t)index] = UINT32_MAX;
+    };
+    triangular_solve(triangular_solve, (int)variables.size() - 1);
+    std::vector<uint32_t> rows;
+    for(const auto &solution : solutions)
+        rows.push_back(make_solution_map(solution));
+    return exact_expr(storage_, make_list(rows));
+}
+
 exact_expr exact_context::exact_solve(
         const exact_expr &expression,
         const std::vector<exact_expr> &variables){
+    if(variables.size() == 1 && expression.valid() &&
+       expression.storage_ == storage_ &&
+       storage_->node(expression.root_).operand_count == 1){
+        exact_opcode operation = storage_->node(expression.root_).op;
+        if((operation == exact_opcode::sine ||
+            operation == exact_opcode::cosine ||
+            operation == exact_opcode::tangent) &&
+           storage_->children(storage_->node(expression.root_))[0] ==
+               variables[0].root_){
+            std::string parameter_name = "n";
+            size_t parameter_suffix = 1;
+            while(std::find(storage_->symbols.begin(), storage_->symbols.end(),
+                            parameter_name) != storage_->symbols.end())
+                parameter_name = "n" + std::to_string(parameter_suffix++);
+            exact_expr parameter = symbol(parameter_name);
+            exact_expr family;
+            if(operation == exact_opcode::cosine){
+                family = divide(
+                    (integer(2) * parameter + integer(1)) * pi(),
+                    integer(2));
+            }else{
+                family = parameter * pi();
+            }
+            exact_expr rule = exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::rule, {variables[0].root_, family.root_}));
+            exact_expr row = exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::expression_list, {rule.root_}));
+            return exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::expression_list, {row.root_}));
+        }
+    }
     return solve_polynomial_impl(expression, variables, true);
+}
+
+exact_expr exact_context::solve_numeric_system_impl(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables,
+        double precision_bits){
+    if(equations.empty() || variables.empty())
+        throw std::invalid_argument("numerical solve requires equations and variables");
+    if(equations.size() != variables.size())
+        throw std::invalid_argument(
+            "numerical nonlinear solve currently requires a square system");
+    for(const exact_expr &equation : equations)
+        if(!equation.valid() || equation.storage_ != storage_)
+            throw std::invalid_argument("equations belong to a different context");
+    for(const exact_expr &variable : variables)
+        if(!variable.valid() || variable.storage_ != storage_ ||
+           storage_->node(variable.root_).op != exact_opcode::symbol)
+            throw std::invalid_argument("solve variables must be symbols");
+
+    const size_t n = variables.size();
+    // Newton must converge to the requested output precision, not merely to
+    // a coarse residual threshold.  Keep a small guard margin for the finite
+    // difference Jacobian and rounded intermediate operations.
+    const int64_t guard_bits = precision_bits > 32.0
+        ? std::max<int64_t>(16, (int64_t)precision_bits - 16)
+        : std::max<int64_t>(8, (int64_t)(precision_bits * 0.75));
+    Number tolerance = Number(1) >> guard_bits;
+    Number step_size = Number(1) >> std::max<int64_t>(16, guard_bits / 2);
+
+    auto evaluate = [&](const exact_expr &equation,
+                        const std::vector<Number> &point){
+        exact_expr value = equation;
+        for(size_t i = 0; i < n; ++i){
+            Number copy = point[i];
+            copy.set_precision(precision_bits + 32.0);
+            value = substitute(value, variables[i],
+                exact_expr(storage_, storage_->intern_value(
+                    exact_value(std::move(copy)))));
+        }
+        uint32_t numeric_id = storage_->promote_approximate(value.root_);
+        exact_node numeric_node = storage_->node(numeric_id);
+        if(numeric_node.op != exact_opcode::value ||
+           !storage_->values[numeric_node.payload].is_approximate())
+            throw std::invalid_argument(
+                "numerical solve cannot evaluate this expression");
+        return storage_->values[numeric_node.payload].number();
+    };
+    auto converged = [&](const std::vector<Number> &values){
+        for(const Number &value : values)
+            if(::abs(value) > tolerance) return false;
+        return true;
+    };
+    auto make_solution = [&](const std::vector<Number> &point){
+        std::vector<uint32_t> rules;
+        for(size_t i = 0; i < n; ++i){
+            Number value = point[i];
+            value.set_precision(precision_bits);
+            uint32_t value_id = storage_->intern_value(
+                exact_value(std::move(value)));
+            rules.push_back(storage_->intern_compound(
+                exact_opcode::rule, {variables[i].root_, value_id}));
+        }
+        return storage_->intern_compound(exact_opcode::expression_list, rules);
+    };
+
+    std::vector<std::vector<int>> seeds;
+    std::vector<int> seed_values = {-2, -1, 0, 1, 2};
+    if(n <= 3){
+        std::vector<int> current(n);
+        auto generate = [&](auto &&self, size_t index) -> void{
+            if(index == n){ seeds.push_back(current); return; }
+            for(int value : seed_values){
+                current[index] = value;
+                self(self, index + 1);
+            }
+        };
+        generate(generate, 0);
+    }else{
+        seeds.push_back(std::vector<int>(n, 0));
+        seeds.push_back(std::vector<int>(n, 1));
+        seeds.push_back(std::vector<int>(n, -1));
+    }
+
+    std::vector<uint32_t> solutions;
+    std::vector<std::vector<Number>> unique_points;
+    std::unordered_set<std::string> seen;
+    for(const std::vector<int> &seed : seeds){
+        std::vector<Number> point;
+        point.reserve(n);
+        for(int value : seed){
+            Number number(value);
+            number.set_precision(precision_bits + 32.0);
+            point.push_back(std::move(number));
+        }
+        bool converged_solution = false;
+        for(size_t iteration = 0; iteration < 128; ++iteration){
+            std::vector<Number> residual(n);
+            for(size_t i = 0; i < n; ++i) residual[i] = evaluate(equations[i], point);
+            if(converged(residual)){ converged_solution = true; break; }
+
+            std::vector<std::vector<Number>> matrix(
+                n, std::vector<Number>(n + 1, Number(0)));
+            for(size_t row = 0; row < n; ++row){
+                for(size_t column = 0; column < n; ++column){
+                    std::vector<Number> plus = point, minus = point;
+                    plus[column] += step_size;
+                    minus[column] -= step_size;
+                    matrix[row][column] =
+                        (evaluate(equations[row], plus) -
+                         evaluate(equations[row], minus)) /
+                        (step_size * Number(2));
+                }
+                matrix[row][n] = -residual[row];
+            }
+            bool singular = false;
+            for(size_t column = 0; column < n; ++column){
+                size_t pivot = column;
+                while(pivot < n && matrix[pivot][column].is_zero()) ++pivot;
+                if(pivot == n){ singular = true; break; }
+                std::swap(matrix[pivot], matrix[column]);
+                Number divisor = matrix[column][column];
+                for(size_t j = column; j <= n; ++j)
+                    matrix[column][j] /= divisor;
+                for(size_t row = 0; row < n; ++row){
+                    if(row == column) continue;
+                    Number factor = matrix[row][column];
+                    if(factor.is_zero()) continue;
+                    for(size_t j = column; j <= n; ++j)
+                        matrix[row][j] -= factor * matrix[column][j];
+                }
+            }
+            if(singular) break;
+            for(size_t i = 0; i < n; ++i) point[i] += matrix[i][n];
+        }
+        if(!converged_solution) continue;
+        for(Number &value : point)
+            if(!(::abs(value) > tolerance)) value = Number(0);
+        bool duplicate = false;
+        for(const std::vector<Number> &previous : unique_points){
+            bool same = true;
+            for(size_t i = 0; i < point.size(); ++i){
+                Number scale = std::max(::abs(point[i]), ::abs(previous[i]));
+                if(scale < Number(1)) scale = Number(1);
+                Number local_tolerance = scale >> guard_bits;
+                if(::abs(point[i] - previous[i]) > local_tolerance){
+                    same = false;
+                    break;
+                }
+            }
+            if(same){ duplicate = true; break; }
+        }
+        if(duplicate) continue;
+        unique_points.push_back(point);
+        std::string key;
+        for(const Number &value : point) key += (std::string)value + ";";
+        if(seen.insert(key).second) solutions.push_back(make_solution(point));
+    }
+    return exact_expr(storage_, storage_->intern_compound(
+        exact_opcode::expression_list, solutions));
+}
+
+exact_expr exact_context::exact_solve(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables){
+    return solve_system_impl(equations, variables, true);
 }
 
 exact_expr exact_context::solve(
@@ -5384,6 +8499,19 @@ exact_expr exact_context::solve(
         double precision_bits){
     if(!(precision_bits > 0.0) || !std::isfinite(precision_bits))
         throw std::invalid_argument("solve precision must be finite and positive");
+    if(variables.size() == 1 && expression.valid() &&
+       expression.storage_ == storage_ &&
+       storage_->node(expression.root_).operand_count == 1){
+        exact_opcode operation = storage_->node(expression.root_).op;
+        if((operation == exact_opcode::sine ||
+            operation == exact_opcode::cosine ||
+            operation == exact_opcode::tangent) &&
+           storage_->children(storage_->node(expression.root_))[0] ==
+               variables[0].root_)
+            return exact_solve(expression, variables);
+    }
+    if(!is_polynomial(expression, variables))
+        return solve_numeric_system_impl({expression}, variables, precision_bits);
     exact_expr symbolic = solve_polynomial_impl(expression, variables, false);
     const exact_node &list = storage_->node(symbolic.root_);
     const uint32_t *root_data = storage_->children(list);
@@ -5493,6 +8621,13 @@ exact_expr exact_context::solve(
     }
     return exact_expr(storage_, storage_->intern_compound(
         exact_opcode::expression_list, results));
+}
+
+exact_expr exact_context::solve(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables,
+        double precision_bits){
+    return solve_numeric_system_impl(equations, variables, precision_bits);
 }
 
 std::vector<exact_expr> exact_context::compact(
@@ -5765,6 +8900,51 @@ exact_expr log10(const exact_expr &value){
     if(!value.valid()) throw std::logic_error("invalid exact expression");
     exact_context context(value.storage_);
     return context.logarithm_base_10(value);
+}
+exact_expr Si(const exact_expr &value){
+    if(!value.valid()) throw std::logic_error("invalid exact expression");
+    exact_context context(value.storage_);
+    return context.sine_integral(value);
+}
+exact_expr Ci(const exact_expr &value){
+    if(!value.valid()) throw std::logic_error("invalid exact expression");
+    exact_context context(value.storage_);
+    return context.cosine_integral(value);
+}
+exact_expr Ei(const exact_expr &value){
+    if(!value.valid()) throw std::logic_error("invalid exact expression");
+    exact_context context(value.storage_);
+    return context.exponential_integral(value);
+}
+exact_expr erf(const exact_expr &value){
+    if(!value.valid()) throw std::logic_error("invalid exact expression");
+    exact_context context(value.storage_);
+    return context.error_function(value);
+}
+exact_expr erfi(const exact_expr &value){
+    if(!value.valid()) throw std::logic_error("invalid exact expression");
+    exact_context context(value.storage_);
+    return context.imaginary_error_function(value);
+}
+exact_expr partial_gamma(const exact_expr &a, const exact_expr &x){
+    if(!a.valid() || !x.valid() || a.storage_ != x.storage_)
+        throw std::invalid_argument("exact expressions belong to different contexts");
+    exact_context context(a.storage_);
+    return context.partial_gamma(a, x);
+}
+exact_expr diff(const exact_expr &expression, const exact_expr &variable){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != variable.storage_)
+        throw std::invalid_argument("exact expressions belong to different contexts");
+    exact_context context(expression.storage_);
+    return context.differentiate(expression, variable);
+}
+exact_expr integrate(const exact_expr &expression, const exact_expr &variable){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != variable.storage_)
+        throw std::invalid_argument("exact expressions belong to different contexts");
+    exact_context context(expression.storage_);
+    return context.integrate(expression, variable);
 }
 bool operator==(const exact_expr &a, const exact_expr &b){
     if(!a.valid() || !b.valid()) return !a.valid() && !b.valid();

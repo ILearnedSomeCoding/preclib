@@ -47,6 +47,25 @@ int main(){
     assert(asinh(x).to_string() == "asinh(x)");
     assert(acosh(x).to_string() == "acosh(x)");
     assert(atanh(x).to_string() == "atanh(x)");
+    assert(Si(x).to_string() == "Si(x)");
+    assert(Ci(x).to_string() == "Ci(x)");
+    assert(Ei(x).to_string() == "Ei(x)");
+    assert(erf(x).to_string() == "erf(x)");
+    assert(partial_gamma(x, y).to_string() == "partial_gamma(x, y)");
+    Number precise_one(1);
+    precise_one.set_precision(256);
+    expr approximate_one = context.number(std::move(precise_one));
+    assert(Si(approximate_one).is_approximate());
+    assert(erf(approximate_one).is_approximate());
+    Number negative_one(-1);
+    negative_one.set_precision(256);
+    assert(abs(partial_gamma(approximate_one, approximate_one).number() -
+               exp(negative_one)) < tolerance);
+    assert(diff(pow(x, context.integer(3)), x).to_string() == "3*x^2");
+    expr expr_integrand = exp(context.integer(2) * x) + cos(x);
+    expr expr_antiderivative = integrate(expr_integrand, x);
+    assert(context.simplify(diff(expr_antiderivative, x) - expr_integrand) ==
+           context.integer(0));
     assert(ln(x).to_string() == "ln(x)");
     assert(log2(x).to_string() == "log2(x)");
     assert(log10(x).to_string() == "log10(x)");

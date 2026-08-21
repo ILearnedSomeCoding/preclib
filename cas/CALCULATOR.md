@@ -87,6 +87,8 @@ sin, cos, tan
 asin, acos, atan
 sinh, cosh, tanh
 asinh, acosh, atanh
+Si, Ci, Ei, erf, partial_gamma
+diff, differentiate, integrate, int
 sqrt
 expand, simplify, approx
 ```

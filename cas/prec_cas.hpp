@@ -39,7 +39,16 @@ enum class exact_opcode : uint8_t{
     logarithm_base_10 = 24,
     constant_i = 25,
     expression_list = 26,
-    absolute_value = 27
+    absolute_value = 27,
+    sine_integral = 28,
+    cosine_integral = 29,
+    exponential_integral = 30,
+    error_function = 31,
+    imaginary_error_function = 32,
+    partial_gamma = 33,
+    derivative = 34,
+    integral = 35,
+    rule = 36
 };
 
 const char *exact_opcode_name(exact_opcode operation);
@@ -139,6 +148,16 @@ public:
     friend exact_expr ln(const exact_expr &value);
     friend exact_expr log2(const exact_expr &value);
     friend exact_expr log10(const exact_expr &value);
+    friend exact_expr Si(const exact_expr &value);
+    friend exact_expr Ci(const exact_expr &value);
+    friend exact_expr Ei(const exact_expr &value);
+    friend exact_expr erf(const exact_expr &value);
+    friend exact_expr erfi(const exact_expr &value);
+    friend exact_expr partial_gamma(const exact_expr &a, const exact_expr &x);
+    friend exact_expr diff(const exact_expr &expression,
+                           const exact_expr &variable);
+    friend exact_expr integrate(const exact_expr &expression,
+                                const exact_expr &variable);
     friend bool operator==(const exact_expr &a, const exact_expr &b);
     friend class exact_complex;
 };
@@ -174,11 +193,20 @@ exact_expr norm(const exact_complex &a);
 class exact_context{
     std::shared_ptr<exact_storage> storage_;
 
+    friend exact_expr erfi(const exact_expr &value);
     explicit exact_context(std::shared_ptr<exact_storage> storage);
     exact_expr solve_polynomial_impl(
         const exact_expr &expression,
         const std::vector<exact_expr> &variables,
         bool require_exact_coefficients);
+    exact_expr solve_system_impl(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables,
+        bool require_exact_coefficients);
+    exact_expr solve_numeric_system_impl(
+        const std::vector<exact_expr> &equations,
+        const std::vector<exact_expr> &variables,
+        double precision_bits);
 
 public:
     exact_context();
@@ -219,11 +247,25 @@ public:
     exact_expr natural_logarithm(const exact_expr &value);
     exact_expr logarithm_base_2(const exact_expr &value);
     exact_expr logarithm_base_10(const exact_expr &value);
+    exact_expr sine_integral(const exact_expr &value);
+    exact_expr cosine_integral(const exact_expr &value);
+    exact_expr exponential_integral(const exact_expr &value);
+    exact_expr error_function(const exact_expr &value);
+    exact_expr imaginary_error_function(const exact_expr &value);
+    exact_expr partial_gamma(const exact_expr &a, const exact_expr &x);
+    exact_expr differentiate(const exact_expr &expression,
+                             const exact_expr &variable);
+    exact_expr integrate(const exact_expr &expression,
+                         const exact_expr &variable);
     exact_expr bounded_sum(const exact_expr &variable, const exact_expr &lower,
                            const exact_expr &upper, const exact_expr &body);
     exact_expr expand(const exact_expr &expression,
                       size_t maximum_terms = 100000);
     exact_expr factor(const exact_expr &expression);
+    exact_expr groebner(const std::vector<exact_expr> &polynomials,
+                        const std::vector<exact_expr> &variables);
+    exact_expr factor_integer(const exact_expr &expression);
+    exact_expr gcd(const exact_expr &left, const exact_expr &right);
     exact_expr simplify(const exact_expr &expression,
                         size_t automatic_expansion_terms = 64);
     exact_expr trig_expand(const exact_expr &expression);
@@ -236,9 +278,24 @@ public:
                        const std::vector<exact_expr> &variables) const;
     exact_expr exact_solve(const exact_expr &expression,
                            const std::vector<exact_expr> &variables);
+    exact_expr exact_solve(const std::vector<exact_expr> &equations,
+                           const std::vector<exact_expr> &variables);
+    exact_expr exact_solve(std::initializer_list<exact_expr> equations,
+                           const std::vector<exact_expr> &variables){
+        return exact_solve(std::vector<exact_expr>(equations), variables);
+    }
     exact_expr solve(const exact_expr &expression,
                      const std::vector<exact_expr> &variables,
                      double precision_bits = 256.0);
+    exact_expr solve(const std::vector<exact_expr> &equations,
+                     const std::vector<exact_expr> &variables,
+                     double precision_bits = 256.0);
+    exact_expr solve(std::initializer_list<exact_expr> equations,
+                     const std::vector<exact_expr> &variables,
+                     double precision_bits = 256.0){
+        return solve(std::vector<exact_expr>(equations), variables,
+                     precision_bits);
+    }
 
     // Copy only nodes reachable from the supplied roots into a fresh arena.
     // Old handles remain valid and keep the old arena alive until destroyed.
@@ -275,6 +332,15 @@ public:
     friend exact_expr ln(const exact_expr &value);
     friend exact_expr log2(const exact_expr &value);
     friend exact_expr log10(const exact_expr &value);
+    friend exact_expr Si(const exact_expr &value);
+    friend exact_expr Ci(const exact_expr &value);
+    friend exact_expr Ei(const exact_expr &value);
+    friend exact_expr erf(const exact_expr &value);
+    friend exact_expr partial_gamma(const exact_expr &a, const exact_expr &x);
+    friend exact_expr diff(const exact_expr &expression,
+                           const exact_expr &variable);
+    friend exact_expr integrate(const exact_expr &expression,
+                                const exact_expr &variable);
 };
 
 class exact_add_builder{
@@ -328,6 +394,14 @@ exact_expr atanh(const exact_expr &value);
 exact_expr ln(const exact_expr &value);
 exact_expr log2(const exact_expr &value);
 exact_expr log10(const exact_expr &value);
+exact_expr Si(const exact_expr &value);
+exact_expr Ci(const exact_expr &value);
+exact_expr Ei(const exact_expr &value);
+exact_expr erf(const exact_expr &value);
+exact_expr erfi(const exact_expr &value);
+exact_expr partial_gamma(const exact_expr &a, const exact_expr &x);
+exact_expr diff(const exact_expr &expression, const exact_expr &variable);
+exact_expr integrate(const exact_expr &expression, const exact_expr &variable);
 bool operator==(const exact_expr &a, const exact_expr &b);
 bool operator!=(const exact_expr &a, const exact_expr &b);
 
@@ -379,6 +453,14 @@ public:
     friend expr atanh(const expr &value);
     friend expr log2(const expr &value);
     friend expr log10(const expr &value);
+    friend expr Si(const expr &value);
+    friend expr Ci(const expr &value);
+    friend expr Ei(const expr &value);
+    friend expr erf(const expr &value);
+    friend expr erfi(const expr &value);
+    friend expr partial_gamma(const expr &a, const expr &x);
+    friend expr diff(const expr &expression, const expr &variable);
+    friend expr integrate(const expr &expression, const expr &variable);
     friend bool operator==(const expr &a, const expr &b);
 };
 
@@ -411,6 +493,8 @@ public:
     expr simplify(const expr &value, size_t automatic_expansion_terms = 64);
     expr expand(const expr &value, size_t maximum_terms = 100000);
     expr factor(const expr &value);
+    expr factor_integer(const expr &value);
+    expr gcd(const expr &left, const expr &right);
 };
 
 template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type>
@@ -442,5 +526,13 @@ expr acosh(const expr &value);
 expr atanh(const expr &value);
 expr log2(const expr &value);
 expr log10(const expr &value);
+expr Si(const expr &value);
+expr Ci(const expr &value);
+expr Ei(const expr &value);
+expr erf(const expr &value);
+expr erfi(const expr &value);
+expr partial_gamma(const expr &a, const expr &x);
+expr diff(const expr &expression, const expr &variable);
+expr integrate(const expr &expression, const expr &variable);
 bool operator==(const expr &a, const expr &b);
 bool operator!=(const expr &a, const expr &b);

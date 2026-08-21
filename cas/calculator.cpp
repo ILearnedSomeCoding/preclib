@@ -27,9 +27,9 @@ struct calculator_state{
     double precision = 256.0;
 };
 
-static std::string scientific_if_large(std::string text){
+static std::string scientific_if_large(std::string text,
+                                       size_t significant_digits = 80){
     const size_t integer_limit = 120;
-    const size_t significant_digits = 80;
     size_t sign = !text.empty() && (text[0] == '-' || text[0] == '+') ? 1 : 0;
     size_t dot = text.find('.', sign);
     size_t integer_end = dot == std::string::npos ? text.size() : dot;
@@ -73,7 +73,32 @@ static std::string scientific_if_large(std::string text){
 }
 
 static std::string format_answer(const exact_expr &answer){
-    return scientific_if_large(answer.to_string());
+    size_t significant_digits = 80;
+    double approximate_bits = 0.0;
+    if(answer.is_value()){
+        exact_value value = answer.value();
+        if(value.is_approximate()) approximate_bits = value.number().precision();
+    }else if(answer.operation() == exact_opcode::power){
+        // Numeric powers are deliberately kept as nodes and evaluated by the
+        // printer, so their approximate precision is stored in an operand.
+        for(size_t i = 0; i < answer.operand_count(); ++i){
+            exact_expr operand = answer.operand(i);
+            if(!operand.is_value()) continue;
+            exact_value value = operand.value();
+            if(!value.is_approximate()) continue;
+            double bits = value.number().precision();
+            approximate_bits = approximate_bits == 0.0
+                ? bits : std::min(approximate_bits, bits);
+        }
+    }
+    if(approximate_bits > 0.0){
+        // Leave a few guard bits hidden. Arithmetic errors near a power of ten
+        // must not be printed as if they were significant digits.
+        double bits = std::max(1.0, approximate_bits - 8.0);
+        significant_digits = std::max<size_t>(
+            1, (size_t)std::floor(bits * 0.3010299956639812));
+    }
+    return scientific_if_large(answer.to_string(), significant_digits);
 }
 
 static void collect_garbage(calculator_state &state, bool force){
@@ -202,6 +227,9 @@ class parser{
         if(name == "abs") return state_.context.absolute_value(argument);
         if(name == "expand") return state_.context.expand(argument);
         if(name == "factor") return state_.context.factor(argument);
+        if(name == "factorint") return state_.context.factor_integer(argument);
+        if(name == "groebner")
+            throw std::runtime_error("groebner requires polynomial and variable lists");
         if(name == "simplify") return state_.context.simplify(argument);
         if(name == "trigexpand") return state_.context.trig_expand(argument);
         if(name == "trigreduce") return state_.context.trig_reduce(argument);
@@ -233,6 +261,11 @@ class parser{
             if(name == "log2") return state_.context.logarithm_base_2(argument);
             if(name == "log" || name == "log10")
                 return state_.context.logarithm_base_10(argument);
+            if(name == "Si") return state_.context.sine_integral(argument);
+            if(name == "Ci") return state_.context.cosine_integral(argument);
+            if(name == "Ei") return state_.context.exponential_integral(argument);
+            if(name == "erf") return state_.context.error_function(argument);
+            if(name == "erfi") return state_.context.imaginary_error_function(argument);
             throw std::runtime_error(name + " requires a numeric value");
         }
         Number value = argument.value().to_number(state_.precision);
@@ -256,12 +289,53 @@ class parser{
         else if(name == "asinh") result = asinh(value);
         else if(name == "acosh") result = acosh(value);
         else if(name == "atanh") result = atanh(value);
+        else if(name == "Si") result = Si(value);
+        else if(name == "Ci") result = Ci(value);
+        else if(name == "Ei") result = Ei(value);
+        else if(name == "erf") result = erf(value);
+        else if(name == "erfi") result = erfi(value);
         else throw std::runtime_error("unknown function: " + name);
         return state_.context.value(exact_value(std::move(result)));
     }
 
     exact_expr function(const std::string &name,
                         const std::vector<exact_expr> &arguments){
+        if(name == "partial_gamma"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("partial_gamma requires two arguments");
+            return state_.context.partial_gamma(arguments[0], arguments[1]);
+        }
+        if(name == "diff" || name == "differentiate"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("diff requires an expression and a variable");
+            return state_.context.differentiate(arguments[0], arguments[1]);
+        }
+        if(name == "integrate" || name == "int"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("integrate requires an expression and a variable");
+            return state_.context.integrate(arguments[0], arguments[1]);
+        }
+        if(name == "gcd"){
+            if(arguments.size() < 2)
+                throw std::runtime_error("gcd requires at least two arguments");
+            exact_expr result = arguments[0];
+            for(size_t i = 1; i < arguments.size(); ++i)
+                result = state_.context.gcd(result, arguments[i]);
+            return result;
+        }
+        if(name == "groebner"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("groebner requires {polynomials}, {variables}");
+            auto list = [](const exact_expr &value){
+                if(value.operation() != exact_opcode::expression_list)
+                    throw std::runtime_error("groebner arguments must be lists");
+                std::vector<exact_expr> result;
+                for(size_t i = 0; i < value.operand_count(); ++i)
+                    result.push_back(value.operand(i));
+                return result;
+            };
+            return state_.context.groebner(list(arguments[0]), list(arguments[1]));
+        }
         if(name == "is_poly" || name == "ispoly"){
             if(arguments.empty())
                 throw std::runtime_error("is_poly requires an expression");
@@ -314,7 +388,19 @@ class parser{
             if(name == "i") return state_.context.i();
             if(take('(')){
                 if(name == "solve" || name == "exact_solve"){
-                    exact_expr equation = expression();
+                    std::vector<exact_expr> equations;
+                    bool equation_list = take('{');
+                    if(equation_list){
+                        if(!take('}')){
+                            for(;;){
+                                equations.push_back(expression());
+                                if(take('}')) break;
+                                require(',');
+                            }
+                        }
+                    }else{
+                        equations.push_back(expression());
+                    }
                     require(',');
                     require('{');
                     std::vector<exact_expr> variables;
@@ -326,10 +412,34 @@ class parser{
                         }
                     }
                     require(')');
+                    if(!equation_list)
+                        return name == "exact_solve"
+                            ? state_.context.exact_solve(equations[0], variables)
+                            : state_.context.solve(equations[0], variables,
+                                                   state_.precision);
                     return name == "exact_solve"
-                        ? state_.context.exact_solve(equation, variables)
-                        : state_.context.solve(equation, variables,
+                        ? state_.context.exact_solve(equations, variables)
+                        : state_.context.solve(equations, variables,
                                                state_.precision);
+                }
+                if(name == "groebner"){
+                    auto parse_list = [&](){
+                        std::vector<exact_expr> result;
+                        require('{');
+                        if(!take('}')){
+                            for(;;){
+                                result.push_back(expression());
+                                if(take('}')) break;
+                                require(',');
+                            }
+                        }
+                        return result;
+                    };
+                    std::vector<exact_expr> polynomials = parse_list();
+                    require(',');
+                    std::vector<exact_expr> variables = parse_list();
+                    require(')');
+                    return state_.context.groebner(polynomials, variables);
                 }
                 std::vector<exact_expr> arguments;
                 if(!take(')')){
@@ -373,8 +483,13 @@ class parser{
         for(;;){
             if(take('+')) result = result + product();
             else if(take('-')) result = result - product();
-            else return result;
+            else break;
         }
+        // Equations are represented internally by moving the right-hand
+        // side to the left.  The solver already expects polynomial/expression
+        // equations in the form f(...) = 0.
+        if(take('=')) return result - expression();
+        return result;
     }
 
 public:
@@ -391,21 +506,27 @@ public:
     }
 };
 
+static const char *help_text(){
+    return
+        "operators: +  -  *  /  ^  =  and parentheses\n"
+        "values: exact integers/fractions, decimal approximations, symbols\n"
+        "constants: pi, e, i\n"
+        "algebra: sqrt, abs, simplify, expand, factor, factorint, gcd,\n"
+        "         groebner({polynomials}, {variables}), trigexpand, trigreduce,\n"
+        "         subs(expression, target, replacement), is_poly(expression[, vars])\n"
+        "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
+        "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
+        "calculus: diff(expr, x), differentiate(expr, x), int(expr, x), integrate(expr, x)\n"
+        "functions: exp, expm1, ln, log, log10, log2, Si, Ci, Ei, erf,\n"
+        "           partial_gamma(a, x), erf, erfi, sin, cos, tan, asin, acos, atan,\n"
+        "           sinh, cosh, tanh, asinh, acosh, atanh\n"
+        "assumptions: assume(symbol, none|real|nonnegative|positive)\n"
+        "commands: !precision BITS  !nodes  !gc  !dump [LIMIT]  !info [EXPR]\n"
+        "          !tree [EXPR]  !time EXPR  !full  !clear  !help  !quit\n";
+}
+
 static void help(){
-    std::cout
-        << "operators: +  -  *  /  ^  and parentheses\n"
-        << "exact: integer literals, integer fractions, symbols, sqrt(integer)\n"
-        << "constants: pi, e\n"
-        << "approximate: decimal literals, approx(x), and numeric functions\n"
-        << "functions: sqrt, expand, factor, simplify, trigexpand, trigreduce,\n"
-        << "           subs(expression, target, replacement), is_poly(expression[, vars]),\n"
-        << "           assume(symbol, none|real|nonnegative|positive),\n"
-        << "           solve(expression, {variable}), exact_solve(expression, {variable}),\n"
-        << "           exp, expm1, ln, log, log10, log2,\n"
-        << "           sin, cos, tan, asin, acos, atan,\n"
-        << "           abs, sinh, cosh, tanh, asinh, acosh, atanh\n"
-        << "commands: !precision BITS, !nodes, !gc, !dump [LIMIT], !info [EXPR],\n"
-        << "          !tree [EXPR], !time EXPR, !full, !clear, !help, !quit\n";
+    std::cout << help_text();
 }
 
 static exact_expr debug_argument(const std::string &line, size_t command_size,

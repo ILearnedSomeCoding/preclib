@@ -162,6 +162,19 @@ expr expr_context::factor(const expr &value){
         throw std::invalid_argument("expression belongs to a different context");
     return expr(state_, state_->context.factor(value.node_));
 }
+expr expr_context::factor_integer(const expr &value){
+    require_state(value);
+    if(value.state_ != state_)
+        throw std::invalid_argument("expression belongs to a different context");
+    return expr(state_, state_->context.factor_integer(value.node_));
+}
+expr expr_context::gcd(const expr &left, const expr &right){
+    require_state(left);
+    require_state(right);
+    if(left.state_ != state_ || right.state_ != state_)
+        throw std::invalid_argument("expressions belong to a different context");
+    return expr(state_, state_->context.gcd(left.node_, right.node_));
+}
 
 expr operator+(const expr &a, const expr &b){
     require_same_state(a, b);
@@ -326,6 +339,56 @@ expr log10(const expr &value){
         value, [](const Number &x){ return ::log10(x); }, "log10");
     return expr(value.state_, value.state_->context.value(
         exact_value(std::move(result))));
+}
+expr Si(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::Si(value.node_));
+    Number result = numeric_function(value, [](const Number &x){ return ::Si(x); }, "Si");
+    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+}
+expr Ci(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::Ci(value.node_));
+    Number result = numeric_function(value, [](const Number &x){ return ::Ci(x); }, "Ci");
+    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+}
+expr Ei(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::Ei(value.node_));
+    Number result = numeric_function(value, [](const Number &x){ return ::Ei(x); }, "Ei");
+    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+}
+expr erf(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::erf(value.node_));
+    Number result = numeric_function(value, [](const Number &x){ return ::erf(x); }, "erf");
+    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+}
+expr erfi(const expr &value){
+    require_state(value);
+    if(!value.is_number()) return expr(value.state_, ::erfi(value.node_));
+    Number result = numeric_function(value, [](const Number &x){ return ::erfi(x); }, "erfi");
+    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+}
+expr partial_gamma(const expr &a, const expr &x){
+    require_same_state(a, x);
+    if(!a.is_number() || !x.is_number())
+        return expr(a.state_, ::partial_gamma(a.node_, x.node_));
+    Number av = a.number(), xv = x.number();
+    if(av.is_exact()) av.set_precision(a.context_precision());
+    if(xv.is_exact()) xv.set_precision(a.context_precision());
+    Number result = ::partial_gamma(av, xv);
+    return expr(a.state_, a.state_->context.value(exact_value(std::move(result))));
+}
+expr diff(const expr &expression, const expr &variable){
+    require_same_state(expression, variable);
+    return expr(expression.state_, expression.state_->context.differentiate(
+        expression.node_, variable.node_));
+}
+expr integrate(const expr &expression, const expr &variable){
+    require_same_state(expression, variable);
+    return expr(expression.state_, expression.state_->context.integrate(
+        expression.node_, variable.node_));
 }
 bool operator==(const expr &a, const expr &b){
     if(!a.valid() || !b.valid()) return !a.valid() && !b.valid();

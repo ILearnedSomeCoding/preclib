@@ -118,6 +118,15 @@ PRECLIB_API Number asinh(const Number &a);
 PRECLIB_API Number acosh(const Number &a);
 PRECLIB_API Number atanh(const Number &a);
 
+// Real special functions. partial_gamma(a, x) is the upper incomplete gamma
+// integral from x to infinity; it requires a > 0 and x >= 0.
+PRECLIB_API Number Si(const Number &x);
+PRECLIB_API Number Ci(const Number &x);
+PRECLIB_API Number Ei(const Number &x);
+PRECLIB_API Number erf(const Number &x);
+PRECLIB_API Number erfi(const Number &x);
+PRECLIB_API Number partial_gamma(const Number &a, const Number &x);
+
 class PRECLIB_API Complex{
     Number real_;
     Number imag_;

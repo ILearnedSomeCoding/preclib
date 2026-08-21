@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prec CAS</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Prec CAS</div>
+    <div class="status-group">
+      <span id="engineStatus" class="status loading">正在加载</span>
+      <span id="nodeStatus" class="metric">0 nodes</span>
+      <label class="precision-control">
+        <span>精度</span>
+        <input id="precisionInput" type="number" min="1" max="1048576" value="256">
+        <span>bits</span>
+      </label>
+      <button id="helpButton" class="icon-button" title="显示 !help" aria-label="显示 !help">?</button>
+      <button id="collectButton" class="icon-button" title="回收未使用节点" aria-label="回收未使用节点">GC</button>
+      <button id="clearButton" class="icon-button" title="清空历史" aria-label="清空历史">×</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section id="history" class="history" aria-live="polite">
+      <div class="empty-state" id="emptyState">
+        <strong>精确计算，从这里开始。</strong>
+        <span>Prec CAS · WebAssembly</span>
+      </div>
+    </section>
+
+    <form id="calculatorForm" class="input-band">
+      <span class="prompt">&gt;</span>
+      <textarea id="expressionInput" rows="1" spellcheck="false" autocomplete="off"
+        aria-label="CAS 表达式" placeholder="输入表达式"></textarea>
+      <button id="runButton" type="submit" disabled>计算</button>
+    </form>
+  </main>
+
+  <script src="worker_bundle.js?v=20260815-8"></script>
+  <script src="app.js?v=20260815-8"></script>
+</body>
+</html>

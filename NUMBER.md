@@ -163,6 +163,22 @@ Exact inputs use a 64-bit default because nontrivial transcendental results are
 usually inexact. Set a finite precision first when more bits are required.
 `ln` requires a positive argument and calls `abort` for zero or negative input.
 
+Real special functions are also available:
+
+```cpp
+Number sine_integral = Si(x);
+Number cosine_integral = Ci(x);
+Number exponential_integral = Ei(x);
+Number error = erf(x);
+Number upper_gamma = partial_gamma(a, x);
+```
+
+`partial_gamma(a, x)` denotes the upper incomplete gamma integral
+`Gamma(a,x) = integral_x^infinity t^(a-1) exp(-t) dt`. The current real-domain
+implementation requires `a > 0` and `x >= 0`; `Ci` requires a positive input.
+The special functions use the input `Number` precision and do not convert the
+result through binary64.
+
 Shifts are exact powers-of-two scaling operations and preserve the precision
 tag. Square root preserves exactness when an exact input has an exactly
 representable square root; other roots use finite working precision. Division
