@@ -338,13 +338,19 @@ static const ntt_mod_plan_t &ntt_get_mod_plan(size_t n, uint32_t mod, uint32_t r
     // tables in their thread-local caches.
     static std::mutex plans_mutex;
     static std::map<size_t, std::shared_ptr<ntt_mod_plan_t> > plans[3];
+    static thread_local std::map<size_t, std::shared_ptr<ntt_mod_plan_t> > local_plans[3];
     size_t slot = mod == NTT_MOD1 ? 0 : mod == NTT_MOD2 ? 1 : 2;
+    std::map<size_t, std::shared_ptr<ntt_mod_plan_t> >::iterator local =
+        local_plans[slot].find(n);
+    if(local != local_plans[slot].end()) return *local->second;
+
     std::lock_guard<std::mutex> lock(plans_mutex);
     std::map<size_t, std::shared_ptr<ntt_mod_plan_t> >::iterator found = plans[slot].find(n);
     if(found == plans[slot].end()){
         found = plans[slot].emplace(n,
             std::make_shared<ntt_mod_plan_t>(ntt_make_mod_plan(n, mod, root))).first;
     }
+    local_plans[slot].emplace(n, found->second);
     return *found->second;
 }
 
@@ -566,6 +572,63 @@ static void ntt_convolve_plan(const std::vector<uint32_t> &a,
     ntt_forward(out, p);
     ntt_forward(scratch, p);
     ntt_finish_convolution(out, scratch, p);
+}
+
+static void ntt_negacyclic_convolve_plan(const std::vector<uint32_t> &a,
+                                         const std::vector<uint32_t> &b,
+                                         size_t n,
+                                         const ntt_mod_plan_t &p,
+                                         std::vector<uint32_t> &out,
+                                         std::vector<uint32_t> &scratch){
+    // psi is a primitive 2n-th root.  Multiplying input digit i by psi^i
+    // turns an ordinary n-point cyclic convolution into one modulo X^n+1.
+    const mont_ctx_t &c = p.c;
+    uint64_t psi_exponent = (c.mod - 1) / (n << 1);
+    uint32_t psi = mont_pow(c, c.root, psi_exponent);
+    // mont_pow accepts an ordinary residue, while psi is already in
+    // Montgomery form.  Build psi^-1 from the primitive root directly.
+    uint32_t psi_inv = mont_pow(c, c.root, c.mod - 1 - psi_exponent);
+    ntt_zero(out, n);
+    ntt_zero(scratch, n);
+    uint32_t pw = c.one;
+    for(size_t i = 0; i < n; ++i){
+        out[i] = mont_mul(c, mont_in(c, a[i]), pw);
+        scratch[i] = mont_mul(c, mont_in(c, b[i]), pw);
+        pw = mont_mul(c, pw, psi);
+    }
+    ntt_forward(out, p);
+    ntt_forward(scratch, p);
+    for(size_t i = 0; i < n; ++i) out[i] = mont_mul(c, out[i], scratch[i]);
+    ntt_inverse(out, p);
+    pw = c.one;
+    for(size_t i = 0; i < n; ++i){
+        out[i] = mont_reduce(c, mont_mul(c, out[i], pw));
+        pw = mont_mul(c, pw, psi_inv);
+    }
+}
+
+static void ntt_negacyclic_square_plan(const std::vector<uint32_t> &a,
+                                       size_t n,
+                                       const ntt_mod_plan_t &p,
+                                       std::vector<uint32_t> &out){
+    const mont_ctx_t &c = p.c;
+    uint64_t psi_exponent = (c.mod - 1) / (n << 1);
+    uint32_t psi = mont_pow(c, c.root, psi_exponent);
+    uint32_t psi_inv = mont_pow(c, c.root, c.mod - 1 - psi_exponent);
+    ntt_zero(out, n);
+    uint32_t pw = c.one;
+    for(size_t i = 0; i < n; ++i){
+        out[i] = mont_mul(c, mont_in(c, a[i]), pw);
+        pw = mont_mul(c, pw, psi);
+    }
+    ntt_forward(out, p);
+    for(size_t i = 0; i < n; ++i) out[i] = mont_mul(c, out[i], out[i]);
+    ntt_inverse(out, p);
+    pw = c.one;
+    for(size_t i = 0; i < n; ++i){
+        out[i] = mont_reduce(c, mont_mul(c, out[i], pw));
+        pw = mont_mul(c, pw, psi_inv);
+    }
 }
 
 static void ntt_convolve_mod(const std::vector<uint32_t> &a,
@@ -903,6 +966,220 @@ static precn_t mul_ntt_impl(const precn_t &a, const precn_t &b,
 
 precn_t mul_ntt(const precn_t &a, const precn_t &b){
     return mul_ntt_impl(a, b, 0);
+}
+
+precn_t mul_mersenne(const precn_t &a, const precn_t &b, size_t limbs){
+    if(limbs == 0 || (limbs & (limbs - 1)) || a.rsiz > limbs || b.rsiz > limbs){
+        fprintf(stderr, "mul_mersenne: limbs must be a power of two and contain both operands\n");
+        abort();
+    }
+    if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+
+    // In R = Z/(X^n-1), an n-point NTT gives the cyclic convolution
+    // directly.  Ordinary multiplication needs a 2n-point transform, so
+    // this is the essential primitive for Newton iterations modulo B^n-1.
+    size_t digits = limbs * 4;
+    std::vector<uint32_t> da, db, r1, r2, scratch;
+    ntt_digits(a, da);
+    ntt_digits(b, db);
+    da.resize(digits, 0);
+    db.resize(digits, 0);
+
+    const ntt_mod_plan_t &p1 = ntt_get_mod_plan(digits, NTT_MOD1, NTT_ROOT1);
+    const ntt_mod_plan_t &p2 = ntt_get_mod_plan(digits, NTT_MOD2, NTT_ROOT2);
+#if !defined(__EMSCRIPTEN__)
+    if(digits >= ((size_t)1 << 15) && ntt_worker_count() == 2){
+        std::thread first([&]{
+            ntt_parallel_disabled = true;
+            ntt_convolve_plan(da, db, digits, p1, r1, scratch);
+        });
+        std::vector<uint32_t> scratch2;
+        ntt_parallel_disabled = true;
+        ntt_convolve_plan(da, db, digits, p2, r2, scratch2);
+        ntt_parallel_disabled = false;
+        first.join();
+    }else
+#endif
+    {
+        ntt_convolve_plan(da, db, digits, p1, r1, scratch);
+        ntt_convolve_plan(da, db, digits, p2, r2, scratch);
+    }
+
+    std::vector<uint32_t> out(digits);
+    uint64_t carry = 0;
+    for(size_t i = 0; i < digits; ++i){
+        uint64_t cur = ntt_crt2(r1[i], r2[i]) + carry;
+        out[i] = (uint32_t)(cur & 0xFFFFu);
+        carry = cur >> 16;
+    }
+    // B^digits == 1 in the cyclic ring, so fold the final carry through
+    // digit zero.  The carry strictly shrinks after each wrapped pass.
+    for(size_t i = 0; carry; i = (i + 1) % digits){
+        uint64_t cur = (uint64_t)out[i] + carry;
+        out[i] = (uint32_t)(cur & 0xFFFFu);
+        carry = cur >> 16;
+    }
+
+    bool all_ones = true;
+    for(size_t i = 0; i < digits; ++i){
+        if(out[i] != 0xFFFFu){
+            all_ones = false;
+            break;
+        }
+    }
+    if(all_ones) return precn_t();
+
+    precn_t r;
+    r.asiz = limbs;
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.rsiz = limbs;
+    for(size_t i = 0; i < digits; ++i)
+        r.a[i >> 2] |= (uint64_t)out[i] << ((i & 3) * 16);
+    while(r.rsiz && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
+precn_t mul_fermat(const precn_t &a, const precn_t &b, size_t limbs){
+    if(limbs == 0 || (limbs & (limbs - 1)) || a.rsiz > limbs || b.rsiz > limbs){
+        fprintf(stderr, "mul_fermat: limbs must be a power of two and contain both operands\n");
+        abort();
+    }
+    if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+
+    size_t digits = limbs * 4;
+    std::vector<uint32_t> da, db, r1, r2, scratch;
+    ntt_digits(a, da);
+    ntt_digits(b, db);
+    da.resize(digits, 0);
+    db.resize(digits, 0);
+
+    const ntt_mod_plan_t &p1 = ntt_get_mod_plan(digits, NTT_MOD1, NTT_ROOT1);
+    const ntt_mod_plan_t &p2 = ntt_get_mod_plan(digits, NTT_MOD2, NTT_ROOT2);
+    bool square = &a == &b;
+#if !defined(__EMSCRIPTEN__)
+    if(digits >= ((size_t)1 << 15) && ntt_worker_count() == 2){
+        std::thread first([&]{
+            ntt_parallel_disabled = true;
+            if(square) ntt_negacyclic_square_plan(da, digits, p1, r1);
+            else ntt_negacyclic_convolve_plan(da, db, digits, p1, r1, scratch);
+        });
+        ntt_parallel_disabled = true;
+        if(square) ntt_negacyclic_square_plan(da, digits, p2, r2);
+        else{
+            std::vector<uint32_t> scratch2;
+            ntt_negacyclic_convolve_plan(da, db, digits, p2, r2, scratch2);
+        }
+        ntt_parallel_disabled = false;
+        first.join();
+    }else
+#endif
+    {
+        if(square){
+            ntt_negacyclic_square_plan(da, digits, p1, r1);
+            ntt_negacyclic_square_plan(da, digits, p2, r2);
+        }else{
+            ntt_negacyclic_convolve_plan(da, db, digits, p1, r1, scratch);
+            ntt_negacyclic_convolve_plan(da, db, digits, p2, r2, scratch);
+        }
+    }
+
+    // CRT gives residues in [0,p1*p2).  The true negacyclic coefficients
+    // are small signed integers, so map the upper half back below zero.
+    const uint64_t crt_modulus = (uint64_t)NTT_MOD1 * NTT_MOD2;
+    std::vector<uint32_t> out(digits);
+    int64_t carry = 0;
+    for(size_t i = 0; i < digits; ++i){
+        uint64_t residue = ntt_crt2(r1[i], r2[i]);
+        int64_t coeff = residue > crt_modulus / 2 ?
+            (int64_t)(residue - crt_modulus) : (int64_t)residue;
+        int64_t value = coeff + carry;
+        uint32_t digit = (uint32_t)(value & 0xFFFF);
+        out[i] = digit;
+        carry = (value - digit) / 65536;
+    }
+
+    // The final carry is the coefficient of B^digits.  Here B^digits=-1,
+    // so fold it once into digit zero.  This avoids the cyclic carry loop
+    // and preserves the otherwise unrepresentable residue B^digits.
+    carry = -carry;
+    for(size_t i = 0; i < digits; ++i){
+        int64_t value = (int64_t)out[i] + carry;
+        uint32_t digit = (uint32_t)(value & 0xFFFF);
+        out[i] = digit;
+        carry = (value - digit) / 65536;
+    }
+
+    bool top = false;
+    if(carry == 1){
+        size_t i = 0;
+        while(i < digits && out[i] == 0){ out[i] = 0xFFFFu; ++i; }
+        if(i == digits) top = true;
+        else --out[i];
+    }else if(carry == -1){
+        size_t i = 0;
+        while(i < digits && out[i] == 0xFFFFu){ out[i] = 0; ++i; }
+        if(i == digits) top = true;
+        else ++out[i];
+    }else if(carry != 0){
+        fprintf(stderr, "mul_fermat: carry escaped normalization\n");
+        abort();
+    }
+
+    precn_t r;
+    r.asiz = limbs + (top ? 1 : 0);
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.rsiz = r.asiz;
+    for(size_t i = 0; i < digits; ++i)
+        r.a[i >> 2] |= (uint64_t)out[i] << ((i & 3) * 16);
+    if(top) r.a[limbs] = 1;
+    while(r.rsiz && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
+precn_t mul_high_half_ntt(const precn_t &a, const precn_t &b, size_t limbs){
+    if(limbs == 0 || (limbs & (limbs - 1)) || a.rsiz > limbs || b.rsiz > limbs){
+        fprintf(stderr, "mul_high_half_ntt: invalid power-of-two size\n");
+        abort();
+    }
+    if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
+
+    // Write P=L+S*H with S=2^(64*limbs).  The two ring products give
+    // U=L+H (mod S-1) and V=L-H (mod S+1).  U has two possible lifts and
+    // V has at most two signed lifts; exactly one pair produces L,H in
+    // [0,S).  This is O(limbs) work after the two length-n transforms.
+    precn_t c = mul_mersenne(a, b, limbs);
+    precn_t f = mul_fermat(a, b, limbs);
+    precn_t s = precn_t(1) << (limbs * 64);
+    precn_t sm1 = s - precn_t(1);
+    precn_t sp1 = s + precn_t(1);
+    precn_t u[2] = {c, c + sm1};
+    bool f_is_s = f == s;
+
+    for(size_t ui = 0; ui < 2; ++ui){
+        // V >= 0: V=f.  The special canonical residue S represents -1,
+        // not the out-of-range positive value S.
+        if(!f_is_s && (u[ui] >= f) && ((u[ui].a[0] ^ f.a[0]) & 1) == 0){
+            precn_t high = (u[ui] - f) >> 1;
+            precn_t low = (u[ui] + f) >> 1;
+            if(low < s && high < s) return high;
+        }
+        // V < 0: V=f-(S+1), so its magnitude is S+1-f.
+        if(f.rsiz){
+            precn_t magnitude = sp1 - f;
+            if(u[ui] >= magnitude && ((u[ui].a[0] ^ magnitude.a[0]) & 1) == 0){
+                precn_t high = (u[ui] + magnitude) >> 1;
+                precn_t low = (u[ui] - magnitude) >> 1;
+                if(low < s && high < s) return high;
+            }
+        }
+    }
+
+    fprintf(stderr, "mul_high_half_ntt: CRT lift failed\n");
+    abort();
 }
 
 precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs){

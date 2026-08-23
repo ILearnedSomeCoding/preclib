@@ -47,6 +47,18 @@
 #define PI_DIV_GUARD_BITS 128
 #endif
 
+#ifndef PI_INVSQRT_GUARD_BITS
+#define PI_INVSQRT_GUARD_BITS 64
+#endif
+
+#ifndef PI_DIV_TRACE
+#define PI_DIV_TRACE 0
+#endif
+
+#ifndef PI_DIV_SKIP_PRODUCT_VERIFY
+#define PI_DIV_SKIP_PRODUCT_VERIFY 0
+#endif
+
 static bool show_phases = false;
 static bool full_output = false;
 static bool show_progress = false;
@@ -422,7 +434,11 @@ static precn_t pi_sqrt_tracked(const precn_t &a){
 static precn_t sqrt10005_invsqrt(size_t digits, size_t scale_index,
                                  std::vector<pow10_entry_t> &pow10_cache){
     const uint32_t c = 10005;
-    const size_t guard_bits = 192;
+    // The final multiplication by 10005 amplifies a one-unit reciprocal
+    // error by at most 10005.  Sixty-four binary guard bits leave that far
+    // below one output unit, while 192 bits only make the final NTT rounds
+    // larger.
+    const size_t guard_bits = PI_INVSQRT_GUARD_BITS;
     const size_t scale_bits = bit_length(pow10_cache[pow10_index(digits, pow10_cache)].value);
     const size_t target_bits = scale_bits + guard_bits;
     size_t bits = 56;
@@ -675,23 +691,37 @@ static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
     progress_set(700);
     precn_t q = pi_mul_shift_right(a, inverse, scale);
     progress_set(820);
+#if PI_DIV_SKIP_PRODUCT_VERIFY
+    progress_set(1000);
+    return q;
+#else
     precn_t product = b * q;
     progress_set(940);
+
+    unsigned int down_corrections = 0;
+    unsigned int up_corrections = 0;
 
     while(product > a){
         precn_t delta = div_schoolbook(product - a, b);
         if(delta.rsiz == 0) delta = precn_t(1);
         q = q - delta;
         product = product - b * delta;
+        ++down_corrections;
     }
     while(product + b <= a){
         precn_t delta = div_schoolbook(a - product, b);
         if(delta.rsiz == 0) delta = precn_t(1);
         q = q + delta;
         product = product + b * delta;
+        ++up_corrections;
     }
+#if PI_DIV_TRACE
+    fprintf(stderr, "pi division corrections: down=%u up=%u\n",
+            down_corrections, up_corrections);
+#endif
     progress_set(1000);
     return q;
+#endif
 }
 
 static std::string pi_digits(size_t digits){

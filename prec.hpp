@@ -155,6 +155,17 @@ PRECLIB_API precn_t mul_u64(const precn_t &a, uint64_t b);
 PRECLIB_API precn_t precn_sqr(const precn_t &a);
 // Returns floor((a * b) / 2^(64 * drop_limbs)).
 PRECLIB_API precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs);
+// Returns a*b modulo 2^(64*limbs)-1.  limbs must be a non-zero power of two
+// and both operands must fit in that many limbs.
+PRECLIB_API precn_t mul_mersenne(const precn_t &a, const precn_t &b, size_t limbs);
+// Returns a*b modulo 2^(64*limbs)+1.  limbs must be a non-zero power of two
+// and both operands must fit in that many limbs.  The result may use
+// limbs+1 limbs when it is exactly 2^(64*limbs).
+PRECLIB_API precn_t mul_fermat(const precn_t &a, const precn_t &b, size_t limbs);
+// For power-of-two limbs n and operands shorter than n limbs, returns the
+// high half floor(a*b / 2^(64*n)).  It uses the two cyclic NTT rings rather
+// than an ordinary 2n-point convolution.
+PRECLIB_API precn_t mul_high_half_ntt(const precn_t &a, const precn_t &b, size_t limbs);
 
 template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
 precn_t operator*(const precn_t &a, T b){

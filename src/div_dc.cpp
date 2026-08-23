@@ -1,6 +1,8 @@
 #include"../prec.hpp"
 
-static const size_t DIV_DC_BASECASE = 64;
+#ifndef DIV_DC_BASECASE
+#define DIV_DC_BASECASE 64
+#endif
 
 static precn_t dc_slice(const precn_t &a, size_t off, size_t n){
     precn_t r;
