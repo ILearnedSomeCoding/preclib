@@ -1,6 +1,16 @@
 #include"../prec.hpp"
 
+#include<map>
+#include<memory>
+#include<mutex>
 #include<vector>
+
+#if !defined(__EMSCRIPTEN__)
+#include<atomic>
+#include<condition_variable>
+#include<functional>
+#include<thread>
+#endif
 
 #if defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD
 #define PRECN_NTT_HAVE_AVX2 0
@@ -35,6 +45,147 @@ static const uint32_t NTT_ROOT1 = 3u;
 static const uint32_t NTT_ROOT2 = 13u;
 static const uint32_t NTT_ROOT3 = 31u;
 static const uint64_t NTT_DIGIT_MAX2 = 0xFFFFULL * 0xFFFFULL;
+
+#if !defined(__EMSCRIPTEN__)
+// A transform has a barrier after every layer, so creating threads per layer
+// loses badly.  Keep a small pool alive and let every worker claim contiguous
+// ranges of butterflies.  The caller participates as one worker.
+class ntt_thread_pool_t{
+    std::mutex run_mutex;
+    std::mutex mutex;
+    std::condition_variable have_work;
+    std::condition_variable finished;
+    std::vector<std::thread> workers;
+    std::function<void(size_t, size_t)> task;
+    std::atomic<size_t> next;
+    size_t task_count;
+    size_t grain;
+    size_t total_size;
+    size_t done;
+    uint64_t generation;
+    bool stop;
+
+    void worker(){
+        std::unique_lock<std::mutex> lock(mutex);
+        uint64_t seen_generation = 0;
+        for(;;){
+            have_work.wait(lock, [this, &seen_generation]{ return generation != seen_generation || stop; });
+            if(stop) return;
+            seen_generation = generation;
+            lock.unlock();
+            for(;;){
+                size_t block = next.fetch_add(1, std::memory_order_relaxed);
+                if(block >= task_count) break;
+                size_t begin = block * grain;
+                task(begin, std::min(begin + grain, total_size));
+            }
+            lock.lock();
+            if(++done == workers.size()) finished.notify_one();
+        }
+    }
+
+public:
+    explicit ntt_thread_pool_t(unsigned int thread_count)
+        : next(0), task_count(0), grain(1), total_size(0), done(0), generation(0), stop(false){
+        for(unsigned int i = 1; i < thread_count; ++i) workers.emplace_back(&ntt_thread_pool_t::worker, this);
+    }
+
+    ~ntt_thread_pool_t(){
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stop = true;
+        }
+        have_work.notify_all();
+        for(size_t i = 0; i < workers.size(); ++i) workers[i].join();
+    }
+
+    void run(size_t total, const std::function<void(size_t, size_t)> &f){
+        if(total == 0){
+            return;
+        }
+        if(workers.empty() || total == 1){
+            f(0, total);
+            return;
+        }
+
+        std::lock_guard<std::mutex> serial(run_mutex);
+        size_t thread_count = workers.size() + 1;
+        size_t local_grain = std::max((size_t)256, total / (thread_count * 8));
+        size_t blocks = (total + local_grain - 1) / local_grain;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            task = f;
+            grain = local_grain;
+            task_count = blocks;
+            total_size = total;
+            next.store(0, std::memory_order_relaxed);
+            done = 0;
+            ++generation;
+        }
+        have_work.notify_all();
+        for(;;){
+            size_t block = next.fetch_add(1, std::memory_order_relaxed);
+            if(block >= blocks) break;
+            size_t begin = block * local_grain;
+            f(begin, std::min(begin + local_grain, total));
+        }
+        std::unique_lock<std::mutex> lock(mutex);
+        finished.wait(lock, [this]{ return done == workers.size(); });
+    }
+};
+
+static std::mutex ntt_pool_config_mutex;
+static std::unique_ptr<ntt_thread_pool_t> ntt_pool;
+static unsigned int ntt_pool_threads;
+static thread_local bool ntt_parallel_disabled;
+
+static unsigned int ntt_default_thread_count(){
+    unsigned int n = std::thread::hardware_concurrency();
+    // Two independent residue convolutions already expose useful parallelism.
+    // A pool sized to every logical CPU makes the small/medium NTT layers pay
+    // much more synchronization and cache traffic than arithmetic on a mini
+    // PC.  Callers with a genuinely wider memory subsystem can still request
+    // a different value through precn_set_ntt_threads().
+    return n > 1 ? 2 : 1;
+}
+
+static ntt_thread_pool_t &ntt_pool_get(){
+    std::lock_guard<std::mutex> lock(ntt_pool_config_mutex);
+    if(!ntt_pool){
+        ntt_pool_threads = ntt_default_thread_count();
+        ntt_pool = std::make_unique<ntt_thread_pool_t>(ntt_pool_threads);
+    }
+    return *ntt_pool;
+}
+
+static unsigned int ntt_worker_count(){
+    ntt_pool_get();
+    return ntt_pool_threads;
+}
+
+void precn_set_ntt_threads(unsigned int threads){
+    std::lock_guard<std::mutex> lock(ntt_pool_config_mutex);
+    if(ntt_pool) return;
+    ntt_pool_threads = threads ? threads : ntt_default_thread_count();
+    ntt_pool = std::make_unique<ntt_thread_pool_t>(ntt_pool_threads);
+}
+
+template<class F>
+static void ntt_parallel_for(size_t total, F f){
+    if(ntt_parallel_disabled){
+        if(total) f(0, total);
+        return;
+    }
+    ntt_pool_get().run(total, std::function<void(size_t, size_t)>(f));
+}
+#else
+void precn_set_ntt_threads(unsigned int){}
+
+template<class F>
+static void ntt_parallel_for(size_t total, F f){
+    if(total) f(0, total);
+}
+#endif
 
 static const mont_ctx_t NTT_CTX[] = {
     {469762049u, 3u, 469762047u, 460175152u, 67108855u},
@@ -182,14 +333,19 @@ static ntt_mod_plan_t ntt_make_mod_plan(size_t n, uint32_t mod, uint32_t root){
 }
 
 static const ntt_mod_plan_t &ntt_get_mod_plan(size_t n, uint32_t mod, uint32_t root){
-    static thread_local ntt_mod_plan_t plans[3];
-    static thread_local size_t sizes[3] = {0, 0, 0};
+    // Plans are immutable after construction.  Sharing them prevents the
+    // independent binary-split workers from rebuilding identical O(n) root
+    // tables in their thread-local caches.
+    static std::mutex plans_mutex;
+    static std::map<size_t, std::shared_ptr<ntt_mod_plan_t> > plans[3];
     size_t slot = mod == NTT_MOD1 ? 0 : mod == NTT_MOD2 ? 1 : 2;
-    if(sizes[slot] != n){
-        plans[slot] = ntt_make_mod_plan(n, mod, root);
-        sizes[slot] = n;
+    std::lock_guard<std::mutex> lock(plans_mutex);
+    std::map<size_t, std::shared_ptr<ntt_mod_plan_t> >::iterator found = plans[slot].find(n);
+    if(found == plans[slot].end()){
+        found = plans[slot].emplace(n,
+            std::make_shared<ntt_mod_plan_t>(ntt_make_mod_plan(n, mod, root))).first;
     }
-    return plans[slot];
+    return *found->second;
 }
 
 static void ntt_forward(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
@@ -202,7 +358,10 @@ static void ntt_forward(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     // operands bit-reversed, so pointwise multiplication needs no permutation.
     for(size_t len = n; len >= 2; len >>= 1){
         size_t half = len >> 1;
-        for(size_t i = 0; i < n; i += len){
+        size_t block_count = n / len;
+        auto transform_blocks = [&](size_t block_begin, size_t block_end){
+        for(size_t block = block_begin; block < block_end; ++block){
+            size_t i = block * len;
             size_t j = 0;
 #if PRECN_NTT_HAVE_AVX2
             __m256i mod4 = _mm256_set1_epi64x((long long)mod);
@@ -253,6 +412,9 @@ static void ntt_forward(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
                 a[i + j + half] = mont_mul(c, d, roots[half + j]);
             }
         }
+        };
+        if(n >= ((size_t)1 << 16) && block_count > 1) ntt_parallel_for(block_count, transform_blocks);
+        else transform_blocks(0, block_count);
     }
 }
 
@@ -264,7 +426,10 @@ static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
 
     for(size_t len = 2; len <= n; len <<= 1){
         size_t half = len >> 1;
-        for(size_t i = 0; i < n; i += len){
+        size_t block_count = n / len;
+        auto transform_blocks = [&](size_t block_begin, size_t block_end){
+        for(size_t block = block_begin; block < block_end; ++block){
+            size_t i = block * len;
             size_t j = 0;
 #if PRECN_NTT_HAVE_AVX2
             __m256i mod4 = _mm256_set1_epi64x((long long)mod);
@@ -311,6 +476,9 @@ static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
                 a[i + j + half] = d;
             }
         }
+        };
+        if(n >= ((size_t)1 << 16) && block_count > 1) ntt_parallel_for(block_count, transform_blocks);
+        else transform_blocks(0, block_count);
     }
 
     uint32_t inv_n = p.inv_n;
@@ -330,8 +498,8 @@ static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     for(; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
 }
 
-static std::vector<uint32_t> ntt_digits(const precn_t &a){
-    std::vector<uint32_t> d;
+static void ntt_digits(const precn_t &a, std::vector<uint32_t> &d){
+    d.clear();
     d.reserve(a.rsiz * 4);
     for(size_t i = 0; i < a.rsiz; ++i){
         d.push_back((uint32_t)(a.a[i] & 0xFFFFu));
@@ -340,7 +508,6 @@ static std::vector<uint32_t> ntt_digits(const precn_t &a){
         d.push_back((uint32_t)(a.a[i] >> 48));
     }
     while(!d.empty() && d.back() == 0) d.pop_back();
-    return d;
 }
 
 static void ntt_zero(std::vector<uint32_t> &a, size_t n){
@@ -348,21 +515,22 @@ static void ntt_zero(std::vector<uint32_t> &a, size_t n){
     memset(a.data(), 0, n * sizeof(uint32_t));
 }
 
-static void ntt_convolve_mod(const std::vector<uint32_t> &a,
-                             const std::vector<uint32_t> &b,
-                             size_t n,
-                             uint32_t mod,
-                             uint32_t root,
-                             std::vector<uint32_t> &out,
-                             std::vector<uint32_t> &scratch){
-    const ntt_mod_plan_t &p = ntt_get_mod_plan(n, mod, root);
+static void ntt_load_inputs(const std::vector<uint32_t> &a,
+                            const std::vector<uint32_t> &b,
+                            size_t n,
+                            const ntt_mod_plan_t &p,
+                            std::vector<uint32_t> &out,
+                            std::vector<uint32_t> &scratch){
     ntt_zero(out, n);
     ntt_zero(scratch, n);
     for(size_t i = 0; i < a.size(); ++i) out[i] = mont_in(p.c, a[i]);
     for(size_t i = 0; i < b.size(); ++i) scratch[i] = mont_in(p.c, b[i]);
+}
 
-    ntt_forward(out, p);
-    ntt_forward(scratch, p);
+static void ntt_finish_convolution(std::vector<uint32_t> &out,
+                                   std::vector<uint32_t> &scratch,
+                                   const ntt_mod_plan_t &p){
+    size_t n = out.size();
     size_t i = 0;
 #if PRECN_NTT_HAVE_AVX2
     for(; i + 7 < n; i += 8){
@@ -386,6 +554,28 @@ static void ntt_convolve_mod(const std::vector<uint32_t> &a,
     }
 #endif
     for(; i < n; ++i) out[i] = mont_reduce(p.c, out[i]);
+}
+
+static void ntt_convolve_plan(const std::vector<uint32_t> &a,
+                              const std::vector<uint32_t> &b,
+                              size_t n,
+                              const ntt_mod_plan_t &p,
+                              std::vector<uint32_t> &out,
+                              std::vector<uint32_t> &scratch){
+    ntt_load_inputs(a, b, n, p, out, scratch);
+    ntt_forward(out, p);
+    ntt_forward(scratch, p);
+    ntt_finish_convolution(out, scratch, p);
+}
+
+static void ntt_convolve_mod(const std::vector<uint32_t> &a,
+                             const std::vector<uint32_t> &b,
+                             size_t n,
+                             uint32_t mod,
+                             uint32_t root,
+                             std::vector<uint32_t> &out,
+                             std::vector<uint32_t> &scratch){
+    ntt_convolve_plan(a, b, n, ntt_get_mod_plan(n, mod, root), out, scratch);
 }
 
 static uint32_t mod_inv_u32(uint64_t a, uint32_t mod){
@@ -438,9 +628,11 @@ static void ntt_put_digit(precn_t &r, size_t id, uint32_t digit){
 }
 
 static precn_t ntt_from_residues2(const std::vector<uint32_t> &r1,
-                                  const std::vector<uint32_t> &r2){
+                                  const std::vector<uint32_t> &r2,
+                                  size_t skip_digits = 0){
     precn_t r;
-    r.asiz = r1.size() / 4 + 8;
+    r.asiz = std::max<size_t>((r1.size() > skip_digits ?
+        r1.size() - skip_digits : 0) / 4 + 8, 1);
     r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
     memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.rsiz = 0;
@@ -449,13 +641,21 @@ static precn_t ntt_from_residues2(const std::vector<uint32_t> &r1,
     size_t digit_id = 0;
     for(size_t i = 0; i < r1.size(); ++i, ++digit_id){
         uint64_t cur = ntt_crt2(r1[i], r2[i]) + carry;
-        ntt_put_digit(r, digit_id, (uint32_t)(cur & 0xFFFFu));
+        if(digit_id >= skip_digits){
+            size_t out_digit = digit_id - skip_digits;
+            r.a[out_digit >> 2] |= (cur & 0xFFFFu) << ((out_digit & 3) * 16);
+        }
         carry = cur >> 16;
     }
     while(carry){
-        ntt_put_digit(r, digit_id++, (uint32_t)(carry & 0xFFFFu));
+        if(digit_id >= skip_digits){
+            size_t out_digit = digit_id - skip_digits;
+            ntt_put_digit(r, out_digit, (uint32_t)(carry & 0xFFFFu));
+        }
+        ++digit_id;
         carry >>= 16;
     }
+    r.rsiz = digit_id <= skip_digits ? 0 : (digit_id - skip_digits + 3) >> 2;
 
     while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
     if(r.rsiz == 0) r.a[0] = 0;
@@ -464,9 +664,11 @@ static precn_t ntt_from_residues2(const std::vector<uint32_t> &r1,
 
 static precn_t ntt_from_residues3(const std::vector<uint32_t> &r1,
                                   const std::vector<uint32_t> &r2,
-                                  const std::vector<uint32_t> &r3){
+                                  const std::vector<uint32_t> &r3,
+                                  size_t skip_digits = 0){
     precn_t r;
-    r.asiz = r1.size() / 4 + 8;
+    r.asiz = std::max<size_t>((r1.size() > skip_digits ?
+        r1.size() - skip_digits : 0) / 4 + 8, 1);
     r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
     memset(r.a, 0, r.asiz * sizeof(uint64_t));
     r.rsiz = 0;
@@ -475,14 +677,69 @@ static precn_t ntt_from_residues3(const std::vector<uint32_t> &r1,
     size_t digit_id = 0;
     for(size_t i = 0; i < r1.size(); ++i, ++digit_id){
         uint64_t cur = ntt_crt3(r1[i], r2[i], r3[i]) + carry;
-        ntt_put_digit(r, digit_id, (uint32_t)(cur & 0xFFFFu));
+        if(digit_id >= skip_digits){
+            size_t out_digit = digit_id - skip_digits;
+            r.a[out_digit >> 2] |= (cur & 0xFFFFu) << ((out_digit & 3) * 16);
+        }
         carry = cur >> 16;
     }
     while(carry){
-        ntt_put_digit(r, digit_id++, (uint32_t)(carry & 0xFFFFu));
+        if(digit_id >= skip_digits){
+            size_t out_digit = digit_id - skip_digits;
+            ntt_put_digit(r, out_digit, (uint32_t)(carry & 0xFFFFu));
+        }
+        ++digit_id;
         carry >>= 16;
     }
+    r.rsiz = digit_id <= skip_digits ? 0 : (digit_id - skip_digits + 3) >> 2;
 
+    while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
+// Recover only the high digits when the incoming carry can be proved from a
+// short guard region.  A coefficient is at most terms*(B-1)^2, so the carry
+// entering an omitted prefix is bounded by ceil(Cmax/(B-1)).  Propagating that
+// whole interval through four 64-bit guard limbs either collapses to one value
+// (the usual case) or safely falls back to the ordinary full carry scan.
+static precn_t ntt_high_from_residues2_guarded(const std::vector<uint32_t> &r1,
+                                               const std::vector<uint32_t> &r2,
+                                               size_t skip_digits, size_t terms){
+    const size_t guard_digits = 16;
+    const uint64_t digit_base = 1ULL << 16;
+    if(skip_digits < guard_digits || skip_digits >= r1.size())
+        return ntt_from_residues2(r1, r2, skip_digits);
+
+    uint64_t coeff_max = (uint64_t)terms * NTT_DIGIT_MAX2;
+    uint64_t carry_lo = 0;
+    uint64_t carry_hi = (coeff_max + digit_base - 2) / (digit_base - 1);
+    for(size_t i = skip_digits - guard_digits; i < skip_digits; ++i){
+        uint64_t coefficient = ntt_crt2(r1[i], r2[i]);
+        carry_lo = (coefficient + carry_lo) >> 16;
+        carry_hi = (coefficient + carry_hi) >> 16;
+    }
+    if(carry_lo != carry_hi)
+        return ntt_from_residues2(r1, r2, skip_digits);
+
+    precn_t r;
+    r.asiz = std::max<size_t>((r1.size() - skip_digits) / 4 + 8, 1);
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.rsiz = 0;
+
+    uint64_t carry = carry_lo;
+    size_t out_digit = 0;
+    for(size_t i = skip_digits; i < r1.size(); ++i, ++out_digit){
+        uint64_t cur = ntt_crt2(r1[i], r2[i]) + carry;
+        r.a[out_digit >> 2] |= (cur & 0xFFFFu) << ((out_digit & 3) * 16);
+        carry = cur >> 16;
+    }
+    while(carry){
+        ntt_put_digit(r, out_digit++, (uint32_t)(carry & 0xFFFFu));
+        carry >>= 16;
+    }
+    r.rsiz = (out_digit + 3) >> 2;
     while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
     if(r.rsiz == 0) r.a[0] = 0;
     return r;
@@ -493,28 +750,163 @@ static int ntt_two_mod_ok(size_t terms){
     return terms <= (m12 - 1) / NTT_DIGIT_MAX2;
 }
 
-precn_t mul_ntt(const precn_t &a, const precn_t &b){
+struct ntt_workspace_t{
+    std::vector<uint32_t> digits_a;
+    std::vector<uint32_t> digits_b;
+    std::vector<uint32_t> residue1;
+    std::vector<uint32_t> residue2;
+    std::vector<uint32_t> residue3;
+    std::vector<uint32_t> scratch1;
+    std::vector<uint32_t> scratch2;
+};
+
+static precn_t mul_ntt_impl(const precn_t &a, const precn_t &b,
+                            size_t skip_digits){
     if(a.rsiz == 0 || b.rsiz == 0) return precn_t();
-    if(std::max(a.rsiz, b.rsiz) <= 192) return mul_basic(a, b);
+    if(std::max(a.rsiz, b.rsiz) <= 192){
+        precn_t r = mul_basic(a, b);
+        return skip_digits ? r >> (skip_digits * 16) : r;
+    }
     size_t limbs = std::max(a.rsiz, b.rsiz);
-    if(limbs > NTT_MAX_LIMBS) return mul_fft(a, b);
-
-    std::vector<uint32_t> da = ntt_digits(a);
-    std::vector<uint32_t> db = ntt_digits(b);
-    if(da.empty() || db.empty()) return precn_t();
-
-    size_t n = 1;
-    while(n < da.size() + db.size()) n <<= 1;
-    if(n > NTT_MAX_TRANSFORM) return mul_fft(a, b);
-
-    std::vector<uint32_t> r1, r2, r3, scratch;
-    ntt_convolve_mod(da, db, n, NTT_MOD1, NTT_ROOT1, r1, scratch);
-    ntt_convolve_mod(da, db, n, NTT_MOD2, NTT_ROOT2, r2, scratch);
-
-    if(ntt_two_mod_ok(std::min(da.size(), db.size()))){
-        return ntt_from_residues2(r1, r2);
+    if(limbs > NTT_MAX_LIMBS){
+        precn_t r = mul_fft(a, b);
+        return skip_digits ? r >> (skip_digits * 16) : r;
     }
 
-    ntt_convolve_mod(da, db, n, NTT_MOD3, NTT_ROOT3, r3, scratch);
-    return ntt_from_residues3(r1, r2, r3);
+    static thread_local ntt_workspace_t workspace;
+    std::vector<uint32_t> &da = workspace.digits_a;
+    std::vector<uint32_t> &db = workspace.digits_b;
+    bool square = &a == &b;
+    ntt_digits(a, da);
+    if(!square) ntt_digits(b, db);
+    if(da.empty() || (!square && db.empty())) return precn_t();
+
+    size_t n = 1;
+    while(n < da.size() + (square ? da.size() : db.size())) n <<= 1;
+    if(n > NTT_MAX_TRANSFORM){
+        precn_t r = mul_fft(a, b);
+        return skip_digits ? r >> (skip_digits * 16) : r;
+    }
+
+    const ntt_mod_plan_t &plan1 = ntt_get_mod_plan(n, NTT_MOD1, NTT_ROOT1);
+    const ntt_mod_plan_t &plan2 = ntt_get_mod_plan(n, NTT_MOD2, NTT_ROOT2);
+    if(square){
+        std::vector<uint32_t> &residue1 = workspace.residue1;
+        std::vector<uint32_t> &residue2 = workspace.residue2;
+        ntt_zero(residue1, n);
+        ntt_zero(residue2, n);
+        for(size_t i = 0; i < da.size(); ++i){
+            residue1[i] = mont_in(plan1.c, da[i]);
+            residue2[i] = mont_in(plan2.c, da[i]);
+        }
+#if !defined(__EMSCRIPTEN__)
+        if(n >= ((size_t)1 << 15) && ntt_worker_count() == 2){
+            std::thread first([&]{
+                ntt_parallel_disabled = true;
+                ntt_forward(residue1, plan1);
+            });
+            ntt_parallel_disabled = true;
+            ntt_forward(residue2, plan2);
+            ntt_parallel_disabled = false;
+            first.join();
+
+            std::thread finish([&]{
+                ntt_finish_convolution(residue1, residue1, plan1);
+            });
+            ntt_parallel_disabled = true;
+            ntt_finish_convolution(residue2, residue2, plan2);
+            ntt_parallel_disabled = false;
+            finish.join();
+        }else
+#endif
+        {
+            ntt_forward(residue1, plan1);
+            ntt_forward(residue2, plan2);
+            ntt_finish_convolution(residue1, residue1, plan1);
+            ntt_finish_convolution(residue2, residue2, plan2);
+        }
+        return skip_digits ? ntt_high_from_residues2_guarded(residue1, residue2,
+            skip_digits, da.size()) : ntt_from_residues2(residue1, residue2);
+    }
+#if !defined(__EMSCRIPTEN__)
+    if(n >= ((size_t)1 << 17) && ntt_worker_count() == 2){
+        std::vector<uint32_t> &residue1 = workspace.residue1;
+        std::vector<uint32_t> &residue2 = workspace.residue2;
+        std::vector<uint32_t> &scratch1 = workspace.scratch1;
+        std::vector<uint32_t> &scratch2 = workspace.scratch2;
+
+        // There are four independent forward transforms here: two inputs for
+        // each CRT modulus.  Running only one full convolution per core left
+        // half the available cores idle during the forward half of a large
+        // multiplication.  Keep the transforms serial internally so they do
+        // not contend for the shared layer pool.
+        ntt_load_inputs(da, db, n, plan1, residue1, scratch1);
+        ntt_load_inputs(da, db, n, plan2, residue2, scratch2);
+        std::thread f1([&]{
+            ntt_parallel_disabled = true;
+            ntt_forward(residue1, plan1);
+        });
+        std::thread f2([&]{
+            ntt_parallel_disabled = true;
+            ntt_forward(scratch1, plan1);
+        });
+        std::thread f3([&]{
+            ntt_parallel_disabled = true;
+            ntt_forward(residue2, plan2);
+        });
+        ntt_parallel_disabled = true;
+        ntt_forward(scratch2, plan2);
+        ntt_parallel_disabled = false;
+        f1.join();
+        f2.join();
+        f3.join();
+
+        std::thread first([&]{
+            // This transform owns the shared two-worker layer pool while the
+            // other modulus remains serial on the caller.  That uses a third
+            // core without concurrent pool submissions.
+            ntt_finish_convolution(residue1, scratch1, plan1);
+        });
+        ntt_parallel_disabled = true;
+        ntt_finish_convolution(residue2, scratch2, plan2);
+        ntt_parallel_disabled = false;
+        first.join();
+    }else if(n >= ((size_t)1 << 15) && ntt_worker_count() == 2){
+        std::vector<uint32_t> &residue1 = workspace.residue1;
+        std::vector<uint32_t> &residue2 = workspace.residue2;
+        std::vector<uint32_t> &scratch1 = workspace.scratch1;
+        std::vector<uint32_t> &scratch2 = workspace.scratch2;
+        std::thread first([&]{
+            ntt_convolve_plan(da, db, n, plan1, residue1, scratch1);
+        });
+        ntt_parallel_disabled = true;
+        ntt_convolve_plan(da, db, n, plan2, residue2, scratch2);
+        ntt_parallel_disabled = false;
+        first.join();
+    }else
+#endif
+    {
+        ntt_convolve_plan(da, db, n, plan1, workspace.residue1, workspace.scratch1);
+        ntt_convolve_plan(da, db, n, plan2, workspace.residue2, workspace.scratch1);
+    }
+
+    if(ntt_two_mod_ok(std::min(da.size(), db.size()))){
+        return skip_digits ? ntt_high_from_residues2_guarded(workspace.residue1,
+            workspace.residue2, skip_digits, std::min(da.size(), db.size())) :
+            ntt_from_residues2(workspace.residue1, workspace.residue2);
+    }
+
+    ntt_convolve_mod(da, db, n, NTT_MOD3, NTT_ROOT3, workspace.residue3, workspace.scratch1);
+    return ntt_from_residues3(workspace.residue1, workspace.residue2,
+                              workspace.residue3, skip_digits);
+}
+
+precn_t mul_ntt(const precn_t &a, const precn_t &b){
+    return mul_ntt_impl(a, b, 0);
+}
+
+precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs){
+    if(a.rsiz == 0 || b.rsiz == 0 || drop_limbs >= a.rsiz + b.rsiz)
+        return precn_t();
+    return mul_ntt_impl(a, b, drop_limbs * 4);
 }

@@ -2,7 +2,17 @@
 
 #include<vector>
 
+#if !defined(__EMSCRIPTEN__)
+#include<thread>
+#endif
+
+#ifndef BC_MULINV_THRESHOLD
 #define BC_MULINV_THRESHOLD 32768
+#endif
+
+#ifndef BC_CONVERT_PARALLEL_DEPTH
+#define BC_CONVERT_PARALLEL_DEPTH 2
+#endif
 
 static int bc_cmp(const precn_t &a, const precn_t &b){
     if(a.rsiz != b.rsiz) return a.rsiz < b.rsiz ? -1 : 1;
@@ -64,7 +74,8 @@ static void bc_make_powers(uint64_t chunk_base, const precn_t &a, std::vector<pr
 
 static void bc_emit_fixed_chunks(const precn_t &a, size_t level,
                                  const std::vector<precn_t> &pow2,
-                                 std::vector<uint64_t> &chunks){
+                                 std::vector<uint64_t> &chunks,
+                                 unsigned int parallel_depth = 0){
     // Emit exactly 2^level chunks, padding high zero chunks if needed.  This is
     // required for the low half of a split so middle zero chunks are preserved.
     if(a.rsiz == 0){
@@ -78,13 +89,28 @@ static void bc_emit_fixed_chunks(const precn_t &a, size_t level,
 
     precn_t q, r;
     bc_split(a, pow2[level - 1], q, r);
-    bc_emit_fixed_chunks(r, level - 1, pow2, chunks);
-    bc_emit_fixed_chunks(q, level - 1, pow2, chunks);
+#if !defined(__EMSCRIPTEN__)
+    if(parallel_depth && a.rsiz >= 16384){
+        std::vector<uint64_t> low;
+        std::vector<uint64_t> high;
+        std::thread low_worker([&]{
+            bc_emit_fixed_chunks(r, level - 1, pow2, low, parallel_depth - 1);
+        });
+        bc_emit_fixed_chunks(q, level - 1, pow2, high, parallel_depth - 1);
+        low_worker.join();
+        chunks.insert(chunks.end(), low.begin(), low.end());
+        chunks.insert(chunks.end(), high.begin(), high.end());
+        return;
+    }
+#endif
+    bc_emit_fixed_chunks(r, level - 1, pow2, chunks, parallel_depth);
+    bc_emit_fixed_chunks(q, level - 1, pow2, chunks, parallel_depth);
 }
 
 static void bc_emit_chunks(const precn_t &a, size_t level,
                            const std::vector<precn_t> &pow2,
-                           std::vector<uint64_t> &chunks){
+                           std::vector<uint64_t> &chunks,
+                           unsigned int parallel_depth = 0){
     // Emit the top-level chunk list with leading zero chunks trimmed.  Each
     // recursion splits by chunk_base^(2^(level-1)), so operand sizes roughly
     // halve at every level instead of shrinking by one chunk per division.
@@ -97,10 +123,27 @@ static void bc_emit_chunks(const precn_t &a, size_t level,
     precn_t q, r;
     bc_split(a, pow2[level - 1], q, r);
     if(q.rsiz == 0){
-        bc_emit_chunks(r, level - 1, pow2, chunks);
+        bc_emit_chunks(r, level - 1, pow2, chunks, parallel_depth);
     }else{
-        bc_emit_fixed_chunks(r, level - 1, pow2, chunks);
-        bc_emit_chunks(q, level - 1, pow2, chunks);
+#if !defined(__EMSCRIPTEN__)
+        // The two halves no longer share arithmetic state after bc_split.
+        // One top-level fork overlaps their divide-and-conquer subtrees while
+        // avoiding an exponential number of workers and output reordering.
+        if(parallel_depth && a.rsiz >= 16384){
+            std::vector<uint64_t> low;
+            std::vector<uint64_t> high;
+            std::thread low_worker([&]{
+                bc_emit_fixed_chunks(r, level - 1, pow2, low, parallel_depth - 1);
+            });
+            bc_emit_chunks(q, level - 1, pow2, high, parallel_depth - 1);
+            low_worker.join();
+            chunks.insert(chunks.end(), low.begin(), low.end());
+            chunks.insert(chunks.end(), high.begin(), high.end());
+            return;
+        }
+#endif
+        bc_emit_fixed_chunks(r, level - 1, pow2, chunks, parallel_depth);
+        bc_emit_chunks(q, level - 1, pow2, chunks, parallel_depth);
     }
 }
 
@@ -143,7 +186,7 @@ void precn_base_convert(const precn_t &a, uint32_t base, uint32_t *out, size_t &
     // A maximal uint64_t chunk always contains at least 32 useful bits for
     // every non-power-of-two uint32_t base.
     chunks.reserve((bc_bit_length(a) + 31) / 32);
-    bc_emit_chunks(a, pow2.size() - 1, pow2, chunks);
+    bc_emit_chunks(a, pow2.size() - 1, pow2, chunks, BC_CONVERT_PARALLEL_DEPTH);
 
     std::vector<uint32_t> digits;
     digits.reserve(chunks.size() * chunk_digits);
@@ -169,4 +212,33 @@ void precn_base_convert(const precn_t &a, uint32_t base, uint32_t *out, size_t &
     if(out){
         for(size_t i = 0; i < out_siz; ++i) out[i] = digits[i];
     }
+}
+
+std::string precn_to_decimal(const precn_t &a){
+    if(a.rsiz == 0) return "0";
+
+    // 10^19 fits in uint64_t.  Keeping these full chunks through the whole
+    // conversion tree avoids the final expansion into one base-10 digit per
+    // byte and also removes one split level compared with 10^9 chunks.
+    const uint64_t chunk_base = 10000000000000000000ULL;
+    std::vector<precn_t> pow2;
+    bc_make_powers(chunk_base, a, pow2);
+
+    std::vector<uint64_t> chunks;
+    chunks.reserve((bc_bit_length(a) + 62) / 63);
+    bc_emit_chunks(a, pow2.size() - 1, pow2, chunks, BC_CONVERT_PARALLEL_DEPTH);
+    if(chunks.empty()) return "0";
+
+    std::string result = std::to_string(chunks.back());
+    result.reserve(chunks.size() * 19);
+    for(size_t i = chunks.size() - 1; i > 0; --i){
+        uint64_t value = chunks[i - 1];
+        size_t start = result.size();
+        result.append(19, '0');
+        for(size_t j = 0; j < 19; ++j){
+            result[start + 18 - j] = (char)('0' + value % 10);
+            value /= 10;
+        }
+    }
+    return result;
 }

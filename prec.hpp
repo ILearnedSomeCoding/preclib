@@ -123,6 +123,9 @@ extern PRECLIB_API uint64_t danger_fftmuls_3_8;
 extern PRECLIB_API double max_fft_rounding_error;
 #endif
 PRECLIB_API precn_t mul_ntt(const precn_t &a, const precn_t &b);
+// Configure the native NTT worker pool before its first multiplication.
+// Zero chooses a sensible hardware-based default; WebAssembly stays single-threaded.
+PRECLIB_API void precn_set_ntt_threads(unsigned int threads);
 PRECLIB_API precn_t mul_ssa(const precn_t &a, const precn_t &b);
 
 PRECLIB_API precn_t operator+(const precn_t &a, const precn_t &b);
@@ -150,6 +153,8 @@ PRECLIB_API void mul_into(precn_t &r, const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t mul_u32(const precn_t &a, uint32_t b);
 PRECLIB_API precn_t mul_u64(const precn_t &a, uint64_t b);
 PRECLIB_API precn_t precn_sqr(const precn_t &a);
+// Returns floor((a * b) / 2^(64 * drop_limbs)).
+PRECLIB_API precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs);
 
 template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
 precn_t operator*(const precn_t &a, T b){
@@ -226,6 +231,7 @@ PRECLIB_API precn_t gcd(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t precn_sqrt(const precn_t &a);
 
 PRECLIB_API void precn_base_convert(const precn_t &a, uint32_t base, uint32_t *out, size_t &out_siz);
+PRECLIB_API std::string precn_to_decimal(const precn_t &a);
 
 class PRECLIB_API precz_t{ // signed arbitrary precision number, sign and precn_t magnitude
     precn_t mag_;

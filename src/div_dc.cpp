@@ -17,7 +17,41 @@ static precn_t dc_slice(const precn_t &a, size_t off, size_t n){
 
 static precn_t dc_join(const precn_t &high, const precn_t &low, size_t low_limbs){
     if(high.rsiz == 0) return low;
-    return (high << (low_limbs * 64)) + low;
+    // The two inputs occupy disjoint limb ranges.  Building a shifted copy
+    // and then adding it to low used two temporary big integers at every
+    // divide-and-conquer level; concatenate the ranges directly instead.
+    precn_t r;
+    r.rsiz = low_limbs + high.rsiz;
+    r.asiz = std::max<size_t>(r.rsiz, 1);
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    if(low.rsiz) memcpy(r.a, low.a, low.rsiz * sizeof(uint64_t));
+    if(low.rsiz < low_limbs)
+        memset(r.a + low.rsiz, 0, (low_limbs - low.rsiz) * sizeof(uint64_t));
+    memcpy(r.a + low_limbs, high.a, high.rsiz * sizeof(uint64_t));
+    return r;
+}
+
+static precn_t dc_join_low_words(const precn_t &high, const uint64_t *low,
+                                 size_t low_siz, size_t low_limbs){
+    if(high.rsiz == 0){
+        precn_t r;
+        r.rsiz = low_siz;
+        r.asiz = std::max<size_t>(low_siz, 1);
+        r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+        if(low_siz) memcpy(r.a, low, low_siz * sizeof(uint64_t));
+        else r.a[0] = 0;
+        return r;
+    }
+
+    precn_t r;
+    r.rsiz = low_limbs + high.rsiz;
+    r.asiz = r.rsiz;
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    if(low_siz) memcpy(r.a, low, low_siz * sizeof(uint64_t));
+    if(low_siz < low_limbs)
+        memset(r.a + low_siz, 0, (low_limbs - low_siz) * sizeof(uint64_t));
+    memcpy(r.a + low_limbs, high.a, high.rsiz * sizeof(uint64_t));
+    return r;
 }
 
 static precn_t dc_limb_mask(size_t n){
@@ -39,12 +73,10 @@ static void dc_div_2n1n(const precn_t &a, const precn_t &b, size_t n,
 static void dc_div_3n2n(const precn_t &a, const precn_t &b, size_t n,
                         precn_t &q, precn_t &r){
     size_t k = n / 2;
-    precn_t a0 = dc_slice(a, 0, k);
-    precn_t a1 = dc_slice(a, k, k);
-    precn_t a2 = dc_slice(a, k * 2, k);
     precn_t b0 = dc_slice(b, 0, k);
     precn_t b1 = dc_slice(b, k, k);
-    precn_t upper = dc_join(a2, a1, k);
+    precn_t a2 = dc_slice(a, k * 2, k);
+    precn_t upper = dc_slice(a, k, k * 2);
     precn_t rhat;
 
     if(a2 < b1){
@@ -54,7 +86,8 @@ static void dc_div_3n2n(const precn_t &a, const precn_t &b, size_t n,
         rhat = upper - q * b1;
     }
 
-    precn_t t = dc_join(rhat, a0, k);
+    size_t low_siz = std::min(k, a.rsiz);
+    precn_t t = dc_join_low_words(rhat, a.a, low_siz, k);
     precn_t d = q * b0;
     while(t < d){
         q = q - precn_t(1);
@@ -71,11 +104,11 @@ static void dc_div_2n1n(const precn_t &a, const precn_t &b, size_t n,
     }
 
     size_t k = n / 2;
-    precn_t a0 = dc_slice(a, 0, k);
     precn_t upper = dc_slice(a, k, n + k);
     precn_t q1, r1, q0;
     dc_div_3n2n(upper, b, n, q1, r1);
-    dc_div_3n2n(dc_join(r1, a0, k), b, n, q0, r);
+    precn_t lower = dc_join_low_words(r1, a.a, std::min(k, a.rsiz), k);
+    dc_div_3n2n(lower, b, n, q0, r);
     q = dc_join(q1, q0, k);
 }
 
@@ -105,7 +138,6 @@ bool div_dc_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b){
     precn_t bn = total_shift ? b << total_shift : b;
     precn_t an = total_shift ? a << total_shift : a;
     precn_t high = dc_slice(an, n, an.rsiz);
-    precn_t low = dc_slice(an, 0, n);
     precn_t qhigh, rhigh;
 
     // Normalization can expose a short leading quotient above the n-limb
@@ -117,7 +149,8 @@ bool div_dc_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b){
     }
 
     precn_t qlow, rn;
-    dc_div_2n1n(dc_join(rhigh, low, n), bn, n, qlow, rn);
+    precn_t lower = dc_join_low_words(rhigh, an.a, std::min(n, an.rsiz), n);
+    dc_div_2n1n(lower, bn, n, qlow, rn);
     q = dc_join(qhigh, qlow, n);
     r = total_shift ? rn >> total_shift : rn;
     return true;

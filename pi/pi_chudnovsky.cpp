@@ -16,10 +16,45 @@
 #define CHUD_A 13591409u
 #define CHUD_B 545140134u
 
+#ifndef PI_ENABLE_FACTOR_CANCEL
+#define PI_ENABLE_FACTOR_CANCEL 1
+#endif
+
+#ifndef PI_PARALLEL_SPLIT
+#define PI_PARALLEL_SPLIT 1
+#endif
+
+#ifndef PI_PARALLEL_SPLIT_DEPTH
+#define PI_PARALLEL_SPLIT_DEPTH 4
+#endif
+
+// The straightforward reciprocal-square-root prototype is kept for
+// experimentation, but it needs truncated products before it can beat the
+// divide-and-refine integer square root used below.
+#ifndef PI_ENABLE_INVSQRT
+#define PI_ENABLE_INVSQRT 0
+#endif
+
+#ifndef PI_USE_LOCAL_MULINV_DIV
+#define PI_USE_LOCAL_MULINV_DIV 1
+#endif
+
+#ifndef PI_DECIMAL_1E19
+#define PI_DECIMAL_1E19 0
+#endif
+
+#ifndef PI_DIV_GUARD_BITS
+#define PI_DIV_GUARD_BITS 128
+#endif
+
 static bool show_phases = false;
 static bool full_output = false;
 static bool show_progress = false;
 static std::string output_file;
+// The NTT kernel already exposes modulus- and transform-level parallelism.
+// Two pool threads avoid oversubscribing the small desktop CPUs this program
+// targets; callers can still override it with --threads N.
+static unsigned int ntt_threads = 2;
 
 static std::atomic<int> progress_phase(-1);
 static std::atomic<uint64_t> progress_done(0);
@@ -376,8 +411,70 @@ static precn_t pi_sqrt_tracked(const precn_t &a){
     return root;
 }
 
-static precn_t sqrt10005_scaled(size_t, size_t scale_index,
+// Return floor(sqrt(10005) * 10^digits).  For the large fixed-point scale in
+// Chudnovsky, reciprocal-square-root Newton avoids the full divisions used by
+// integer sqrt.  Y represents 2^bits / sqrt(10005):
+//
+//     Y <- Y * (3 - 10005 * Y^2) / 2
+//
+// All quantities are stored as integers with `bits` fractional binary bits.
+// A final exact square comparison makes the returned integer exact.
+static precn_t sqrt10005_invsqrt(size_t digits, size_t scale_index,
+                                 std::vector<pow10_entry_t> &pow10_cache){
+    const uint32_t c = 10005;
+    const size_t guard_bits = 192;
+    const size_t scale_bits = bit_length(pow10_cache[pow10_index(digits, pow10_cache)].value);
+    const size_t target_bits = scale_bits + guard_bits;
+    size_t bits = 56;
+    uint64_t seed = (uint64_t)std::ldexp(1.0 / std::sqrt((double)c), (int)bits);
+    precn_t y(seed);
+
+    while(bits < target_bits){
+        size_t next_bits = std::min(target_bits, bits << 1);
+        y = y << (next_bits - bits);
+        // Keep 16 extra low bits before multiplying by 10005.  The discarded
+        // tail is then smaller than one unit after the final shift, so q is
+        // still exactly floor(10005*y^2 / 2^next_bits).
+        size_t square_drop = (next_bits - 16) / 64;
+        size_t square_shift = next_bits - square_drop * 64;
+        precn_t q = mul_u32(mul_high(y, y, square_drop), c) >> square_shift;
+        precn_t correction = (precn_t(3) << next_bits) - q;
+        size_t product_drop = (next_bits + 1) / 64;
+        y = mul_high(y, correction, product_drop) >>
+            (next_bits + 1 - product_drop * 64);
+        bits = next_bits;
+    }
+
+    const precn_t &scale = pow10_cache[pow10_index(digits, pow10_cache)].value;
+    precn_t root = mul_u32(scale * y, c) >> bits;
+    const precn_t target = mul_u32(pow10_cache[scale_index].value, c);
+
+    // With the guard bits this loop normally takes zero or one iteration.
+    // Keeping a short bounded correction makes the fast path exact even if a
+    // rounded seed or intermediate product lands on the other side.
+    for(unsigned int i = 0; i < 8; ++i){
+        precn_t square = root * root;
+        if(square > target){
+            root = root - precn_t(1);
+            continue;
+        }
+        precn_t next = root + precn_t(1);
+        if(next * next <= target){
+            root = next;
+            continue;
+        }
+        return root;
+    }
+
+    // Do not trade correctness for speed if a future arithmetic change makes
+    // the error bound above invalid.
+    return precn_sqrt(target);
+}
+
+static precn_t sqrt10005_scaled(size_t digits, size_t scale_index,
                                 std::vector<pow10_entry_t> &pow10_cache){
+    if(PI_ENABLE_INVSQRT && !show_progress && digits >= 8192)
+        return sqrt10005_invsqrt(digits, scale_index, pow10_cache);
     precn_t n = mul_u32(pow10_cache[scale_index].value, 10005);
     return show_progress ? pi_sqrt_tracked(n) : precn_sqrt(n);
 }
@@ -442,13 +539,26 @@ static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
     }
 
     size_t m = a + (b - a) / 2;
-    bs_t l = chud_bs(a, m, true, level + 1, sieve);
-    bs_t r = chud_bs(m, b, need_p, level + 1, sieve);
+    bs_t l;
+    bs_t r;
+#if PI_PARALLEL_SPLIT
+    if(!show_progress && level < PI_PARALLEL_SPLIT_DEPTH && b - a >= 8192){
+        std::thread right_worker([&]{ r = chud_bs(m, b, need_p, level + 1, sieve); });
+        l = chud_bs(a, m, true, level + 1, sieve);
+        right_worker.join();
+    }else
+#endif
+    {
+        l = chud_bs(a, m, true, level + 1, sieve);
+        r = chud_bs(m, b, need_p, level + 1, sieve);
+    }
 
     // This is ilmPi's factor-aware cancellation: scaling P_left and Q_right
     // by the same exact factor scales Q and T equally, preserving T/Q while
     // keeping every multiplication above this node smaller.
+#if PI_ENABLE_FACTOR_CANCEL
     if(level >= 4) factor_cancel(l.p, l.fp, r.q, r.fq);
+#endif
 
     precn_t q = l.q * r.q;
     precz_t t = l.t * precz_t(r.q) + r.t * precz_t(l.p);
@@ -466,15 +576,29 @@ static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
 }
 
 static std::string to_dec(const precn_t &a){
-    size_t n = bit_length(a) * 30103 / 100000 + 1;
-    std::vector<uint32_t> d(n);
-    precn_base_convert(a, 10, d.data(), n);
+#if PI_DECIMAL_1E19
+    return precn_to_decimal(a);
+#else
+    // The generic decimal formatter uses 10^19 leaves.  With the current
+    // division kernel, 10^9 chunks benchmark faster for this Pi workload.
+    size_t n = bit_length(a) / 29 + 2;
+    std::vector<uint32_t> chunks(n);
+    precn_base_convert(a, 1000000000u, chunks.data(), n);
     if(n == 0) return "0";
 
-    std::string s;
-    s.reserve(n);
-    for(size_t i = n; i > 0; --i) s.push_back((char)('0' + d[i - 1]));
+    std::string s = std::to_string(chunks[n - 1]);
+    s.reserve(n * 9);
+    for(size_t i = n - 1; i > 0; --i){
+        uint32_t value = chunks[i - 1];
+        size_t start = s.size();
+        s.append(9, '0');
+        for(size_t j = 0; j < 9; ++j){
+            s[start + 8 - j] = (char)('0' + value % 10);
+            value /= 10;
+        }
+    }
     return s;
+#endif
 }
 
 // Progress builds use a local copy of the multiplication-inverse division.
@@ -497,13 +621,25 @@ static precn_t pi_div_top_ceil(const precn_t &b, size_t divisor_bits,
     return (b >> (divisor_bits - keep_bits)) + 1;
 }
 
+// Newton reciprocal updates and the final quotient discard a large low tail.
+// mul_high reconstructs only the required high base-2^64 limbs, with a
+// deterministic carry guard/fallback in the NTT backend.  Keep medium inputs
+// on the ordinary dispatcher because their FFT/Toom setup is cheaper.
+static precn_t pi_mul_shift_right(const precn_t &a, const precn_t &b,
+                                  size_t shift){
+    size_t drop = shift / 64;
+    if(drop && std::max(a.rsiz, b.rsiz) >= 2048)
+        return mul_high(a, b, drop) >> (shift % 64);
+    return (a * b) >> shift;
+}
+
 static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
     size_t divisor_bits = pi_div_bits(b);
     if(b.rsiz == 0 || bits < divisor_bits) return precn_t();
 
     size_t target_known = bits - divisor_bits;
     size_t known = std::min<size_t>(target_known, 64);
-    size_t keep = std::min(divisor_bits, known + 128);
+    size_t keep = std::min(divisor_bits, known + PI_DIV_GUARD_BITS);
     precn_t bt = pi_div_top_ceil(b, divisor_bits, keep);
     size_t precision = keep + known;
     precn_t x = div_schoolbook(precn_t(1) << precision, bt);
@@ -511,7 +647,7 @@ static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
 
     while(known < target_known){
         size_t next_known = std::min(target_known, known * 2);
-        size_t next_keep = std::min(divisor_bits, next_known + 128);
+        size_t next_keep = std::min(divisor_bits, next_known + PI_DIV_GUARD_BITS);
         precn_t next_b = pi_div_top_ceil(b, divisor_bits, next_keep);
         size_t next = next_keep + next_known;
         precn_t scaled_x = x << (next_known - known);
@@ -521,7 +657,7 @@ static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
             scaled_x = scaled_x >> 1;
             bx = next_b * scaled_x;
         }
-        x = (scaled_x * (two_scale - bx)) >> next;
+        x = pi_mul_shift_right(scaled_x, two_scale - bx, next);
         known = next_known;
         uint64_t fraction = target_known ?
             (uint64_t)((600.0 * (double)known) / (double)target_known) : 600;
@@ -534,10 +670,10 @@ static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
     if(a.rsiz == 0 || b.rsiz == 0 || a < b) return precn_t();
     if(b.rsiz == 1) return div_u64(a, b.a[0]);
 
-    size_t scale = pi_div_bits(a) + 128;
+    size_t scale = pi_div_bits(a) + PI_DIV_GUARD_BITS;
     precn_t inverse = pi_div_reciprocal(b, scale);
     progress_set(700);
-    precn_t q = (a * inverse) >> scale;
+    precn_t q = pi_mul_shift_right(a, inverse, scale);
     progress_set(820);
     precn_t product = b * q;
     progress_set(940);
@@ -585,7 +721,7 @@ static std::string pi_digits(size_t digits){
     progress_begin(2, show_progress ? 1000 : 0);
     precn_t numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
     progress_set(50);
-    precn_t pi_scaled = show_progress ?
+    precn_t pi_scaled = (show_progress || PI_USE_LOCAL_MULINV_DIV) ?
         pi_div_mulinv(numerator, bs.t.magnitude()) :
         numerator / bs.t.magnitude();
     pi_scaled = pi_scaled / 10000000000ULL;
@@ -631,7 +767,10 @@ int main(int argc, char **argv){
         if(arg == "--full") full_output = true;
         if(arg == "--progress") show_progress = true;
         if(arg == "--file" && i + 1 < argc) output_file = argv[++i];
+        if(arg == "--threads" && i + 1 < argc)
+            ntt_threads = (unsigned int)std::strtoul(argv[++i], nullptr, 10);
     }
+    precn_set_ntt_threads(ntt_threads);
     double start = now_sec();
     uint64_t cpu_start = process_cpu_ms();
     std::thread reporter;

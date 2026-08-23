@@ -23,6 +23,14 @@ static precn_t newton64_pow2(size_t bits){
     return precn_t(1) << bits;
 }
 
+static precn_t newton64_mul_shift_right(const precn_t &a, const precn_t &b,
+                                        size_t shift){
+    size_t drop = shift / 64;
+    if(drop && std::max(a.rsiz, b.rsiz) >= 2048)
+        return mul_high(a, b, drop) >> (shift % 64);
+    return (a * b) >> shift;
+}
+
 static precn_t newton64_top_ceil(const precn_t &b, size_t divisor_bits,
                                  size_t keep_bits){
     if(keep_bits >= divisor_bits) return b;
@@ -60,7 +68,7 @@ static precn_t newton64_reciprocal_approx(const precn_t &b, size_t bits){
             scaled_x = scaled_x >> 1;
             bx = next_b * scaled_x;
         }
-        x = (scaled_x * (two_scale - bx)) >> next;
+        x = newton64_mul_shift_right(scaled_x, two_scale - bx, next);
         known = next_known;
     }
 
@@ -105,7 +113,7 @@ static precn_t div_mulinv_impl(const precn_t &a, const precn_t &b, precn_t *rema
     // correction to one unit at large sizes.
     size_t scale = newton64_bits(a) + 128;
     precn_t inverse = newton64_reciprocal_approx(b, scale);
-    precn_t q = (a * inverse) >> scale;
+    precn_t q = newton64_mul_shift_right(a, inverse, scale);
     precn_t product = b * q;
 
     // A good reciprocal reaches one of the two short loops below immediately.

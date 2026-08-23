@@ -92,23 +92,7 @@ precn_t::precn_t(std::string o){
 }
 
 precn_t::operator std::string() const{
-    if(rsiz == 0) return std::string("0");
-
-    uint64_t top = a[rsiz - 1];
-    size_t bits = (rsiz - 1) * 64;
-    while(top){
-        ++bits;
-        top >>= 1;
-    }
-    // 30103 / 100000 is a strict upper approximation of log10(2).
-    std::vector<uint32_t> digits(bits * 30103 / 100000 + 2);
-    size_t n = 0;
-    precn_base_convert(*this, 10, digits.data(), n);
-
-    std::string s;
-    s.reserve(n);
-    for(size_t i = n; i > 0; --i) s.push_back((char)('0' + digits[i - 1]));
-    return s;
+    return precn_to_decimal(*this);
 }
 
 precn_t &precn_t::operator=(const precn_t &o){

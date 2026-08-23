@@ -23,6 +23,12 @@ struct fft_vec_t{
     std::vector<double> im;
 };
 
+struct fft_workspace_t{
+    fft_vec_t input;
+    fft_vec_t product;
+    std::vector<long long> digits;
+};
+
 struct fft_plan_t{
     size_t n;
     std::vector<size_t> rev;
@@ -79,7 +85,11 @@ static void fft_fill_roots(double *wr, double *wi, size_t half, double ang){
 }
 
 static fft_plan_t &fft_plan(size_t n){
-    static std::vector<fft_plan_t> plans;
+    // Product-tree workers can request different transform lengths at the
+    // same time.  A shared growing vector races during plan construction;
+    // plans are read-only afterwards, so per-thread caches avoid both locks
+    // and invalidated references.
+    static thread_local std::vector<fft_plan_t> plans;
     for(size_t i = 0; i < plans.size(); ++i){
         if(plans[i].n == n) return plans[i];
     }
@@ -348,7 +358,13 @@ static precn_t mul_fft_bits(const precn_t &a, const precn_t &b, int bits){
     size_t n = 1;
     while(n < da + db) n <<= 1;
 
-    fft_vec_t f, product;
+    // A product tree revisits the same transform sizes many times.  Reusing
+    // these thread-local buffers removes several heap allocations per FFT
+    // without sharing mutable storage between binary-split workers.
+    static thread_local fft_workspace_t workspace;
+    fft_vec_t &f = workspace.input;
+    fft_vec_t &product = workspace.product;
+    std::vector<long long> &out = workspace.digits;
     fft_resize(f, n);
     fft_load_digits(f, a, bits, 0);
     fft_load_digits(f, b, bits, 1);
@@ -358,7 +374,7 @@ static precn_t mul_fft_bits(const precn_t &a, const precn_t &b, int bits){
     fft(f, 0, plan);
     fft_pair_convolution(f, product);
     fft(product, 1, plan);
-    std::vector<long long> out(n);
+    out.resize(n);
 #if defined(COUNT_FFTS) && COUNT_FFTS
     bool danger_1_8 = false;
     bool danger_1_4 = false;

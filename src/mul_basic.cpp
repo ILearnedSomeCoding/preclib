@@ -1,17 +1,23 @@
 #include"../prec.hpp"
 
+#ifndef MUL_DISPATCH_KARATSUBA_THRESHOLD
 #define MUL_DISPATCH_KARATSUBA_THRESHOLD 24
+#endif
+#ifndef MUL_DISPATCH_FFT_THRESHOLD
 #define MUL_DISPATCH_FFT_THRESHOLD 192
+#endif
+#if !defined(MUL_DISPATCH_NTT_THRESHOLD)
 #if defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD
 // The scalar NTT remains slower than the scalar FFT through the largest
 // benchmark sizes, so do not select it automatically in this configuration.
 #define MUL_DISPATCH_NTT_THRESHOLD ((size_t)-1)
 #elif defined(__AVX2__) || defined(_M_AVX2)
-#define MUL_DISPATCH_NTT_THRESHOLD 4096
+#define MUL_DISPATCH_NTT_THRESHOLD 2048
 #else
 // Scalar Montgomery butterflies do not catch the SSE2 FFT until roughly
 // 16K limbs on x86-64.  Keep medium products on FFT without AVX2.
 #define MUL_DISPATCH_NTT_THRESHOLD 12288
+#endif
 #endif
 #define MUL_DISPATCH_TOOM_UNBALANCED_MIN 768
 #define MUL_DISPATCH_TOOM_UNBALANCED_MAX 1280
@@ -264,6 +270,13 @@ void mul_into(precn_t &r, const precn_t &a, const precn_t &b){
         return;
     }
     if(lo <= MUL_DISPATCH_KARATSUBA_THRESHOLD){
+        mul_schoolbook_into(r, a, b);
+        return;
+    }
+    // At exactly one cache-sized 64-limb product, the Karatsuba split has not
+    // yet repaid its three temporary products.  Keep this top-level choice
+    // local: increasing the recursive Karatsuba cutoff hurts 256-limb inputs.
+    if(hi <= 64){
         mul_schoolbook_into(r, a, b);
         return;
     }
