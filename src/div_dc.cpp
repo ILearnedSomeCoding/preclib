@@ -1,5 +1,6 @@
 #include"../prec.hpp"
 
+
 #ifndef DIV_DC_BASECASE
 #define DIV_DC_BASECASE 64
 #endif
@@ -113,7 +114,6 @@ static void dc_div_2n1n(const precn_t &a, const precn_t &b, size_t n,
     dc_div_3n2n(lower, b, n, q0, r);
     q = dc_join(q1, q0, k);
 }
-
 static unsigned dc_clz64(uint64_t x){
 #if defined(__clang__) || defined(__GNUC__)
     return (unsigned)__builtin_clzll(x);
@@ -154,6 +154,64 @@ bool div_dc_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b){
     precn_t lower = dc_join_low_words(rhigh, an.a, std::min(n, an.rsiz), n);
     dc_div_2n1n(lower, bn, n, qlow, rn);
     q = dc_join(qhigh, qlow, n);
+    r = total_shift ? rn >> total_shift : rn;
+    return true;
+}
+bool div_dc_blocked_into(precn_t &q, precn_t &r,
+                         const precn_t &a, const precn_t &b){
+    if(b.rsiz < DIV_DC_BASECASE || a < b || a.rsiz <= b.rsiz * 2)
+        return false;
+
+    size_t n = (b.rsiz + DIV_DC_BASECASE - 1) / DIV_DC_BASECASE * DIV_DC_BASECASE;
+    size_t limb_pad = n - b.rsiz;
+    unsigned shift = dc_clz64(b.a[b.rsiz - 1]);
+    size_t total_shift = limb_pad * 64 + shift;
+    precn_t bn = total_shift ? b << total_shift : b;
+    precn_t an = total_shift ? a << total_shift : a;
+    size_t blocks = (an.rsiz + n - 1) / n;
+
+    q.asiz = std::max<size_t>(blocks * n, 1);
+    q.a = (uint64_t*)realloc(q.a, q.asiz * sizeof(uint64_t));
+    memset(q.a, 0, q.asiz * sizeof(uint64_t));
+    q.rsiz = blocks * n;
+
+    precn_t rn, current, qblock, next_r;
+    for(size_t block = blocks; block > 0; --block){
+        size_t index = block - 1;
+        size_t offset = index * n;
+        size_t chunk_size = std::min(n, an.rsiz - offset);
+        size_t current_size = n + rn.rsiz;
+        size_t need = std::max(current_size, chunk_size);
+        if(current.asiz < need){
+            current.asiz = need;
+            current.a = (uint64_t*)realloc(current.a,
+                                            need * sizeof(uint64_t));
+        }
+        memcpy(current.a, an.a + offset, chunk_size * sizeof(uint64_t));
+        if(chunk_size < n)
+            memset(current.a + chunk_size, 0,
+                   (n - chunk_size) * sizeof(uint64_t));
+        if(rn.rsiz) memcpy(current.a + n, rn.a,
+                           rn.rsiz * sizeof(uint64_t));
+        current.rsiz = std::max(chunk_size, current_size);
+        while(current.rsiz && current.a[current.rsiz - 1] == 0)
+            --current.rsiz;
+
+        if(current < bn){
+            qblock.rsiz = 0;
+            next_r = current;
+        }else{
+            dc_div_2n1n(current, bn, n, qblock, next_r);
+        }
+        if(qblock.rsiz > n) std::abort();
+        if(qblock.rsiz)
+            memcpy(q.a + offset, qblock.a,
+                   qblock.rsiz * sizeof(uint64_t));
+        rn = std::move(next_r);
+    }
+
+    while(q.rsiz && q.a[q.rsiz - 1] == 0) --q.rsiz;
+    if(q.rsiz == 0) q.a[0] = 0;
     r = total_shift ? rn >> total_shift : rn;
     return true;
 }

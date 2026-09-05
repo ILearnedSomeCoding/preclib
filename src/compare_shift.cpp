@@ -38,13 +38,11 @@ precn_t operator<<(const precn_t &a, size_t b){
     size_t limbs = b / 64;
     unsigned shift = (unsigned)(b % 64);
 
-    precn_t r;
-    r.asiz = a.rsiz + limbs + 1;
-    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
-    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    precn_t r = precn_t::with_capacity(a.rsiz + limbs + 1);
+    if(limbs) memset(r.a, 0, limbs * sizeof(uint64_t));
 
     if(shift == 0){
-        for(size_t i = 0; i < a.rsiz; ++i) r.a[i + limbs] = a.a[i];
+        memcpy(r.a + limbs, a.a, a.rsiz * sizeof(uint64_t));
         r.rsiz = a.rsiz + limbs;
     }else{
         uint64_t carry = 0;
@@ -56,8 +54,6 @@ precn_t operator<<(const precn_t &a, size_t b){
         if(carry) r.a[r.rsiz++] = carry;
     }
 
-    while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
-    if(r.rsiz == 0) r.a[0] = 0;
     return r;
 }
 
@@ -68,13 +64,11 @@ precn_t operator>>(const precn_t &a, size_t b){
     unsigned shift = (unsigned)(b % 64);
     if(limbs >= a.rsiz) return precn_t();
 
-    precn_t r;
-    r.asiz = a.rsiz - limbs;
-    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    precn_t r = precn_t::with_capacity(a.rsiz - limbs);
     r.rsiz = r.asiz;
 
     if(shift == 0){
-        for(size_t i = limbs; i < a.rsiz; ++i) r.a[i - limbs] = a.a[i];
+        memcpy(r.a, a.a + limbs, r.rsiz * sizeof(uint64_t));
     }else{
         uint64_t carry = 0;
         for(size_t i = a.rsiz; i > limbs; --i){

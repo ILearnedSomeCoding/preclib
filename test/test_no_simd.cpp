@@ -37,6 +37,10 @@ int main(){
     assert(total_fftmuls == before + 1);
     expect_same(dispatched, mul_ntt(a, b));
 
+    precn_t vst_a = pattern(257, 5001);
+    precn_t vst_b = pattern(263, 6001);
+    expect_same(mul_vst(vst_a, vst_b), mul_ntt(vst_a, vst_b));
+
     puts("no-simd dispatch ok");
     return 0;
 }

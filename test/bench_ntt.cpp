@@ -22,10 +22,18 @@ static bool same(const precn_t &a, const precn_t &b){
     return true;
 }
 
-int main(){
+int main(int argc, char **argv){
+    bool square = false;
+    for(int i = 1; i < argc; ++i){
+        if(strcmp(argv[i], "--serial") == 0)
+            precn_set_ntt_thread_parallel(false);
+        else if(strcmp(argv[i], "--square") == 0) square = true;
+        else if(strcmp(argv[i], "--threads") == 0 && i + 1 < argc)
+            precn_set_ntt_threads((unsigned int)strtoul(argv[++i], nullptr, 10));
+    }
     using clock_t = std::chrono::steady_clock;
     puts("ntt timing");
-    printf("%-10s %-8s %-15s %-15s %-10s\n", "limbs", "reps", "fft", "ntt", "ntt/fft");
+    printf("%-10s %-8s %-15s %-15s %-15s %-10s\n", "limbs", "reps", "fft", "ntt", "interleaved3", "i3/ntt");
     for(size_t n = 1024; n <= 65536; n <<= 1){
         size_t reps = n <= 4096 ? 5 : n <= 16384 ? 3 : 2;
         precn_t a = pattern(n, 1000 + n);
@@ -33,26 +41,33 @@ int main(){
         precn_t result, reference;
         double fft_sec = 0.0;
         double ntt_sec = 0.0;
+        double interleaved_sec = 0.0;
+        precn_t interleaved;
         for(size_t i = 0; i < reps; ++i){
             bool fft_first = (i & 1) == 0;
             for(size_t pass = 0; pass < 2; ++pass){
                 bool run_fft = pass == 0 ? fft_first : !fft_first;
                 clock_t::time_point begin = clock_t::now();
-                if(run_fft) reference = mul_fft(a, b);
-                else result = mul_ntt(a, b);
+                if(run_fft) reference = square ? mul_fft(a, a) : mul_fft(a, b);
+                else result = square ? mul_ntt(a, a) : mul_ntt(a, b);
                 double sec = std::chrono::duration<double>(clock_t::now() - begin).count();
                 if(run_fft) fft_sec += sec;
                 else ntt_sec += sec;
             }
+            clock_t::time_point begin = clock_t::now();
+            interleaved = square ? mul_ntt_interleaved3_experimental(a, a) :
+                                  mul_ntt_interleaved3_experimental(a, b);
+            interleaved_sec += std::chrono::duration<double>(clock_t::now() - begin).count();
         }
         fft_sec /= reps;
         ntt_sec /= reps;
-        if(!same(result, reference)){
+        interleaved_sec /= reps;
+        if(!same(result, reference) || !same(interleaved, reference)){
             fprintf(stderr, "mismatch at %zu limbs\n", n);
             return 1;
         }
-        printf("%-10zu %-8zu %-15.9f %-15.9f %-10.3f\n",
-               n, reps, fft_sec, ntt_sec, ntt_sec / fft_sec);
+        printf("%-10zu %-8zu %-15.9f %-15.9f %-15.9f %-10.3f\n",
+               n, reps, fft_sec, ntt_sec, interleaved_sec, interleaved_sec / ntt_sec);
     }
     return 0;
 }

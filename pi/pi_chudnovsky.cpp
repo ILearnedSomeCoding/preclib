@@ -4,13 +4,24 @@
 #include<ctime>
 #include<cstdlib>
 #include<chrono>
+#include<condition_variable>
+#include<deque>
+#include<exception>
 #include<fstream>
 #include<iostream>
+#include<mutex>
 #include<string>
 #include<thread>
 #include<unordered_map>
 #include<utility>
 #include<vector>
+
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include<windows.h>
+#endif
 
 #define CHUD_C3_OVER_24 10939058860032000ULL
 #define CHUD_A 13591409u
@@ -20,19 +31,28 @@
 #define PI_ENABLE_FACTOR_CANCEL 1
 #endif
 
-#ifndef PI_PARALLEL_SPLIT
-#define PI_PARALLEL_SPLIT 1
+#ifndef PI_FACTOR_CANCEL_MIN_LEVEL
+#define PI_FACTOR_CANCEL_MIN_LEVEL 5
 #endif
 
+#ifndef PI_FACTOR_PAIR_THRESHOLD
+#define PI_FACTOR_PAIR_THRESHOLD 2048
+#endif
+
+
 #ifndef PI_PARALLEL_SPLIT_DEPTH
-#define PI_PARALLEL_SPLIT_DEPTH 4
+#define PI_PARALLEL_SPLIT_DEPTH 5
 #endif
 
 // The straightforward reciprocal-square-root prototype is kept for
 // experimentation, but it needs truncated products before it can beat the
 // divide-and-refine integer square root used below.
 #ifndef PI_ENABLE_INVSQRT
-#define PI_ENABLE_INVSQRT 0
+#define PI_ENABLE_INVSQRT 1
+#endif
+
+#ifndef PI_INVSQRT_MIN_DIGITS
+#define PI_INVSQRT_MIN_DIGITS 10000000
 #endif
 
 #ifndef PI_USE_LOCAL_MULINV_DIV
@@ -40,7 +60,7 @@
 #endif
 
 #ifndef PI_DECIMAL_1E19
-#define PI_DECIMAL_1E19 0
+#define PI_DECIMAL_1E19 1
 #endif
 
 #ifndef PI_DIV_GUARD_BITS
@@ -56,7 +76,69 @@
 #endif
 
 #ifndef PI_DIV_SKIP_PRODUCT_VERIFY
-#define PI_DIV_SKIP_PRODUCT_VERIFY 0
+#define PI_DIV_SKIP_PRODUCT_VERIFY 1
+#endif
+
+#ifndef PI_GUARD_DIGITS
+#define PI_GUARD_DIGITS 10
+#endif
+
+#ifndef PI_DIV_1E10_SPECIAL
+#define PI_DIV_1E10_SPECIAL 1
+#endif
+
+#ifndef PI_SPLIT_SERIAL_NTT
+#define PI_SPLIT_SERIAL_NTT 0
+#endif
+
+// A binary-split worker keeps short transforms local.  Once the tree has
+// narrowed to a large merge, an NTT may borrow its two-worker pool again.
+#ifndef PI_NESTED_NTT_MIN_TRANSFORM
+#define PI_NESTED_NTT_MIN_TRANSFORM ((size_t)1 << 19)
+#endif
+
+// Deep binary-split tasks already run concurrently. Letting each of them
+// enter the shared NTT pool makes workers queue behind the pool mutex and
+// produces large run-to-run jitter. Only merges near the root may borrow it.
+#ifndef PI_NESTED_NTT_MAX_LEVEL
+#define PI_NESTED_NTT_MAX_LEVEL 1
+#endif
+
+#ifndef PI_ROOT_TASK_SCHEDULER
+#define PI_ROOT_TASK_SCHEDULER 1
+#endif
+
+#ifndef PI_ROOT_TASK_DEPTH
+#define PI_ROOT_TASK_DEPTH 5
+#endif
+
+#ifndef PI_ROOT_TASK_THREADS
+#define PI_ROOT_TASK_THREADS 8
+#endif
+
+#ifndef PI_ROOT_MERGE_PRODUCTS_PARALLEL
+#define PI_ROOT_MERGE_PRODUCTS_PARALLEL 0
+#endif
+#ifndef PI_ROOT_SHARED_NTT
+#define PI_ROOT_SHARED_NTT 1
+#endif
+#ifndef PI_ROOT_SHARED_NTT_TRACE
+#define PI_ROOT_SHARED_NTT_TRACE 0
+#endif
+#ifndef PI_TREE_SHARED_NTT
+#define PI_TREE_SHARED_NTT 0
+#endif
+
+#ifndef PI_OVERLAP_BS_SQRT
+#define PI_OVERLAP_BS_SQRT 0
+#endif
+
+#ifndef PI_OVERLAP_BS_SQRT_MIN_DIGITS
+#define PI_OVERLAP_BS_SQRT_MIN_DIGITS 100000
+#endif
+
+#ifndef PI_OVERLAP_NUMERATOR_RECIPROCAL
+#define PI_OVERLAP_NUMERATOR_RECIPROCAL 1
 #endif
 
 static bool show_phases = false;
@@ -67,6 +149,7 @@ static std::string output_file;
 // Two pool threads avoid oversubscribing the small desktop CPUs this program
 // targets; callers can still override it with --threads N.
 static unsigned int ntt_threads = 2;
+static unsigned int bs_threads = PI_ROOT_TASK_THREADS;
 
 static std::atomic<int> progress_phase(-1);
 static std::atomic<uint64_t> progress_done(0);
@@ -74,9 +157,8 @@ static std::atomic<uint64_t> progress_total(0);
 static std::atomic<uint64_t> progress_started_ms(0);
 static std::atomic<uint64_t> progress_started_cpu_ms(0);
 static std::atomic<bool> progress_stop(false);
-static uint64_t progress_local = 0;
-static uint64_t progress_next_publish = 0;
-static uint64_t progress_publish_step = 1;
+static std::mutex progress_wait_mutex;
+static std::condition_variable progress_wakeup;
 
 static uint64_t steady_ms(){
     using clock_t = std::chrono::steady_clock;
@@ -104,22 +186,17 @@ static uint64_t binary_tracked_work(size_t terms){
 
 static void progress_begin(int phase, uint64_t total = 0){
     if(!show_progress) return;
-    progress_local = 0;
-    progress_publish_step = std::max<uint64_t>(1, total / 2000);
-    progress_next_publish = progress_publish_step;
     progress_done.store(0, std::memory_order_relaxed);
     progress_total.store(total, std::memory_order_relaxed);
     progress_started_ms.store(steady_ms(), std::memory_order_relaxed);
     progress_started_cpu_ms.store(process_cpu_ms(), std::memory_order_relaxed);
     progress_phase.store(phase, std::memory_order_release);
+    progress_wakeup.notify_one();
 }
 
 static void progress_add(uint64_t amount){
-    if(!show_progress) return;
-    progress_local += amount;
-    if(progress_local < progress_next_publish) return;
-    progress_done.store(progress_local, std::memory_order_relaxed);
-    progress_next_publish = progress_local + progress_publish_step;
+    if(show_progress)
+        progress_done.fetch_add(amount, std::memory_order_relaxed);
 }
 
 static void progress_set(uint64_t done){
@@ -130,39 +207,67 @@ static void progress_reporter(){
     static const char *names[] = {
         "binary_split", "sqrt_scale", "final_div", "to_decimal"
     };
-    int previous = -2;
+    int previous = -1;
+    uint64_t last_done = 0;
+    uint64_t last_change_ms = 0;
     while(!progress_stop.load(std::memory_order_acquire)){
         int phase = progress_phase.load(std::memory_order_acquire);
         if(phase >= 0 && phase < 4){
-            if(previous != -2 && previous != phase) std::cerr << '\n';
-            previous = phase;
+            uint64_t now = steady_ms();
+            if(previous != phase){
+                if(previous >= 0) std::cerr << '\n';
+                previous = phase;
+                last_done = 0;
+                last_change_ms = now;
+            }
             uint64_t started = progress_started_ms.load(std::memory_order_relaxed);
             uint64_t cpu_started = progress_started_cpu_ms.load(std::memory_order_relaxed);
-            double wall_elapsed = (double)(steady_ms() - started) / 1000.0;
-            double cpu_elapsed = (double)(process_cpu_ms() - cpu_started) / 1000.0;
+            double elapsed = (double)(now - started) / 1000.0;
+            double cpu = (double)(process_cpu_ms() - cpu_started) / 1000.0;
             uint64_t total = progress_total.load(std::memory_order_relaxed);
             uint64_t done = progress_done.load(std::memory_order_relaxed);
-            const int width = 30;
-            std::string bar((size_t)width, '.');
+            if(done != last_done){
+                last_done = done;
+                last_change_ms = now;
+            }
+            const int width = 32;
+            std::string bar((size_t)width, ' ');
+            char line[512];
             if(total){
                 if(done > total) done = total;
                 int filled = (int)(done * (uint64_t)width / total);
-                for(int i = 0; i < filled; ++i) bar[(size_t)i] = '#';
+                for(int i = 0; i < filled; ++i) bar[(size_t)i] = '=';
+                if(filled < width) bar[(size_t)filled] = '>';
                 double percent = 100.0 * (double)done / (double)total;
-                std::cerr << '\r' << names[phase] << " [" << bar << "] "
-                          << percent << "%  cpu " << cpu_elapsed
-                          << " sec  wall " << wall_elapsed << " sec   " << std::flush;
+                if(phase == 0 && done && done < total && elapsed >= 0.5 &&
+                   now - last_change_ms <= 750){
+                    double eta = elapsed * (double)(total - done) / (double)done;
+                    snprintf(line, sizeof(line),
+                             "\r[%d/4] %-12s [%s] %5.1f%%  elapsed %.1fs  cpu %.1fs  eta %.1fs    ",
+                             phase + 1, names[phase], bar.c_str(), percent,
+                             elapsed, cpu, eta);
+                }else{
+                    snprintf(line, sizeof(line),
+                             "\r[%d/4] %-12s [%s] %5.1f%%  elapsed %.1fs  cpu %.1fs             ",
+                             phase + 1, names[phase], bar.c_str(), percent,
+                             elapsed, cpu);
+                }
             }else{
-                int position = (int)((steady_ms() / 200) % (uint64_t)width);
+                int position = (int)((now / 150) % (uint64_t)(2 * width - 2));
+                if(position >= width) position = 2 * width - 2 - position;
                 bar[(size_t)position] = '>';
-                std::cerr << '\r' << names[phase] << " [" << bar << "] working  "
-                          << "cpu " << cpu_elapsed << " sec  wall "
-                          << wall_elapsed << " sec   " << std::flush;
+                snprintf(line, sizeof(line),
+                         "\r[%d/4] %-12s [%s] working  elapsed %.1fs  cpu %.1fs    ",
+                         phase + 1, names[phase], bar.c_str(), elapsed, cpu);
             }
+            std::cerr << line << std::flush;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::unique_lock<std::mutex> lock(progress_wait_mutex);
+        progress_wakeup.wait_for(lock, std::chrono::milliseconds(250), []{
+            return progress_stop.load(std::memory_order_acquire);
+        });
     }
-    if(previous != -2) std::cerr << '\n';
+    if(previous >= 0) std::cerr << '\n';
 }
 
 static double now_sec(){
@@ -176,14 +281,95 @@ struct factor_power_t{
     uint32_t power;
 };
 
+class factor_list_t{
+    static const size_t inline_capacity = 12;
+    factor_power_t inline_[inline_capacity];
+    size_t inline_size_;
+    bool spilled_;
+    std::vector<factor_power_t> heap_;
+
+    void spill(size_t capacity){
+        if(!spilled_){
+            heap_.reserve(std::max(capacity, inline_capacity * 2));
+            heap_.insert(heap_.end(), inline_, inline_ + inline_size_);
+            inline_size_ = 0;
+            spilled_ = true;
+        }else if(capacity > heap_.capacity()){
+            heap_.reserve(capacity);
+        }
+    }
+
+public:
+    factor_list_t() : inline_size_(0), spilled_(false){}
+    factor_list_t(const factor_list_t &) = delete;
+    factor_list_t &operator=(const factor_list_t &) = delete;
+
+    factor_list_t(factor_list_t &&o) noexcept
+        : inline_size_(o.inline_size_), spilled_(o.spilled_), heap_(std::move(o.heap_)){
+        memcpy(inline_, o.inline_, inline_size_ * sizeof(factor_power_t));
+        o.inline_size_ = 0;
+        o.spilled_ = false;
+    }
+
+    factor_list_t &operator=(factor_list_t &&o) noexcept{
+        if(this == &o) return *this;
+        inline_size_ = o.inline_size_;
+        spilled_ = o.spilled_;
+        memcpy(inline_, o.inline_, inline_size_ * sizeof(factor_power_t));
+        heap_ = std::move(o.heap_);
+        o.inline_size_ = 0;
+        o.spilled_ = false;
+        return *this;
+    }
+
+    size_t size() const{ return spilled_ ? heap_.size() : inline_size_; }
+    bool empty() const{ return size() == 0; }
+    size_t capacity() const{ return spilled_ ? heap_.capacity() : inline_capacity; }
+    factor_power_t &operator[](size_t i){ return spilled_ ? heap_[i] : inline_[i]; }
+    const factor_power_t &operator[](size_t i) const{ return spilled_ ? heap_[i] : inline_[i]; }
+    void reserve(size_t n){ if(n > inline_capacity) spill(n); }
+    void push_back(factor_power_t value){
+        if(!spilled_ && inline_size_ < inline_capacity){
+            inline_[inline_size_++] = value;
+            return;
+        }
+        spill(size() + 1);
+        heap_.push_back(value);
+    }
+    void resize(size_t n){
+        if(!spilled_ && n <= inline_capacity){
+            inline_size_ = n;
+            return;
+        }
+        spill(n);
+        heap_.resize(n);
+    }
+};
+
 struct bs_t{
     precn_t p;
     precn_t q;
     precz_t t;
-    std::vector<factor_power_t> fp;
-    std::vector<factor_power_t> fq;
+    factor_list_t fp;
+    factor_list_t fq;
 };
 
+static void factor_add(factor_list_t &out, uint32_t prime, uint32_t power){
+    size_t first = 0, last = out.size();
+    while(first < last){
+        size_t mid = first + (last - first) / 2;
+        if(out[mid].prime < prime) first = mid + 1;
+        else last = mid;
+    }
+    if(first < out.size() && out[first].prime == prime){
+        out[first].power += power;
+        return;
+    }
+    size_t size = out.size();
+    out.resize(size + 1);
+    for(size_t i = size; i > first; --i) out[i] = out[i - 1];
+    out[first] = factor_power_t{prime, power};
+}
 class chud_factor_sieve_t{
     std::vector<uint32_t> smallest_;
 
@@ -211,26 +397,53 @@ public:
             out.push_back(factor_power_t{p, power * multiplier});
         }
     }
-};
 
-static std::vector<factor_power_t> factor_merge(
-    const std::vector<factor_power_t> &a,
-    const std::vector<factor_power_t> &b){
-    std::vector<factor_power_t> r;
-    r.reserve(a.size() + b.size());
-    size_t i = 0, j = 0;
-    while(i < a.size() || j < b.size()){
-        if(j == b.size() || (i < a.size() && a[i].prime < b[j].prime)){
-            r.push_back(a[i++]);
-        }else if(i == a.size() || b[j].prime < a[i].prime){
-            r.push_back(b[j++]);
-        }else{
-            r.push_back(factor_power_t{a[i].prime, a[i].power + b[j].power});
-            ++i;
-            ++j;
+    void append_merged(factor_list_t &out, size_t value,
+                       uint32_t multiplier = 1) const{
+        while(value > 1){
+            uint32_t p = smallest_[value];
+            uint32_t power = 0;
+            do{
+                value /= p;
+                ++power;
+            }while(value > 1 && smallest_[value] == p);
+            factor_add(out, p, power * multiplier);
         }
     }
-    return r;
+};
+
+static factor_list_t factor_merge(
+    factor_list_t a,
+    factor_list_t b){
+    if(b.empty()) return a;
+    if(a.empty()) return b;
+    // Both child lists die at the merge.  Keep the buffer with more spare
+    // capacity as the output so a growing product tree reallocates less.
+    if(b.capacity() > a.capacity()) std::swap(a, b);
+    size_t left = a.size();
+    a.resize(left + b.size());
+    size_t i = left;
+    size_t j = b.size();
+    size_t out = a.size();
+    while(j){
+        if(i && a[i - 1].prime > b[j - 1].prime){
+            a[--out] = a[--i];
+        }else{
+            a[--out] = b[--j];
+        }
+    }
+    while(i) a[--out] = a[--i];
+
+    out = 0;
+    for(i = 0; i < a.size(); ++i){
+        if(out && a[out - 1].prime == a[i].prime){
+            a[out - 1].power += a[i].power;
+        }else{
+            a[out++] = a[i];
+        }
+    }
+    a.resize(out);
+    return a;
 }
 
 static precn_t factor_pow(uint32_t base, uint32_t power){
@@ -252,7 +465,16 @@ static precn_t factor_product(const std::vector<factor_power_t> &f,
     return factor_product(f, begin, mid) * factor_product(f, mid, end);
 }
 
-static void factor_compact(std::vector<factor_power_t> &f){
+static precn_t factor_product_small(const factor_power_t *f,
+                                    size_t begin, size_t end){
+    if(begin == end) return precn_t(1);
+    if(end - begin == 1) return factor_pow(f[begin].prime, f[begin].power);
+    size_t mid = begin + (end - begin) / 2;
+    return factor_product_small(f, begin, mid) *
+           factor_product_small(f, mid, end);
+}
+
+static void factor_compact(factor_list_t &f){
     size_t out = 0;
     for(size_t i = 0; i < f.size(); ++i){
         if(f[i].power) f[out++] = f[i];
@@ -260,10 +482,12 @@ static void factor_compact(std::vector<factor_power_t> &f){
     f.resize(out);
 }
 
-static void factor_cancel(precn_t &p, std::vector<factor_power_t> &fp,
-                          precn_t &q, std::vector<factor_power_t> &fq){
+static void factor_cancel(precn_t &p, factor_list_t &fp,
+                          precn_t &q, factor_list_t &fq){
+    factor_power_t common_small[32];
+    size_t common_small_size = 0;
     std::vector<factor_power_t> common;
-    common.reserve(std::min(fp.size(), fq.size()));
+    bool common_spilled = false;
     size_t i = 0, j = 0;
     while(i < fp.size() && j < fq.size()){
         if(fp[i].prime < fq[j].prime){
@@ -275,17 +499,36 @@ static void factor_cancel(precn_t &p, std::vector<factor_power_t> &fp,
             if(power){
                 fp[i].power -= power;
                 fq[j].power -= power;
-                common.push_back(factor_power_t{fp[i].prime, power});
+                factor_power_t value{fp[i].prime, power};
+                if(!common_spilled && common_small_size < 32){
+                    common_small[common_small_size++] = value;
+                }else{
+                    if(!common_spilled){
+                        common.assign(common_small,
+                                      common_small + common_small_size);
+                        common_spilled = true;
+                    }
+                    common.push_back(value);
+                }
             }
             ++i;
             ++j;
         }
     }
-    if(common.empty()) return;
+    if(!common_spilled && common_small_size == 0) return;
 
-    precn_t divisor = factor_product(common, 0, common.size());
+    precn_t divisor = common_spilled ?
+        factor_product(common, 0, common.size()) :
+        factor_product_small(common_small, 0, common_small_size);
+    if(divisor.rsiz >= PI_FACTOR_PAIR_THRESHOLD){
+        precn_t next_p, next_q;
+        div_mulinv_pair_into(next_p, next_q, p, q, divisor);
+        p = std::move(next_p);
+        q = std::move(next_q);
+    }else{
     p = p / divisor;
     q = q / divisor;
+    }
     factor_compact(fp);
     factor_compact(fq);
 }
@@ -344,83 +587,10 @@ static size_t pow10_index(size_t digits, std::vector<pow10_entry_t> &cache){
     for(size_t i = 0; i < cache.size(); ++i){
         if(cache[i].digits == digits) return i;
     }
-    cache.push_back(pow10_entry_t{digits, pow_u32(10, digits)});
+    // 10^n = 5^n * 2^n.  Building the odd part keeps every squaring about
+    // 30% shorter in binary; applying the power of two is one linear shift.
+    cache.push_back(pow10_entry_t{digits, pow_u32(5, digits) << digits});
     return cache.size() - 1;
-}
-
-static uint64_t pi_sqrt_work(size_t limbs){
-    uint64_t total = 0;
-    while(limbs > 4){
-        size_t drop = (limbs / 2) & ~(size_t)1;
-        if(drop == 0) break;
-        // Integer Newton normally takes about two full divisions per level.
-        total += (uint64_t)limbs * 2;
-        limbs -= drop;
-    }
-    return total + (uint64_t)std::max<size_t>(limbs, 1) * 4;
-}
-
-static uint64_t pi_sqrt_top_bits(const precn_t &a, size_t bits, size_t take){
-    size_t shift = bits - take;
-    size_t limb = shift / 64;
-    unsigned offset = (unsigned)(shift % 64);
-    uint64_t top = a.a[limb] >> offset;
-    if(offset && limb + 1 < a.rsiz) top |= a.a[limb + 1] << (64 - offset);
-    return top;
-}
-
-static precn_t pi_sqrt_seed(const precn_t &a){
-    size_t bits = bit_length(a);
-    size_t take = std::min<size_t>(bits, 53);
-    size_t shift = bits - take;
-    double estimate = std::sqrt((double)pi_sqrt_top_bits(a, bits, take));
-    if(shift & 1) estimate *= 1.4142135623730950488;
-    return precn_t((uint64_t)estimate + 4) << (shift / 2);
-}
-
-static void pi_sqrt_advance(uint64_t &done, uint64_t total, size_t limbs){
-    done += (uint64_t)std::max<size_t>(limbs, 1);
-    uint64_t part = total ? std::min<uint64_t>(done, total) * 850 / total : 850;
-    progress_set(150 + part);
-}
-
-static precn_t pi_sqrt_refine(const precn_t &a, precn_t x,
-                              uint64_t &done, uint64_t total){
-    for(;;){
-        precn_t y = (x + a / x) >> 1;
-        pi_sqrt_advance(done, total, a.rsiz);
-        if(y >= x) return x;
-        x = y;
-    }
-}
-
-static precn_t pi_sqrt_high_part(const precn_t &a, size_t drop){
-    precn_t high;
-    high.rsiz = a.rsiz - drop;
-    high.asiz = high.rsiz;
-    high.a = (uint64_t*)realloc(high.a, high.asiz * sizeof(uint64_t));
-    memcpy(high.a, a.a + drop, high.rsiz * sizeof(uint64_t));
-    return high;
-}
-
-static precn_t pi_sqrt_tracked_impl(const precn_t &a, uint64_t &done,
-                                    uint64_t total){
-    if(a.rsiz == 0) return precn_t();
-    if(a.rsiz <= 4) return pi_sqrt_refine(a, pi_sqrt_seed(a), done, total);
-
-    size_t drop = (a.rsiz / 2) & ~(size_t)1;
-    if(drop == 0) return pi_sqrt_refine(a, pi_sqrt_seed(a), done, total);
-    precn_t high_root = pi_sqrt_tracked_impl(pi_sqrt_high_part(a, drop),
-                                             done, total);
-    precn_t upper = (high_root + 1) << (drop * 32);
-    return pi_sqrt_refine(a, upper, done, total);
-}
-
-static precn_t pi_sqrt_tracked(const precn_t &a){
-    uint64_t done = 0;
-    precn_t root = pi_sqrt_tracked_impl(a, done, pi_sqrt_work(a.rsiz));
-    progress_set(1000);
-    return root;
 }
 
 // Return floor(sqrt(10005) * 10^digits).  For the large fixed-point scale in
@@ -474,9 +644,10 @@ static precn_t sqrt10005_invsqrt(size_t digits, size_t scale_index,
             root = root - precn_t(1);
             continue;
         }
-        precn_t next = root + precn_t(1);
-        if(next * next <= target){
-            root = next;
+        // (root + 1)^2 = root^2 + 2*root + 1. Reusing the square above
+        // avoids a second full NTT multiplication in the correction path.
+        if(square + (root << 1) + precn_t(1) <= target){
+            root = root + precn_t(1);
             continue;
         }
         return root;
@@ -489,16 +660,171 @@ static precn_t sqrt10005_invsqrt(size_t digits, size_t scale_index,
 
 static precn_t sqrt10005_scaled(size_t digits, size_t scale_index,
                                 std::vector<pow10_entry_t> &pow10_cache){
-    if(PI_ENABLE_INVSQRT && !show_progress && digits >= 8192)
+    if(PI_ENABLE_INVSQRT && digits >= PI_INVSQRT_MIN_DIGITS)
         return sqrt10005_invsqrt(digits, scale_index, pow10_cache);
     precn_t n = mul_u32(pow10_cache[scale_index].value, 10005);
-    return show_progress ? pi_sqrt_tracked(n) : precn_sqrt(n);
+    return precn_sqrt(n);
 }
 
 // A parent only needs P from its left child to form T.  Matching ilmPi's
 // needp scheduling avoids forming product-tree nodes that will not be used.
+static precz_t chud_signed_product_sum(const precz_t &a, const precn_t &b,
+                                       const precz_t &c, const precn_t &d){
+    // b and d are positive.  Multiplying magnitudes directly avoids copying
+    // each huge multiplier into a temporary precz_t before the NTT product.
+    precn_t ab = a.magnitude() * b;
+    precn_t cd = c.magnitude() * d;
+    if(a.is_negative() == c.is_negative())
+        return precz_t::from_magnitude(ab + cd, a.is_negative());
+    if(ab >= cd)
+        return precz_t::from_magnitude(ab - cd, a.is_negative());
+    return precz_t::from_magnitude(cd - ab, c.is_negative());
+}
+
+static bs_t chud_merge(bs_t l, bs_t r, bool need_p, size_t level, size_t span){
+#if PI_ENABLE_FACTOR_CANCEL
+    if(level >= PI_FACTOR_CANCEL_MIN_LEVEL)
+        factor_cancel(l.p, l.fp, r.q, r.fq);
+#endif
+#if PI_ROOT_SHARED_NTT
+    if(!need_p && level == 0 && l.q.rsiz >= 2048 &&
+       l.t.magnitude().rsiz >= 2048 && r.q.rsiz >= 2048){
+        precn_t q;
+        precn_t ab;
+#if PI_ROOT_SHARED_NTT_TRACE
+        double shared_begin = now_sec();
+#endif
+        if(mul_ntt_pair_shared_right_into(q, ab, l.q, l.t.magnitude(), r.q)){
+#if PI_ROOT_SHARED_NTT_TRACE
+            double shared_end = now_sec();
+            precn_t reference_q = l.q * r.q;
+            precn_t reference_ab = l.t.magnitude() * r.q;
+            double separate_end = now_sec();
+            if(q != reference_q || ab != reference_ab) std::abort();
+            fprintf(stderr,
+                    "root_shared_ntt limbs=%zu/%zu shared=%zu ntt_pair=%.6f separate=%.6f\n",
+                    l.q.rsiz, l.t.magnitude().rsiz, r.q.rsiz,
+                    shared_end - shared_begin, separate_end - shared_end);
+#endif
+            precn_t cd = r.t.magnitude() * l.p;
+            precz_t t;
+            if(l.t.is_negative() == r.t.is_negative())
+                t = precz_t::from_magnitude(ab + cd, l.t.is_negative());
+            else if(ab >= cd)
+                t = precz_t::from_magnitude(ab - cd, l.t.is_negative());
+            else
+                t = precz_t::from_magnitude(cd - ab, r.t.is_negative());
+            if(span >= 64) progress_add((uint64_t)span);
+            return bs_t{precn_t(), std::move(q), std::move(t),
+                        factor_list_t(), factor_list_t()};
+        }
+    }
+#endif
+#if PI_ROOT_MERGE_PRODUCTS_PARALLEL && !defined(__EMSCRIPTEN__)
+    if(!need_p && level == 0 && !show_progress && span >= 8192){
+        precn_t q, ab, cd;
+        auto multiply_serial_ntt = [](precn_t &out, const precn_t &x,
+                                      const precn_t &y){
+            bool old_parallel = precn_ntt_thread_parallel_enabled();
+            precn_set_ntt_thread_parallel(false);
+            out = x * y;
+            precn_set_ntt_thread_parallel(old_parallel);
+        };
+        std::thread q_worker([&]{ multiply_serial_ntt(q, l.q, r.q); });
+        std::thread ab_worker([&]{ multiply_serial_ntt(ab, l.t.magnitude(), r.q); });
+        multiply_serial_ntt(cd, r.t.magnitude(), l.p);
+        q_worker.join();
+        ab_worker.join();
+        precz_t t;
+        if(l.t.is_negative() == r.t.is_negative())
+            t = precz_t::from_magnitude(ab + cd, l.t.is_negative());
+        else if(ab >= cd)
+            t = precz_t::from_magnitude(ab - cd, l.t.is_negative());
+        else
+            t = precz_t::from_magnitude(cd - ab, r.t.is_negative());
+        if(span >= 64) progress_add((uint64_t)span);
+        return bs_t{precn_t(), std::move(q), std::move(t),
+                    std::vector<factor_power_t>(), std::vector<factor_power_t>()};
+    }
+#endif
+#if PI_TREE_SHARED_NTT
+    // Levels 2 and deeper are already spread across the binary-split worker
+    // set with inner NTT parallelism disabled. Reusing transforms here lowers
+    // each worker's arithmetic without introducing nested worker creation.
+    if(level >= 2 && l.q.rsiz >= 2048 && l.t.magnitude().rsiz >= 2048 &&
+       r.q.rsiz >= 2048){
+        precn_t q;
+        precn_t ab;
+        if(mul_ntt_pair_shared_right_into(q, ab, l.q, l.t.magnitude(), r.q)){
+            precn_t p;
+            precn_t cd;
+            bool paired_p = false;
+            if(need_p && r.p.rsiz >= 2048 && r.t.magnitude().rsiz >= 2048 &&
+               l.p.rsiz >= 2048){
+                paired_p = mul_ntt_pair_shared_right_into(
+                    p, cd, r.p, r.t.magnitude(), l.p);
+            }
+            if(!paired_p){
+                cd = r.t.magnitude() * l.p;
+                if(need_p) p = l.p * r.p;
+            }
+
+            precz_t t;
+            if(l.t.is_negative() == r.t.is_negative())
+                t = precz_t::from_magnitude(ab + cd, l.t.is_negative());
+            else if(ab >= cd)
+                t = precz_t::from_magnitude(ab - cd, l.t.is_negative());
+            else
+                t = precz_t::from_magnitude(cd - ab, r.t.is_negative());
+
+            bool keep_factors = level >= 5;
+            factor_list_t fq;
+            if(keep_factors) fq = factor_merge(std::move(l.fq), std::move(r.fq));
+            if(need_p){
+                factor_list_t fp;
+                if(keep_factors) fp = factor_merge(std::move(l.fp), std::move(r.fp));
+                if(span >= 64) progress_add((uint64_t)span);
+                return bs_t{std::move(p), std::move(q), std::move(t),
+                            std::move(fp), std::move(fq)};
+            }
+            if(span >= 64) progress_add((uint64_t)span);
+            return bs_t{precn_t(), std::move(q), std::move(t),
+                        factor_list_t(), std::move(fq)};
+        }
+    }
+#endif
+    precn_t q = l.q * r.q;
+    precz_t t = chud_signed_product_sum(l.t, r.q, r.t, l.p);
+    // The parent only consumes factor lists when it also cancels factors.
+    // Level four consumes its children but its result reaches uncancelled
+    // levels, so retaining lists there merely allocates and copies metadata.
+    bool keep_factors = level >= 5;
+    factor_list_t fq;
+    if(keep_factors) fq = factor_merge(std::move(l.fq), std::move(r.fq));
+    if(need_p){
+        precn_t p = l.p * r.p;
+        factor_list_t fp;
+        if(keep_factors) fp = factor_merge(std::move(l.fp), std::move(r.fp));
+        if(span >= 64) progress_add((uint64_t)span);
+        return bs_t{std::move(p), std::move(q), std::move(t),
+                    std::move(fp), std::move(fq)};
+    }
+    if(span >= 64) progress_add((uint64_t)span);
+    return bs_t{precn_t(), std::move(q), std::move(t),
+                factor_list_t(), std::move(fq)};
+}
+
 static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
                     const chud_factor_sieve_t &sieve){
+#if PI_SPLIT_SERIAL_NTT
+    struct ntt_scope_t{
+        bool old;
+        ntt_scope_t() : old(precn_ntt_thread_parallel_enabled()){
+            precn_set_ntt_thread_parallel(false);
+        }
+        ~ntt_scope_t(){ precn_set_ntt_thread_parallel(old); }
+    } ntt_scope;
+#endif
     if(b - a == 1){
         uint64_t k = (uint64_t)b;
         precn_t p((uint64_t)(6 * k - 5));
@@ -514,89 +840,155 @@ static bs_t chud_bs(size_t a, size_t b, bool need_p, size_t level,
         precz_t t(std::move(term));
         if(k & 1) t = -t;
 
-        std::vector<factor_power_t> fp;
-        sieve.append(fp, (size_t)(6 * k - 5));
-        sieve.append(fp, (size_t)(2 * k - 1));
-        sieve.append(fp, (size_t)(6 * k - 1));
-        std::sort(fp.begin(), fp.end(), [](const factor_power_t &x,
-                                           const factor_power_t &y){
-            return x.prime < y.prime;
-        });
-        std::vector<factor_power_t> fp_merged;
-        for(size_t i = 0; i < fp.size(); ++i){
-            if(!fp_merged.empty() && fp_merged.back().prime == fp[i].prime){
-                fp_merged.back().power += fp[i].power;
-            }else{
-                fp_merged.push_back(fp[i]);
-            }
-        }
-
-        std::vector<factor_power_t> fq;
-        sieve.append(fq, (size_t)k, 3);
+        factor_list_t fp;
+        fp.reserve(12);
+        sieve.append_merged(fp, (size_t)(6 * k - 5));
+        sieve.append_merged(fp, (size_t)(2 * k - 1));
+        sieve.append_merged(fp, (size_t)(6 * k - 1));
+        factor_list_t fq;
+        fq.reserve(12);
         fq.push_back(factor_power_t{2, 15});
         fq.push_back(factor_power_t{3, 2});
         fq.push_back(factor_power_t{5, 3});
         fq.push_back(factor_power_t{23, 3});
         fq.push_back(factor_power_t{29, 3});
-        std::sort(fq.begin(), fq.end(), [](const factor_power_t &x,
-                                           const factor_power_t &y){
-            return x.prime < y.prime;
-        });
-        std::vector<factor_power_t> fq_merged;
-        for(size_t i = 0; i < fq.size(); ++i){
-            if(!fq_merged.empty() && fq_merged.back().prime == fq[i].prime){
-                fq_merged.back().power += fq[i].power;
-            }else{
-                fq_merged.push_back(fq[i]);
-            }
-        }
+        sieve.append_merged(fq, (size_t)k, 3);
         return bs_t{std::move(p), std::move(q), std::move(t),
-                    std::move(fp_merged), std::move(fq_merged)};
+                    std::move(fp), std::move(fq)};
     }
 
     size_t m = a + (b - a) / 2;
     bs_t l;
     bs_t r;
-#if PI_PARALLEL_SPLIT
-    if(!show_progress && level < PI_PARALLEL_SPLIT_DEPTH && b - a >= 8192){
-        std::thread right_worker([&]{ r = chud_bs(m, b, need_p, level + 1, sieve); });
-        l = chud_bs(a, m, true, level + 1, sieve);
-        right_worker.join();
-    }else
-#endif
-    {
-        l = chud_bs(a, m, true, level + 1, sieve);
-        r = chud_bs(m, b, need_p, level + 1, sieve);
-    }
+    l = chud_bs(a, m, true, level + 1, sieve);
+    r = chud_bs(m, b, need_p, level + 1, sieve);
 
     // This is ilmPi's factor-aware cancellation: scaling P_left and Q_right
     // by the same exact factor scales Q and T equally, preserving T/Q while
     // keeping every multiplication above this node smaller.
-#if PI_ENABLE_FACTOR_CANCEL
-    if(level >= 4) factor_cancel(l.p, l.fp, r.q, r.fq);
-#endif
-
-    precn_t q = l.q * r.q;
-    precz_t t = l.t * precz_t(r.q) + r.t * precz_t(l.p);
-    std::vector<factor_power_t> fq = factor_merge(l.fq, r.fq);
-    if(need_p){
-        precn_t p = l.p * r.p;
-        std::vector<factor_power_t> fp = factor_merge(l.fp, r.fp);
-        if(b - a >= 64) progress_add((uint64_t)(b - a));
-        return bs_t{std::move(p), std::move(q), std::move(t),
-                    std::move(fp), std::move(fq)};
-    }
-    if(b - a >= 64) progress_add((uint64_t)(b - a));
-    return bs_t{precn_t(), std::move(q), std::move(t),
-                std::vector<factor_power_t>(), std::move(fq)};
+    return chud_merge(std::move(l), std::move(r), need_p, level, b - a);
 }
+
+#if PI_ROOT_TASK_SCHEDULER
+struct pi_bs_task_t{
+    size_t a;
+    size_t b;
+    size_t level;
+    bool need_p;
+    int left;
+    int right;
+    int parent;
+    bs_t value;
+};
+
+static int pi_build_bs_tasks(std::vector<pi_bs_task_t> &tasks,
+                             std::vector<int> &leaves,
+                             size_t a, size_t b, bool need_p, size_t level){
+    int index = (int)tasks.size();
+    tasks.push_back(pi_bs_task_t{a, b, level, need_p, -1, -1, -1, bs_t()});
+    if(level >= std::min<size_t>(PI_ROOT_TASK_DEPTH, PI_PARALLEL_SPLIT_DEPTH) ||
+       b - a < 8192){
+        leaves.push_back(index);
+        return index;
+    }
+    size_t m = a + (b - a) / 2;
+    int left = pi_build_bs_tasks(tasks, leaves, a, m, true, level + 1);
+    int right = pi_build_bs_tasks(tasks, leaves, m, b, need_p, level + 1);
+    tasks[index].left = left;
+    tasks[index].right = right;
+    tasks[left].parent = index;
+    tasks[right].parent = index;
+    return index;
+}
+
+static void pi_merge_bs_task(std::vector<pi_bs_task_t> &tasks, int index){
+    pi_bs_task_t &task = tasks[index];
+    bs_t left = std::move(tasks[task.left].value);
+    bs_t right = std::move(tasks[task.right].value);
+    task.value = chud_merge(std::move(left), std::move(right), task.need_p,
+                            task.level, task.b - task.a);
+}
+
+static bs_t pi_chud_bs_root(size_t a, size_t b, bool need_p,
+                            const chud_factor_sieve_t &sieve){
+    if(PI_PARALLEL_SPLIT_DEPTH == 0 || b - a < 8192)
+        return chud_bs(a, b, need_p, 0, sieve);
+
+    std::vector<pi_bs_task_t> tasks;
+    std::vector<int> leaves;
+    int root = pi_build_bs_tasks(tasks, leaves, a, b, need_p, 0);
+    if(leaves.size() < 2) return chud_bs(a, b, need_p, 0, sieve);
+
+    std::vector<int> pending(tasks.size());
+    for(size_t i = 0; i < tasks.size(); ++i)
+        pending[i] = tasks[i].left < 0 ? 0 : 2;
+    std::deque<int> queue(leaves.begin(), leaves.end());
+    std::mutex mutex;
+    std::condition_variable have_task;
+    bool stop = false;
+
+    // The fixed worker set is created once by the root.  A finished child
+    // releases its parent immediately, so independent merges overlap without
+    // layer barriers or nested worker creation.
+    auto worker = [&]{
+        bool old_parallel = precn_ntt_thread_parallel_enabled();
+        size_t old_min_transform = precn_ntt_parallel_min_transform();
+        precn_set_ntt_parallel_min_transform(PI_NESTED_NTT_MIN_TRANSFORM);
+        for(;;){
+            int index;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                have_task.wait(lock, [&]{ return stop || !queue.empty(); });
+                if(stop && queue.empty()) break;
+                index = queue.front();
+                queue.pop_front();
+            }
+
+            pi_bs_task_t &task = tasks[index];
+            precn_set_ntt_thread_parallel(task.level <= PI_NESTED_NTT_MAX_LEVEL);
+            if(task.left < 0)
+                task.value = chud_bs(task.a, task.b, task.need_p, task.level, sieve);
+            else
+                pi_merge_bs_task(tasks, index);
+
+            std::lock_guard<std::mutex> lock(mutex);
+            if(index == root){
+                stop = true;
+                have_task.notify_all();
+                continue;
+            }
+            int parent = task.parent;
+            if(--pending[parent] == 0){
+                queue.push_back(parent);
+                have_task.notify_one();
+            }
+        }
+        precn_set_ntt_parallel_min_transform(old_min_transform);
+        precn_set_ntt_thread_parallel(old_parallel);
+    };
+
+    std::vector<std::thread> workers;
+    size_t worker_count = std::min<size_t>(leaves.size(), bs_threads);
+    worker_count = std::max<size_t>(worker_count, 1);
+    workers.reserve(worker_count - 1);
+    for(size_t i = 1; i < worker_count; ++i) workers.emplace_back(worker);
+    worker();
+    for(size_t i = 0; i < workers.size(); ++i) workers[i].join();
+    return std::move(tasks[root].value);
+}
+#else
+static bs_t pi_chud_bs_root(size_t a, size_t b, bool need_p,
+                            const chud_factor_sieve_t &sieve){
+    return chud_bs(a, b, need_p, 0, sieve);
+}
+#endif
 
 static std::string to_dec(const precn_t &a){
 #if PI_DECIMAL_1E19
     return precn_to_decimal(a);
 #else
-    // The generic decimal formatter uses 10^19 leaves.  With the current
-    // division kernel, 10^9 chunks benchmark faster for this Pi workload.
+    // Keep this fallback for platforms where 64-bit chunk division is not
+    // favorable. The native default uses the faster 10^19 conversion tree.
     size_t n = bit_length(a) / 29 + 2;
     std::vector<uint32_t> chunks(n);
     precn_base_convert(a, 1000000000u, chunks.data(), n);
@@ -649,6 +1041,29 @@ static precn_t pi_mul_shift_right(const precn_t &a, const precn_t &b,
     return (a * b) >> shift;
 }
 
+static precn_t pi_pow2_minus(const precn_t &a, size_t bit){
+    size_t limb = bit / 64;
+    unsigned offset = (unsigned)(bit % 64);
+    precn_t r;
+    r.asiz = limb + 1;
+    r.a = (uint64_t*)realloc(r.a, r.asiz * sizeof(uint64_t));
+    memset(r.a, 0, r.asiz * sizeof(uint64_t));
+    r.a[limb] = 1ULL << offset;
+    r.rsiz = limb + 1;
+
+    uint64_t borrow = 0;
+    for(size_t i = 0; i < r.rsiz; ++i){
+        uint64_t out;
+        borrow = precn_sub_borrow(r.a[i], i < a.rsiz ? a.a[i] : 0,
+                                  borrow, out);
+        r.a[i] = out;
+    }
+    if(borrow) std::abort();
+    while(r.rsiz && r.a[r.rsiz - 1] == 0) --r.rsiz;
+    if(r.rsiz == 0) r.a[0] = 0;
+    return r;
+}
+
 static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
     size_t divisor_bits = pi_div_bits(b);
     if(b.rsiz == 0 || bits < divisor_bits) return precn_t();
@@ -667,13 +1082,13 @@ static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
         precn_t next_b = pi_div_top_ceil(b, divisor_bits, next_keep);
         size_t next = next_keep + next_known;
         precn_t scaled_x = x << (next_known - known);
-        precn_t two_scale = precn_t(1) << (next + 1);
         precn_t bx = next_b * scaled_x;
-        if(bx >= two_scale){
+        if(pi_div_bits(bx) > next + 1){
             scaled_x = scaled_x >> 1;
             bx = next_b * scaled_x;
         }
-        x = pi_mul_shift_right(scaled_x, two_scale - bx, next);
+        precn_t correction = pi_pow2_minus(bx, next + 1);
+        x = pi_mul_shift_right(scaled_x, correction, next);
         known = next_known;
         uint64_t fraction = target_known ?
             (uint64_t)((600.0 * (double)known) / (double)target_known) : 600;
@@ -682,12 +1097,9 @@ static precn_t pi_div_reciprocal(const precn_t &b, size_t bits){
     return x;
 }
 
-static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
-    if(a.rsiz == 0 || b.rsiz == 0 || a < b) return precn_t();
-    if(b.rsiz == 1) return div_u64(a, b.a[0]);
-
-    size_t scale = pi_div_bits(a) + PI_DIV_GUARD_BITS;
-    precn_t inverse = pi_div_reciprocal(b, scale);
+static precn_t pi_div_apply_inverse(const precn_t &a, const precn_t &b,
+                                    const precn_t &inverse, size_t scale){
+    (void)b;
     progress_set(700);
     precn_t q = pi_mul_shift_right(a, inverse, scale);
     progress_set(820);
@@ -724,46 +1136,127 @@ static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
 #endif
 }
 
+static precn_t pi_div_mulinv(const precn_t &a, const precn_t &b){
+    if(a.rsiz == 0 || b.rsiz == 0 || a < b) return precn_t();
+    if(b.rsiz == 1) return div_u64(a, b.a[0]);
+    size_t scale = pi_div_bits(a) + PI_DIV_GUARD_BITS;
+    precn_t inverse = pi_div_reciprocal(b, scale);
+    return pi_div_apply_inverse(a, b, inverse, scale);
+}
+
 static std::string pi_digits(size_t digits){
-    size_t guard = 10;
+    size_t guard = PI_GUARD_DIGITS;
     size_t work_digits = digits + guard;
-    size_t terms = work_digits / 14 + 1;
+    // A Chudnovsky term contributes about 14.181647 digits.  14.18 is a
+    // conservative rational lower bound, so ceil(work_digits / 14.18) + 1
+    // retains a full extra term without the old 14-digit overestimate.
+    size_t terms = (work_digits * 50 + 708) / 709 + 1;
 
-    double t0 = now_sec();
     if(terms > (UINT32_MAX - 1) / 6) return "error";
-    progress_begin(0, binary_tracked_work(terms));
-    chud_factor_sieve_t sieve(6 * terms + 1);
-    bs_t bs = chud_bs(0, terms, false, 0, sieve);
-    bs.t += precz_t(bs.q * CHUD_A);
-    if(show_progress){
-        progress_done.store(progress_total.load(std::memory_order_relaxed),
-                            std::memory_order_relaxed);
-    }
-    double t1 = now_sec();
-    if(bs.t.is_negative() || bs.t.is_zero()) return "error";
+    bs_t bs;
+    precn_t sqrt_scaled;
+    double bs_seconds = 0.0;
+    double sqrt_seconds = 0.0;
 
-    progress_begin(1, show_progress ? 1000 : 0);
-    std::vector<pow10_entry_t> pow10_cache;
-    size_t scale_index = pow10_index(work_digits * 2, pow10_cache);
-    progress_set(150);
-    precn_t sqrt_scaled = sqrt10005_scaled(work_digits, scale_index, pow10_cache);
+    auto calculate_bs = [&]{
+        double begin = now_sec();
+        progress_begin(0, binary_tracked_work(terms));
+        chud_factor_sieve_t sieve(6 * terms + 1);
+        bs = pi_chud_bs_root(0, terms, false, sieve);
+        bs.t += precz_t(bs.q * CHUD_A);
+        if(show_progress){
+            progress_done.store(progress_total.load(std::memory_order_relaxed),
+                                std::memory_order_relaxed);
+        }
+        bs_seconds = now_sec() - begin;
+    };
+
+    auto calculate_sqrt = [&]{
+        double begin = now_sec();
+        progress_begin(1);
+        std::vector<pow10_entry_t> pow10_cache;
+        size_t scale_index = pow10_index(work_digits * 2, pow10_cache);
+        sqrt_scaled = sqrt10005_scaled(work_digits, scale_index, pow10_cache);
+        sqrt_seconds = now_sec() - begin;
+    };
+
+    bool overlap = PI_OVERLAP_BS_SQRT && !show_progress &&
+                   work_digits >= PI_OVERLAP_BS_SQRT_MIN_DIGITS;
+#if defined(__EMSCRIPTEN__) || (defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS)
+    overlap = false;
+#endif
+    double parallel_begin = now_sec();
+    if(overlap){
+        std::exception_ptr sqrt_error;
+        std::thread sqrt_worker([&]{
+            try{ calculate_sqrt(); }
+            catch(...){ sqrt_error = std::current_exception(); }
+        });
+        calculate_bs();
+        sqrt_worker.join();
+        if(sqrt_error) std::rethrow_exception(sqrt_error);
+    }else{
+        calculate_bs();
+        calculate_sqrt();
+    }
     double t2 = now_sec();
+#if defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS
+    if(show_phases){ fprintf(stderr, "ntt after split_sqrt\n"); precn_ntt_call_profile_dump(); }
+#endif
+    if(bs.t.is_negative() || bs.t.is_zero()) return "error";
     progress_begin(2, show_progress ? 1000 : 0);
-    precn_t numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
-    progress_set(50);
-    precn_t pi_scaled = (show_progress || PI_USE_LOCAL_MULINV_DIV) ?
-        pi_div_mulinv(numerator, bs.t.magnitude()) :
-        numerator / bs.t.magnitude();
-    pi_scaled = pi_scaled / 10000000000ULL;
+    precn_t numerator;
+    precn_t pi_scaled;
+    bool overlap_div = PI_OVERLAP_NUMERATOR_RECIPROCAL && overlap &&
+                       PI_USE_LOCAL_MULINV_DIV && bs.t.magnitude().rsiz > 1;
+    if(overlap_div){
+        size_t scale = pi_div_bits(bs.q) + 19 + pi_div_bits(sqrt_scaled) +
+                       PI_DIV_GUARD_BITS;
+        precn_t inverse;
+        std::exception_ptr inverse_error;
+        std::thread inverse_worker([&]{
+            try{ inverse = pi_div_reciprocal(bs.t.magnitude(), scale); }
+            catch(...){ inverse_error = std::current_exception(); }
+        });
+        numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
+        inverse_worker.join();
+        if(inverse_error) std::rethrow_exception(inverse_error);
+        pi_scaled = pi_div_apply_inverse(numerator, bs.t.magnitude(),
+                                         inverse, scale);
+    }else{
+        numerator = mul_u32(bs.q, 426880) * sqrt_scaled;
+        progress_set(50);
+        pi_scaled = (show_progress || PI_USE_LOCAL_MULINV_DIV) ?
+            pi_div_mulinv(numerator, bs.t.magnitude()) :
+            numerator / bs.t.magnitude();
+    }
+#if PI_DIV_1E10_SPECIAL
+    if(guard == 10){
+        precn_div_1e10_into(pi_scaled, pi_scaled);
+    }else
+#endif
+    {
+        uint64_t guard_scale = 1;
+        for(size_t i = 0; i < guard; ++i) guard_scale *= 10;
+        pi_scaled = pi_scaled / guard_scale;
+    }
     double t3 = now_sec();
+#if defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS
+    if(show_phases){ fprintf(stderr, "ntt after final_div\n"); precn_ntt_call_profile_dump(); }
+#endif
 
     progress_begin(3);
     std::string s = to_dec(pi_scaled);
     double t4 = now_sec();
+#if defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS
+    if(show_phases){ fprintf(stderr, "ntt after to_decimal\n"); precn_ntt_call_profile_dump(); }
+#endif
     if(show_progress) progress_phase.store(-1, std::memory_order_release);
     if(show_phases){
-        std::cerr << "binary_split " << (t1 - t0) << " sec\n";
-        std::cerr << "sqrt_scale " << (t2 - t1) << " sec\n";
+        std::cerr << "binary_split " << bs_seconds << " sec\n";
+        std::cerr << "sqrt_scale " << sqrt_seconds << " sec\n";
+        if(overlap)
+            std::cerr << "split_sqrt_wall " << (t2 - parallel_begin) << " sec\n";
         std::cerr << "final_div " << (t3 - t2) << " sec\n";
         std::cerr << "to_decimal " << (t4 - t3) << " sec\n";
     }
@@ -787,6 +1280,11 @@ static std::string short_pi(const std::string &s){
 }
 
 int main(int argc, char **argv){
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    // A short CPU-bound run is very sensitive to desktop and scanner preemption.
+    // ABOVE_NORMAL reduces that jitter without the starvation risk of HIGH/REALTIME.
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
     size_t digits = 100;
     if(argc > 1){
         digits = (size_t)std::strtoull(argv[1], nullptr, 10);
@@ -799,8 +1297,11 @@ int main(int argc, char **argv){
         if(arg == "--file" && i + 1 < argc) output_file = argv[++i];
         if(arg == "--threads" && i + 1 < argc)
             ntt_threads = (unsigned int)std::strtoul(argv[++i], nullptr, 10);
+        if(arg == "--bs-threads" && i + 1 < argc)
+            bs_threads = (unsigned int)std::strtoul(argv[++i], nullptr, 10);
     }
     precn_set_ntt_threads(ntt_threads);
+    if(bs_threads == 0) bs_threads = 1;
     double start = now_sec();
     uint64_t cpu_start = process_cpu_ms();
     std::thread reporter;
@@ -815,12 +1316,14 @@ int main(int argc, char **argv){
     }catch(...){
         if(reporter.joinable()){
             progress_stop.store(true, std::memory_order_release);
+            progress_wakeup.notify_one();
             reporter.join();
         }
         throw;
     }
     if(reporter.joinable()){
         progress_stop.store(true, std::memory_order_release);
+        progress_wakeup.notify_one();
         reporter.join();
     }
     double sec = now_sec() - start;
@@ -843,6 +1346,9 @@ int main(int argc, char **argv){
     std::cerr << "danger_fftmuls_1_4 " << danger_fftmuls_1_4 << "\n";
     std::cerr << "danger_fftmuls_3_8 " << danger_fftmuls_3_8 << "\n";
     std::cerr << "max_fft_rounding_error " << max_fft_rounding_error << "\n";
+#endif
+#if defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS
+    precn_ntt_call_profile_dump();
 #endif
     std::cerr << "time " << sec << " sec\n";
     std::cerr << "cpu_time " << cpu_sec << " sec\n";

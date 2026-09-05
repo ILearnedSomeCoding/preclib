@@ -50,6 +50,15 @@ precn_t::precn_t(){
     rsiz = 0;
     *a = 0;
 }
+precn_t::precn_t(no_alloc_t) : asiz(0), rsiz(0), a(nullptr){}
+
+precn_t precn_t::with_capacity(size_t limbs){
+    precn_t r(no_alloc_t{});
+    r.asiz = std::max<size_t>(limbs, 1);
+    r.a = (uint64_t*) malloc(r.asiz * sizeof(uint64_t));
+    r.a[0] = 0;
+    return r;
+}
 precn_t::precn_t(const precn_t &o){
     asiz = std::max<size_t>(o.rsiz, 1);
     rsiz = o.rsiz;

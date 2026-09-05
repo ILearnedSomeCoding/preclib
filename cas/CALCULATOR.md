@@ -88,12 +88,15 @@ asin, acos, atan
 sinh, cosh, tanh
 asinh, acosh, atanh
 Si, Ci, Ei, erf, partial_gamma
-diff, differentiate, integrate, int
+diff, differentiate, integrate, int, D, dsolve
 sqrt
 expand, simplify, approx
 ```
 
 `ln(x)` 是自然对数，`log(x)` 是 `log10(x)` 的别名，`log2(x)` 是以 2 为底的对数。符号参数会保留为函数节点；十进制近似参数会立即使用 `Number` 计算。
+
+`D(y,x)` 构造形式导数；`dsolve(D(y,x)+y=x,y,x)` 使用积分因子法求一阶线性
+常微分方程。方程两边可以用 `=`，返回值为 `{y -> ...}`。
 
 ## 测试
 

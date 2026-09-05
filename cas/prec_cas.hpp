@@ -253,10 +253,15 @@ public:
     exact_expr error_function(const exact_expr &value);
     exact_expr imaginary_error_function(const exact_expr &value);
     exact_expr partial_gamma(const exact_expr &a, const exact_expr &x);
+    exact_expr formal_derivative(const exact_expr &expression,
+                                 const exact_expr &variable);
     exact_expr differentiate(const exact_expr &expression,
                              const exact_expr &variable);
     exact_expr integrate(const exact_expr &expression,
                          const exact_expr &variable);
+    exact_expr dsolve(const exact_expr &equation,
+                      const exact_expr &dependent,
+                      const exact_expr &independent);
     exact_expr bounded_sum(const exact_expr &variable, const exact_expr &lower,
                            const exact_expr &upper, const exact_expr &body);
     exact_expr expand(const exact_expr &expression,

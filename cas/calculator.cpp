@@ -305,6 +305,12 @@ class parser{
                 throw std::runtime_error("partial_gamma requires two arguments");
             return state_.context.partial_gamma(arguments[0], arguments[1]);
         }
+        if(name == "D" || name == "formal_derivative"){
+            if(arguments.size() != 2)
+                throw std::runtime_error(
+                    "D requires an expression and a variable");
+            return state_.context.formal_derivative(arguments[0], arguments[1]);
+        }
         if(name == "diff" || name == "differentiate"){
             if(arguments.size() != 2)
                 throw std::runtime_error("diff requires an expression and a variable");
@@ -314,6 +320,13 @@ class parser{
             if(arguments.size() != 2)
                 throw std::runtime_error("integrate requires an expression and a variable");
             return state_.context.integrate(arguments[0], arguments[1]);
+        }
+        if(name == "dsolve"){
+            if(arguments.size() != 3)
+                throw std::runtime_error(
+                    "dsolve requires an equation, dependent symbol, and independent symbol");
+            return state_.context.dsolve(arguments[0], arguments[1],
+                                         arguments[2]);
         }
         if(name == "gcd"){
             if(arguments.size() < 2)
@@ -516,7 +529,7 @@ static const char *help_text(){
         "         subs(expression, target, replacement), is_poly(expression[, vars])\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
         "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
-        "calculus: diff(expr, x), differentiate(expr, x), int(expr, x), integrate(expr, x)\n"
+        "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"
         "functions: exp, expm1, ln, log, log10, log2, Si, Ci, Ei, erf,\n"
         "           partial_gamma(a, x), erf, erfi, sin, cos, tan, asin, acos, atan,\n"
         "           sinh, cosh, tanh, asinh, acosh, atanh\n"

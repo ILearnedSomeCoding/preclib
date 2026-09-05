@@ -6,9 +6,18 @@ precn_t mul_u32(const precn_t &a, uint32_t b){
 
 precn_t mul_u64(const precn_t &a, uint64_t b){
     if(a.rsiz == 0 || b == 0) return precn_t();
-    precn_t r;
-    r.asiz = a.rsiz + 1;
-    r.a = (uint64_t*) realloc(r.a, r.asiz * sizeof(uint64_t));
+    if(b == 1) return a;
+    if((b & (b - 1)) == 0){
+#if defined(__clang__) || defined(__GNUC__)
+        return a << (unsigned)__builtin_ctzll(b);
+#else
+        unsigned shift = 0;
+        while((b >> shift) != 1) ++shift;
+        return a << shift;
+#endif
+    }
+
+    precn_t r = precn_t::with_capacity(a.rsiz + 1);
     r.rsiz = a.rsiz;
     uint64_t carry = 0;
     for(size_t i = 0;i < a.rsiz;++i){
@@ -20,7 +29,5 @@ precn_t mul_u64(const precn_t &a, uint64_t b){
         carry = hi + c;
     }
     if(carry) r.a[r.rsiz++] = carry;
-    while(r.rsiz > 0 && r.a[r.rsiz - 1] == 0) --r.rsiz;
-    if(r.rsiz == 0) r.a[0] = 0;
     return r;
 }

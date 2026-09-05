@@ -150,18 +150,6 @@ static sprecn_t sp_divexact_3(const sprecn_t &a){
     return sp_make(precn_divexact_3(a.v), a.neg);
 }
 
-static sprecn_t sp_divexact_den(sprecn_t a, long long d){
-    while(d % 2 == 0){
-        a = sp_divexact_2(a);
-        d /= 2;
-    }
-    while(d % 3 == 0){
-        a = sp_divexact_3(a);
-        d /= 3;
-    }
-    return a;
-}
-
 static void toom_norm(precn_t &a){
     while(a.rsiz > 0 && a.a[a.rsiz - 1] == 0) --a.rsiz;
     if(a.rsiz == 0 && a.asiz) a.a[0] = 0;
@@ -170,7 +158,7 @@ static void toom_norm(precn_t &a){
 static void toom_reserve(precn_t &a, size_t n){
     if(a.asiz >= n) return;
     a.a = (uint64_t*) realloc(a.a, n * sizeof(uint64_t));
-    memset(a.a + a.asiz, 0, (n - a.asiz) * 4);
+    memset(a.a + a.asiz, 0, (n - a.asiz) * sizeof(uint64_t));
     a.asiz = n;
 }
 
@@ -190,7 +178,7 @@ static void toom_add_shift(precn_t &a, const precn_t &b, size_t shift){
     if(b.rsiz == 0) return;
     size_t need = std::max(a.rsiz, b.rsiz + shift) + 1;
     toom_reserve(a, need);
-    if(a.rsiz < need) memset(a.a + a.rsiz, 0, (need - a.rsiz) * 4);
+    if(a.rsiz < need) memset(a.a + a.rsiz, 0, (need - a.rsiz) * sizeof(uint64_t));
 
     uint64_t carry = 0;
     size_t i = 0;

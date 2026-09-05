@@ -103,6 +103,14 @@ struct PRECLIB_API precn_t{  // unsigned arbitrary precision number, base 2^64
     precn_t &operator=(const precn_t &o);
     precn_t &operator=(precn_t &&o);
     ~precn_t();
+
+    // Allocate the final limb capacity directly. The value starts at zero,
+    // while limbs above rsiz remain uninitialized for output routines to fill.
+    static precn_t with_capacity(size_t limbs);
+
+private:
+    struct no_alloc_t{};
+    explicit precn_t(no_alloc_t);
 };
 
 PRECLIB_API precn_t mul_basic(const precn_t &a, const precn_t &b);
@@ -123,6 +131,21 @@ extern PRECLIB_API uint64_t danger_fftmuls_3_8;
 extern PRECLIB_API double max_fft_rounding_error;
 #endif
 PRECLIB_API precn_t mul_ntt(const precn_t &a, const precn_t &b);
+// Exact floating-point modular transform. AVX2 carries two coefficients
+// modulo two primes in four double lanes and uses a compact uint32_t layout
+// for parallel transforms. The AVX2 multiplication dispatcher selects this
+// backend in its supported range; transforms above 2^20 points fall back to
+// mul_ntt because the selected primes do not support longer roots.
+PRECLIB_API precn_t mul_vst(const precn_t &a, const precn_t &b);
+PRECLIB_API bool mul_ntt_pair_shared_right_into(
+    precn_t &ra, precn_t &rc, const precn_t &a, const precn_t &c,
+    const precn_t &shared_right);
+// Experimental interleaved three-modulus NTT backend.  It is intentionally
+// not selected by mul_into until its correctness and performance are proven.
+PRECLIB_API precn_t mul_ntt_interleaved3_experimental(const precn_t &a, const precn_t &b);
+#if defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS
+PRECLIB_API void precn_ntt_call_profile_dump();
+#endif
 // Configure the native NTT worker pool before its first multiplication.
 // Zero chooses a sensible hardware-based default; WebAssembly stays single-threaded.
 PRECLIB_API void precn_set_ntt_threads(unsigned int threads);
@@ -153,6 +176,7 @@ PRECLIB_API void mul_into(precn_t &r, const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t mul_u32(const precn_t &a, uint32_t b);
 PRECLIB_API precn_t mul_u64(const precn_t &a, uint64_t b);
 PRECLIB_API precn_t precn_sqr(const precn_t &a);
+PRECLIB_API void precn_sqr_into(precn_t &r, const precn_t &a);
 // Returns floor((a * b) / 2^(64 * drop_limbs)).
 PRECLIB_API precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs);
 // Returns a*b modulo 2^(64*limbs)-1.  limbs must be a non-zero power of two
@@ -166,6 +190,12 @@ PRECLIB_API precn_t mul_fermat(const precn_t &a, const precn_t &b, size_t limbs)
 // high half floor(a*b / 2^(64*n)).  It uses the two cyclic NTT rings rather
 // than an ordinary 2n-point convolution.
 PRECLIB_API precn_t mul_high_half_ntt(const precn_t &a, const precn_t &b, size_t limbs);
+// Controls transform-level worker-pool use for the current thread only.
+// Outer task schedulers can disable it to avoid nested parallelism.
+PRECLIB_API bool precn_ntt_thread_parallel_enabled();
+PRECLIB_API void precn_set_ntt_thread_parallel(bool enabled);
+PRECLIB_API size_t precn_ntt_parallel_min_transform();
+PRECLIB_API void precn_set_ntt_parallel_min_transform(size_t min_transform);
 
 template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
 precn_t operator*(const precn_t &a, T b){
@@ -182,12 +212,24 @@ PRECLIB_API void div_into(precn_t &q, const precn_t &a, const precn_t &b);
 PRECLIB_API void divmod_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b);
 PRECLIB_API void divmod_schoolbook_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b);
 PRECLIB_API bool div_dc_into(precn_t &q, precn_t &r, const precn_t &a, const precn_t &b);
+PRECLIB_API bool div_dc_blocked_into(precn_t &q, precn_t &r,
+                                     const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t div_schoolbook(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t mod_schoolbook(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t div_u32(const precn_t &a, uint32_t b);
 PRECLIB_API precn_t div_u64(const precn_t &a, uint64_t b);
+PRECLIB_API void precn_div_1e10_into(precn_t &q, const precn_t &a);
 PRECLIB_API precn_t precn_reciprocal_newton(const precn_t &b, size_t n);
+PRECLIB_API precn_t precn_reciprocal_newton_approx(const precn_t &b, size_t n);
 PRECLIB_API precn_t div_mulinv(const precn_t &a, const precn_t &b);
+PRECLIB_API void div_mulinv_pair_into(precn_t &qa, precn_t &qc,
+                                      const precn_t &a, const precn_t &c,
+                                      const precn_t &b);
+PRECLIB_API void divmod_mulinv_into(precn_t &q, precn_t &r,
+                                    const precn_t &a, const precn_t &b);
+PRECLIB_API void divmod_mulinv_precomputed_into(
+    precn_t &q, precn_t &r, const precn_t &a, const precn_t &b,
+    const precn_t &inverse, size_t scale);
 PRECLIB_API precn_t mod_mulinv(const precn_t &a, const precn_t &b);
 PRECLIB_API precn_t operator%(const precn_t &a, const precn_t &b);
 PRECLIB_API void mod_into(precn_t &r, const precn_t &a, const precn_t &b);
@@ -265,6 +307,7 @@ public:
     precz_t(const precn_t &mag);
     precz_t(precn_t &&mag);
     precz_t(std::string val);
+    static precz_t from_magnitude(precn_t mag, bool negative = false);
 
     bool is_negative() const;
     bool is_zero() const;

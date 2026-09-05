@@ -43,6 +43,27 @@ clang++ -O3 -mavx2 -std=c++17 -DCOUNT_FFTS=1 test\fft_torture.cpp src\*.cpp -o t
 .\test\fft_torture.exe
 ```
 
+Build and run the experimental floating-point modular transform benchmark:
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 test\bench_vst.cpp src\*.cpp -o test\bench_vst.exe
+.\test\bench_vst.exe --max 32768
+```
+
+Add `-mfma` on CPUs with FMA support to fuse the floating-point modular
+remainder. Options `--serial`, `--square`, `--min LIMBS`, and `--max LIMBS`
+select serial execution, squaring, and the tested size range. Add
+`-DPRECN_VST_PROFILE=1` to print VST setup, transform, CRT/carry, and
+verification timings. The AVX2 path packs two coefficients modulo two primes,
+uses compact data plus 4 workers from a 2^15-point transform, and uses 8
+workers only for the largest transforms (one threshold earlier for squares).
+Define `PRECN_VST_STRICT_CHECKS=1` to validate every reconstructed coefficient
+in tests. AVX2 builds select `mul_vst` wherever the normal dispatcher chooses
+the large exact-transform backend. `mul_vst` handles transforms through 2^20
+points and falls back to `mul_ntt` above that limit. Define
+`MUL_DISPATCH_USE_VST=0` to retain the integer-NTT-only dispatcher for A/B
+testing.
+
 Build and run the non-AVX2 smoke and dispatch tests:
 
 ```powershell
@@ -67,6 +88,19 @@ Run only division timing:
 .\test\test_prec.exe --division-timing
 ```
 
+Build the normalized single-limb preinverse regression test and benchmark:
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 test\test_div_preinv.cpp src\*.cpp -o test\test_div_preinv.exe
+.\test\test_div_preinv.exe
+clang++ -O3 -mavx2 -std=c++17 test\bench_div_u64.cpp src\*.cpp -o test\bench_div_u64.exe
+.\test\bench_div_u64.exe
+```
+
+Define `DIV_U64_PREINV_THRESHOLD` to tune or disable the reciprocal path. The
+default starts at 16 limbs; smaller dividends use one hardware `divq` per
+limb because computing a reciprocal does not yet repay its setup cost.
+
 Build and run the GMP speed comparison:
 
 ```powershell
@@ -80,3 +114,15 @@ Pass a max power to test bigger limb sizes, for example:
 ```powershell
 .\test\bench_gmp.exe 16
 ```
+Comprehensive GMP comparison (wall-clock medians, balanced and unbalanced
+multiplication, squaring, and several quotient/divisor ratios):
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 test\bench_gmp_full.cpp src\*.cpp -IC:\ProgramData\anaconda3\Library\include C:\ProgramData\anaconda3\Library\lib\gmp.lib -o test\bench_gmp_full.exe
+.\test\bench_gmp_full.exe --quick
+python test\plot_bench_gmp.py test\bench_gmp_full.csv --output test\bench_gmp_full.png
+```
+
+The default run reaches `2^18` limbs and samples both `2^n` and `1.5*2^n`
+sizes. Use `--full` for `2^22`, or customize it with `--max-pow N`,
+`--samples N`, and `--csv PATH`.

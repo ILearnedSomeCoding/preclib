@@ -761,6 +761,17 @@ int main(){
                             integration_root_three) /
             integration_root_three;
     assert(cubic_rational_antiderivative == expected_cubic_antiderivative);
+    exact_expr algebraic_cubic_rational = context.integer(1) /
+        (context.power(x, context.integer(3)) - context.integer(2));
+    exact_expr algebraic_cubic_antiderivative =
+        context.integrate(algebraic_cubic_rational, x);
+    assert(algebraic_cubic_antiderivative.operation() != exact_opcode::integral);
+
+    exact_expr algebraic_quartic_rational = context.integer(1) /
+        (context.power(x, context.integer(4)) + context.integer(1));
+    exact_expr algebraic_quartic_antiderivative =
+        context.integrate(algebraic_quartic_rational, x);
+    assert(algebraic_quartic_antiderivative.operation() != exact_opcode::integral);
     exact_expr quartic_rational = context.integer(1) /
         (context.power(x, context.integer(4)) - context.integer(1));
     assert(context.integrate(quartic_rational, x).operation() !=
@@ -817,6 +828,96 @@ int main(){
     assert(e_antiderivative.operation() != exact_opcode::integral);
     assert(context.simplify(context.differentiate(e_antiderivative, x) -
                            e_integrand) == context.integer(0));
+
+    // Risch differential equations are solved over the full constant field,
+    // not just rational coefficients.
+    exact_expr risch_a = context.symbol("_risch_a");
+    exact_expr risch_b = context.symbol("_risch_b");
+    exact_expr symbolic_exponential_integrand =
+        (risch_a * x + risch_b) * context.exponential(risch_a * x);
+    exact_expr symbolic_exponential_antiderivative =
+        context.integrate(symbolic_exponential_integrand, x);
+    assert(symbolic_exponential_antiderivative.operation() !=
+           exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+               symbolic_exponential_antiderivative, x) -
+           symbolic_exponential_integrand)) == context.integer(0));
+
+    exact_expr rational_risch_integrand = x * context.exponential(x) /
+        context.power(x + context.integer(1), context.integer(2));
+    exact_expr rational_risch_expected = context.exponential(x) /
+        (x + context.integer(1));
+    exact_expr rational_risch_antiderivative =
+        context.integrate(rational_risch_integrand, x);
+    assert(rational_risch_antiderivative == rational_risch_expected);
+
+    exact_expr repeated_linear_hyperexponential = context.exponential(x) /
+        context.power(x + context.integer(1), context.integer(2));
+    exact_expr repeated_linear_hyperexponential_expected =
+        context.exponential(context.integer(-1)) *
+            context.exponential_integral(x + context.integer(1)) -
+        context.exponential(x) / (x + context.integer(1));
+    assert(context.integrate(repeated_linear_hyperexponential, x) ==
+           repeated_linear_hyperexponential_expected);
+
+    exact_expr repeated_quadratic_denominator =
+        context.power(x, context.integer(2)) + x + context.integer(1);
+    exact_expr repeated_quadratic_numerator =
+        context.power(x, context.integer(4)) +
+        context.power(x, context.integer(3)) +
+        context.integer(3) * context.power(x, context.integer(2)) + x;
+    exact_expr repeated_quadratic_risch_integrand =
+        repeated_quadratic_numerator * context.exponential(x) /
+        context.power(repeated_quadratic_denominator, context.integer(2));
+    exact_expr repeated_quadratic_risch_expected =
+        (context.power(x, context.integer(2)) + context.integer(1)) *
+        context.exponential(x) / repeated_quadratic_denominator;
+    assert(context.integrate(repeated_quadratic_risch_integrand, x) ==
+           repeated_quadratic_risch_expected);
+
+    exact_expr symbolic_quadratic_kernel = context.integer(2) * risch_a * x *
+        context.exponential(risch_a * context.power(x, context.integer(2)));
+    assert(context.integrate(symbolic_quadratic_kernel, x) ==
+           context.exponential(risch_a * context.power(x, context.integer(2))));
+
+    exact_expr general_base_integrand = x * context.power(risch_a, x);
+    exact_expr general_base_antiderivative =
+        context.integrate(general_base_integrand, x);
+    assert(general_base_antiderivative.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+               general_base_antiderivative, x) - general_base_integrand)) ==
+           context.integer(0));
+
+    exact_expr risch_c = context.symbol("_risch_c");
+    exact_expr risch_d = context.symbol("_risch_d");
+    exact_expr symbolic_trig_inner = risch_c * x + risch_d;
+    exact_expr symbolic_sine_integrand = (risch_a * x + risch_b) *
+        context.sine(symbolic_trig_inner);
+    exact_expr symbolic_sine_antiderivative =
+        context.integrate(symbolic_sine_integrand, x);
+    assert(symbolic_sine_antiderivative.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+               symbolic_sine_antiderivative, x) -
+           symbolic_sine_integrand)) == context.integer(0));
+
+    exact_expr symbolic_cosh_integrand = (risch_a * x + risch_b) *
+        context.hyperbolic_cosine(symbolic_trig_inner);
+    exact_expr symbolic_cosh_antiderivative =
+        context.integrate(symbolic_cosh_integrand, x);
+    assert(symbolic_cosh_antiderivative.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+               symbolic_cosh_antiderivative, x) -
+           symbolic_cosh_integrand)) == context.integer(0));
+
+    exact_expr symbolic_logarithmic_integrand =
+        (risch_a * x + risch_b) * context.natural_logarithm(x);
+    exact_expr symbolic_logarithmic_expected =
+        (risch_a * context.power(x, context.integer(2)) / context.integer(2) +
+         risch_b * x) * context.natural_logarithm(x) -
+        risch_a * context.power(x, context.integer(2)) / context.integer(4) -
+        risch_b * x;
+    assert(context.integrate(symbolic_logarithmic_integrand, x) ==
+           context.simplify(context.expand(symbolic_logarithmic_expected)));
     exact_expr logarithmic_derivative = context.cosine(x) / context.sine(x);
     assert(context.integrate(logarithmic_derivative, x) ==
            context.natural_logarithm(
@@ -882,6 +983,51 @@ int main(){
         context.integrate(context.natural_logarithm(x), x);
     assert(context.simplify(context.differentiate(logarithm_antiderivative, x) -
                             context.natural_logarithm(x)) == context.integer(0));
+
+    // D(y, x) is a formal derivative node; unlike diff(y, x), it records that
+    // y is the dependent variable of an ODE.
+    exact_expr formal_dy = context.formal_derivative(y, x);
+    assert(formal_dy.to_string() == "D(y, x)");
+    auto verify_linear_ode = [&](const exact_expr &equation,
+                                 const exact_expr &solution_list){
+        assert(solution_list.operation() == exact_opcode::expression_list);
+        assert(solution_list.operand_count() == 1);
+        exact_expr rule = solution_list.operand(0);
+        assert(rule.operation() == exact_opcode::rule);
+        assert(rule.operand(0) == y);
+        exact_expr solution = rule.operand(1);
+        exact_expr residual = context.substitute(
+            equation, formal_dy, context.differentiate(solution, x));
+        residual = context.substitute(residual, y, solution);
+        assert(context.simplify(context.expand(residual, 100000)) ==
+               context.integer(0));
+    };
+    exact_expr affine_ode = formal_dy + y - x;
+    verify_linear_ode(affine_ode, context.dsolve(affine_ode, y, x));
+    exact_expr homogeneous_ode = formal_dy - y;
+    verify_linear_ode(homogeneous_ode,
+                      context.dsolve(homogeneous_ode, y, x));
+    exact_expr nonelementary_ode = formal_dy +
+        context.sine(context.power(x, context.integer(2))) * y;
+    exact_expr nonelementary_solution = context.dsolve(
+        nonelementary_ode, y, x);
+    assert(nonelementary_solution.to_string().find("integrate(") !=
+           std::string::npos);
+    verify_linear_ode(nonelementary_ode, nonelementary_solution);
+
+    exact_expr occupied_constant = context.symbol("_C1");
+    exact_expr fresh_constant_solution = context.dsolve(
+        formal_dy + y - occupied_constant, y, x);
+    assert(fresh_constant_solution.to_string().find("_C2") !=
+           std::string::npos);
+    bool rejected_nonlinear_ode = false;
+    try{
+        (void)context.dsolve(formal_dy * y - x, y, x);
+    }catch(const std::invalid_argument &){
+        rejected_nonlinear_ode = true;
+    }
+    assert(rejected_nonlinear_ode);
+
     assert(sin(asin(x)) == x);
     assert(cos(acos(x)) == x);
     assert(tan(atan(x)) == x);

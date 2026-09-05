@@ -179,6 +179,9 @@ static void test_mul_u32(){
     expect(mul_u32(make_prec({123, 456}), 0), {});
     expect(mul_u32(make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), 0xFFFFFFFFu),
            {1, 0xFFFFFFFFu, 0xFFFFFFFEu});
+    precn_t powers = pattern(17, 457);
+    expect_eq(mul_u64(powers, 1), powers);
+    expect_eq(mul_u64(powers, 8), powers << 3);
 }
 
 static void test_mul_basic(){
@@ -192,6 +195,62 @@ static void test_mul_basic(){
     expect_eq(mul_ntt(a, b), a * b);
     expect(mul_ssa(make_prec({0xFFFFFFFFu}), make_prec({0xFFFFFFFFu})), {1, 0xFFFFFFFEu});
     expect_eq(mul_ssa(a, b), a * b);
+
+    precn_t square;
+    const size_t square_sizes[] = {1, 2, 4, 8, 16, 32, 64, 96, 128, 192, 2560, 3072};
+    for(size_t n : square_sizes){
+        precn_t x = pattern(n, 900 + n);
+        precn_sqr_into(square, x);
+        expect_eq_named("sqr_into", square, mul_basic(x, x));
+    }
+    precn_t square_carry = pattern(232, 1199);
+    for(size_t i = 0; i < square_carry.rsiz; ++i)
+        square_carry.a[i] = UINT64_MAX;
+    precn_sqr_into(square, square_carry);
+    expect_eq_named("sqr_into carry", square,
+                    mul_basic(square_carry, square_carry));
+}
+
+static void test_mul_ntt_shared_right(){
+    precn_t a = pattern(257, 1201);
+    precn_t c = pattern(301, 1207);
+    precn_t b = pattern(263, 1213);
+    precn_t ab;
+    precn_t cb;
+    assert(mul_ntt_pair_shared_right_into(ab, cb, a, c, b));
+    expect_eq_named("shared-right ntt first", ab, mul_basic(a, b));
+    expect_eq_named("shared-right ntt second", cb, mul_basic(c, b));
+}
+static void test_mul_low_zero_limbs(){
+    precn_t a = pattern(260, 701);
+    precn_t b = pattern(230, 709);
+    precn_t shifted_a = a << (37 * 64);
+    precn_t shifted_b = b << (23 * 64);
+
+    expect_eq_named("low-zero mul", shifted_a * shifted_b,
+                    (a * b) << (60 * 64));
+    expect_eq_named("low-zero square", precn_sqr(shifted_a),
+                    precn_sqr(a) << (74 * 64));
+}
+
+static void test_mul_high(){
+    const size_t cases[][3] = {
+        {1025, 2051, 2050},
+        {2049, 4099, 4098},
+        {4097, 8195, 8194},
+        {257, 901, 700},
+        {901, 257, 700},
+        {700, 700, 417},
+        {700, 700, 1000},
+        {901, 700, 1100},
+        {700, 901, 1100},
+    };
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i){
+        precn_t a = pattern(cases[i][0], (uint64_t)(1301 + i));
+        precn_t b = pattern(cases[i][1], (uint64_t)(1701 + i));
+        precn_t reference = (a * b) >> (cases[i][2] * 64);
+        expect_eq(mul_high(a, b, cases[i][2]), reference);
+    }
 }
 
 static void test_divexact(){
@@ -230,12 +289,31 @@ static void test_division(){
     expect(precn_t(9) % precn_t(9), {});
     expect(precn_t(9) / precn_t(), {});
     expect(precn_t(9) % precn_t(), {});
+    precn_t power_dividend = pattern(17, 493);
+    expect_eq(div_u64(power_dividend, 1), power_dividend);
+    expect_eq(div_u64(power_dividend, 8), power_dividend >> 3);
+    expect_eq(mod_u64(power_dividend, 8), precn_t(power_dividend.a[0] & 7));
     precn_t into_q;
     precn_t into_r;
     div_into(into_q, make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), make_prec({2}));
     mod_into(into_r, make_prec({0xFFFFFFFFu, 0xFFFFFFFFu}), make_prec({2}));
     expect(into_q, {0xFFFFFFFFu, 0x7FFFFFFFu});
     expect(into_r, {1});
+    into_q = power_dividend;
+    div_into(into_q, into_q, precn_t(8));
+    expect_eq(into_q, power_dividend >> 3);
+    into_r = power_dividend;
+    mod_into(into_r, into_r, precn_t(8));
+    expect_eq(into_r, precn_t(power_dividend.a[0] & 7));
+
+    precn_t fixed_dividend = pattern(257, 497);
+    precn_t fixed_expected = div_u64(fixed_dividend, 10000000000ULL);
+    precn_t fixed_quotient;
+    precn_div_1e10_into(fixed_quotient, fixed_dividend);
+    expect_eq(fixed_quotient, fixed_expected);
+    fixed_quotient = fixed_dividend;
+    precn_div_1e10_into(fixed_quotient, fixed_quotient);
+    expect_eq(fixed_quotient, fixed_expected);
 
     precn_t q1 = pattern(7, 501);
     precn_t d1 = make_prec({0x89ABCDEFu, 1u});
@@ -275,6 +353,30 @@ static void test_division(){
     precn_t large_b = pattern(40, 821);
     expect_eq(precn_reciprocal_newton(large_b, 4096), power_of_two(4096) / large_b);
     expect_eq(div_mulinv(large_a, large_b), large_a / large_b);
+
+    precn_t pair_d = pattern(128, 831);
+    precn_t pair_qa = pattern(220, 839);
+    precn_t pair_qc = pattern(173, 853);
+    precn_t got_qa, got_qc;
+    div_mulinv_pair_into(got_qa, got_qc,
+                         pair_d * pair_qa, pair_d * pair_qc, pair_d);
+    expect_eq(got_qa, pair_qa);
+    expect_eq(got_qc, pair_qc);
+
+    // Exercise the blocked long-quotient path just above the DC threshold.
+    precn_t block_d = pattern(257, 901);
+    const size_t quotient_sizes[] = {514, 771};
+    for(size_t i = 0; i < 2; ++i){
+        precn_t block_q = pattern(quotient_sizes[i], 911 + i);
+        precn_t block_r = block_d - precn_t(1);
+        precn_t block_a = block_d * block_q + block_r;
+        precn_t got_q, got_r;
+        divmod_into(got_q, got_r, block_a, block_d);
+        expect_eq(got_q, block_q);
+        expect_eq(got_r, block_r);
+        expect_eq(block_a / block_d, block_q);
+        expect_eq(block_a % block_d, block_r);
+    }
 }
 
 static void test_gcd(){
@@ -558,10 +660,13 @@ static void expect_all_mul_eq(size_t an, size_t bn, uint32_t seed){
     expect_eq_named("toom33", mul_toom33(a, b), ref);
     expect_eq_named("fft", mul_fft(a, b), ref);
     expect_eq_named("ntt", mul_ntt(a, b), ref);
+    expect_eq_named("vst", mul_vst(a, b), ref);
     if(an + bn <= 1024) expect_eq_named("ssa", mul_ssa(a, b), ref);
 }
 
 static void test_mul_algorithms(){
+    expect_eq_named("one-limb vst", mul_vst(precn_t(7), precn_t(11)),
+                    precn_t(77));
     precn_t small_a = pattern(10, 11);
     precn_t small_b = pattern(9, 19);
     precn_t large_a = pattern(36, 23);
@@ -580,6 +685,8 @@ static void test_mul_algorithms(){
     expect_eq_named("direct wide fft", mul_fft(large_a, wide_b), large_a * wide_b);
     expect_eq_named("direct ntt", mul_ntt(large_a, large_b), large_a * large_b);
     expect_eq_named("direct wide ntt", mul_ntt(large_a, wide_b), large_a * wide_b);
+    expect_eq_named("direct vst", mul_vst(large_a, large_b), large_a * large_b);
+    expect_eq_named("direct wide vst", mul_vst(large_a, wide_b), large_a * wide_b);
     expect_eq_named("direct ssa", mul_ssa(large_a, large_b), large_a * large_b);
     expect_eq_named("direct wide ssa", mul_ssa(large_a, wide_b), large_a * wide_b);
 
@@ -593,6 +700,60 @@ static void test_mul_algorithms(){
         expect_all_mul_eq(n, n * 2, (uint32_t)(3300 + i));
         expect_all_mul_eq(n, n * 3, (uint32_t)(3400 + i));
     }
+
+    const size_t karatsuba_edges[][2] = {
+        {33, 33}, {47, 48}, {63, 64}, {64, 65}, {95, 127},
+        {127, 128}, {128, 129}, {128, 256}, {191, 192},
+        {193, 257}, {256, 320}, {256, 384}
+    };
+    for(size_t i = 0;
+        i < sizeof(karatsuba_edges) / sizeof(karatsuba_edges[0]); ++i){
+        precn_t a = pattern(karatsuba_edges[i][0], (uint32_t)(4100 + i));
+        precn_t b = pattern(karatsuba_edges[i][1], (uint32_t)(4200 + i));
+        expect_eq_named("karatsuba edge", mul_karatsuba(a, b),
+                        mul_basic(a, b));
+    }
+    precn_t karatsuba_carry_a = pattern(129, 4301);
+    precn_t karatsuba_carry_b = pattern(193, 4303);
+    for(size_t i = 0; i < karatsuba_carry_a.rsiz; ++i)
+        karatsuba_carry_a.a[i] = UINT64_MAX;
+    for(size_t i = 0; i < karatsuba_carry_b.rsiz; ++i)
+        karatsuba_carry_b.a[i] = UINT64_MAX;
+    expect_eq_named("karatsuba carry",
+                    mul_karatsuba(karatsuba_carry_a, karatsuba_carry_b),
+                    mul_basic(karatsuba_carry_a, karatsuba_carry_b));
+    precn_t karatsuba_expected = mul_basic(karatsuba_carry_a,
+                                           karatsuba_carry_b);
+    precn_t karatsuba_reused;
+    mul_into(karatsuba_reused, karatsuba_carry_a, karatsuba_carry_b);
+    expect_eq_named("karatsuba into", karatsuba_reused,
+                    karatsuba_expected);
+    mul_into(karatsuba_reused, karatsuba_carry_b, karatsuba_carry_a);
+    expect_eq_named("karatsuba into reused", karatsuba_reused,
+                    karatsuba_expected);
+    precn_t karatsuba_alias_left = karatsuba_carry_a;
+    mul_into(karatsuba_alias_left, karatsuba_alias_left,
+             karatsuba_carry_b);
+    expect_eq_named("karatsuba into left alias", karatsuba_alias_left,
+                    karatsuba_expected);
+    precn_t karatsuba_alias_right = karatsuba_carry_b;
+    mul_into(karatsuba_alias_right, karatsuba_carry_a,
+             karatsuba_alias_right);
+    expect_eq_named("karatsuba into right alias", karatsuba_alias_right,
+                    karatsuba_expected);
+
+    precn_t vst_carry = pattern(513, 4401);
+    for(size_t i = 0; i < vst_carry.rsiz; ++i) vst_carry.a[i] = UINT64_MAX;
+    expect_eq_named("vst carry square", mul_vst(vst_carry, vst_carry),
+                    mul_ntt(vst_carry, vst_carry));
+
+    // This exceeds the old two-prime 16-bit range.  The larger packed primes
+    // must keep it exact without doubling the transform through 15-bit digits.
+    precn_t vst_large_mod_a = pattern(45000, 4409);
+    precn_t vst_large_mod_b = pattern(45000, 4421);
+    expect_eq_named("vst large packed primes",
+                    mul_vst(vst_large_mod_a, vst_large_mod_b),
+                    mul_ntt(vst_large_mod_a, vst_large_mod_b));
 
 }
 
@@ -784,9 +945,12 @@ int main(int argc, char **argv){
     test_add_sub();
     test_mul_u32();
     test_mul_basic();
+    test_mul_ntt_shared_right();
     test_divexact();
     test_division();
     test_gcd();
+    test_mul_low_zero_limbs();
+    test_mul_high();
     test_sqrt_large();
     test_signed();
     test_rational();

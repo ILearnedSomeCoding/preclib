@@ -12,6 +12,10 @@ precz_t::precz_t(const precn_t &mag) : mag_(mag), neg_(false){}
 
 precz_t::precz_t(precn_t &&mag) : mag_(std::move(mag)), neg_(false){}
 
+precz_t precz_t::from_magnitude(precn_t mag, bool negative){
+    return precz_t(std::move(mag), negative);
+}
+
 precz_t::precz_t(std::string val) : mag_(val), neg_(false){
     size_t p = 0;
     while(p < val.size() && (val[p] == ' ' || val[p] == '\t' ||
