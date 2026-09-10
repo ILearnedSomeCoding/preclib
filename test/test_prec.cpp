@@ -220,6 +220,7 @@ static void test_mul_ntt_shared_right(){
     assert(mul_ntt_pair_shared_right_into(ab, cb, a, c, b));
     expect_eq_named("shared-right ntt first", ab, mul_basic(a, b));
     expect_eq_named("shared-right ntt second", cb, mul_basic(c, b));
+
 }
 static void test_mul_low_zero_limbs(){
     precn_t a = pattern(260, 701);

@@ -1,5 +1,18 @@
 #include"../prec.hpp"
 
+// VST is substantially faster than the integer NTT on AVX2 machines.  The
+// high-product wrapper still removes low operand prefixes first, then shifts
+// the exact VST product to the requested window.  Keep this switch available
+// for scalar builds and backend comparisons.
+#ifndef MUL_HIGH_USE_VST
+#if (defined(__AVX2__) || defined(_M_AVX2)) && \
+    !(defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD)
+#define MUL_HIGH_USE_VST 1
+#else
+#define MUL_HIGH_USE_VST 0
+#endif
+#endif
+
 #include<map>
 #include<memory>
 #include<mutex>
@@ -2095,10 +2108,22 @@ precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs){
             --cut_y;
             precn_t high_x = *x >> (cut_x * 64);
             precn_t high_y = *y >> (cut_y * 64);
+#if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
+            return mul_vst(high_x, high_y) >> ((result_limbs + 2) * 64);
+#else
             return mul_ntt_impl(high_x, high_y, (result_limbs + 2) * 4);
+#endif
         }
         precn_t high_x = *x >> (cut_x * 64);
+#if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
+        return mul_vst(high_x, *y) >> (y->rsiz * 64);
+#else
         return mul_ntt_impl(high_x, *y, y->rsiz * 4);
+#endif
     }
+#if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
+    return mul_vst(a, b) >> (drop_limbs * 64);
+#else
     return mul_ntt_impl(a, b, drop_limbs * 4);
+#endif
 }
