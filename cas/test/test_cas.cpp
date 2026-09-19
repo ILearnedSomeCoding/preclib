@@ -10,14 +10,14 @@
 int main(){
     exact_context context;
 
-    exact_value exact_third(precq_t(precn_t(1), precn_t(3)));
-    exact_value approximate_third(exact_third.to_number(256));
+    numeric_value exact_third(precq_t(precn_t(1), precn_t(3)));
+    numeric_value approximate_third(exact_third.to_number(256));
     assert(approximate_third.is_approximate());
     assert(!exact_third.is_approximate());
-    exact_value mixed = approximate_third + exact_value(2);
+    numeric_value mixed = approximate_third + numeric_value(2);
     assert(mixed.is_approximate());
     Number expected_mixed =
-        exact_value(precq_t(precn_t(7), precn_t(3))).to_number(256);
+        numeric_value(precq_t(precn_t(7), precn_t(3))).to_number(256);
     Number mixed_error = mixed.number() - expected_mixed;
     Number mixed_tolerance = Number::from_raw(precz_t(1), 2, 256);
     assert(abs(mixed_error) < mixed_tolerance);
@@ -32,9 +32,9 @@ int main(){
     approximate_one.set_precision(256);
     approximate_zero.set_precision(256);
     exact_expr approximate_one_node =
-        context.value(exact_value(std::move(approximate_one)));
+        context.value(numeric_value(std::move(approximate_one)));
     exact_expr approximate_zero_node =
-        context.value(exact_value(std::move(approximate_zero)));
+        context.value(numeric_value(std::move(approximate_zero)));
     exact_expr approximate_pi = context.multiply({approximate_one_node,
                                                    context.pi()});
     assert(approximate_pi.is_value());
@@ -69,7 +69,7 @@ int main(){
 
     Number approximate_nine(9);
     approximate_nine.set_precision(256);
-    exact_expr approximate_root = sqrt(context.value(exact_value(approximate_nine)));
+    exact_expr approximate_root = sqrt(context.value(numeric_value(approximate_nine)));
     assert(approximate_root.is_value());
     assert(approximate_root.value().is_approximate());
     assert(approximate_root.value().number() == Number(3));
@@ -77,7 +77,7 @@ int main(){
     approximate_minus_one.set_precision(256);
     bool approximate_negative_sqrt = false;
     try{
-        (void)sqrt(context.value(exact_value(
+        (void)sqrt(context.value(numeric_value(
             std::move(approximate_minus_one))));
     }catch(const std::domain_error &error){
         approximate_negative_sqrt =
@@ -85,9 +85,9 @@ int main(){
     }
     assert(approximate_negative_sqrt);
     Number approximate_half =
-        exact_value(precq_t(precn_t(1), precn_t(2))).to_number(256);
+        numeric_value(precq_t(precn_t(1), precn_t(2))).to_number(256);
     exact_expr approximate_power = context.power(
-        context.integer(9), context.value(exact_value(approximate_half)));
+        context.integer(9), context.value(numeric_value(approximate_half)));
     assert(approximate_power.is_value());
     assert(approximate_power.value().is_approximate());
     assert(abs(approximate_power.value().number() - Number(3)) < mixed_tolerance);
@@ -103,8 +103,8 @@ int main(){
     approximate_ten.set_precision(1000);
     approximate_fifty_half.set_precision(1000);
     exact_expr delayed_power = context.power(
-        context.value(exact_value(std::move(approximate_ten))),
-        context.value(exact_value(std::move(approximate_fifty_half))));
+        context.value(numeric_value(std::move(approximate_ten))),
+        context.value(numeric_value(std::move(approximate_fifty_half))));
     assert(delayed_power.operation() == exact_opcode::power);
     exact_expr squared_delayed_power = context.power(delayed_power, two_a);
     assert(squared_delayed_power.is_value());
@@ -115,7 +115,7 @@ int main(){
     exact_expr three = context.integer(3);
     exact_expr folded = context.add({one, two_a, three});
     assert(folded.is_value());
-    assert(folded.value() == exact_value(6));
+    assert(folded.value() == numeric_value(6));
 
     exact_expr pi_constant = context.pi();
     exact_expr e_constant = context.e();
@@ -153,7 +153,7 @@ int main(){
     Number approximate_two(2.0);
     approximate_two.set_precision(256);
     exact_expr approximate_half_pi = context.divide(
-        pi_constant, context.value(exact_value(std::move(approximate_two))));
+        pi_constant, context.value(numeric_value(std::move(approximate_two))));
     bool approximate_tan_pole = false;
     try{
         (void)tan(approximate_half_pi);
@@ -193,6 +193,68 @@ int main(){
     assert(factored_common.operation() == exact_opcode::multiply);
     assert(context.expand(factored_common) ==
            context.integer(2) * x + context.integer(2) * y);
+    exact_expr xy_content = context.expand((x + one) * (y + one));
+    exact_expr xy_factored = context.factor(xy_content);
+    assert(xy_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(xy_factored) == xy_content);
+    exact_expr rational_content = context.expand(
+        (x + context.divide(one, context.integer(2))) * (y + one));
+    exact_expr rational_factored = context.factor(rational_content);
+    assert(rational_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(rational_factored) == rational_content);
+    exact_expr content_z = context.symbol("z");
+    exact_expr xyz_content = context.expand((x + one) * (y + content_z));
+    exact_expr xyz_factored = context.factor(xyz_content);
+    assert(xyz_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(xyz_factored) == xyz_content);
+    exact_expr symmetric_linear = x + y + one;
+    exact_expr symmetric_square = context.expand(
+        context.power(symmetric_linear, context.integer(2)));
+    exact_expr symmetric_square_factored = context.factor(symmetric_square);
+    assert(symmetric_square_factored.operation() != exact_opcode::add);
+    assert(context.expand(symmetric_square_factored) == symmetric_square);
+    exact_expr two_linear_factors = context.expand(
+        symmetric_linear * (x + context.integer(2) * y + context.integer(2)));
+    exact_expr two_linear_factored = context.factor(two_linear_factors);
+    assert(two_linear_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(two_linear_factored) == two_linear_factors);
+    exact_expr cyclic_cubic = context.expand(
+        context.power(x, context.integer(3)) +
+        context.power(y, context.integer(3)) +
+        context.power(content_z, context.integer(3)) -
+        context.integer(3) * x * y * content_z);
+    exact_expr cyclic_factored = context.factor(cyclic_cubic);
+    assert(cyclic_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(cyclic_factored) == cyclic_cubic);
+    exact_expr nonlinear_base = x * y + one;
+    exact_expr nonlinear_cube = context.expand(
+        context.power(nonlinear_base, context.integer(3)));
+    exact_expr nonlinear_cube_factored = context.factor(nonlinear_cube);
+    assert(nonlinear_cube_factored.operation() != exact_opcode::add);
+    assert(context.expand(nonlinear_cube_factored) == nonlinear_cube);
+    exact_expr repeated_quadratic_base = context.power(x, context.integer(2)) +
+        context.power(y, context.integer(2)) + one;
+    exact_expr multivariate_repeated_quadratic = context.expand(
+        context.power(repeated_quadratic_base, context.integer(2)));
+    exact_expr repeated_quadratic_factored = context.factor(
+        multivariate_repeated_quadratic);
+    assert(repeated_quadratic_factored.operation() != exact_opcode::add);
+    assert(context.expand(repeated_quadratic_factored) ==
+           multivariate_repeated_quadratic);
+    exact_expr bilinear_product = context.expand(
+        (x * y + one) * (x * y + x + context.integer(2)));
+    exact_expr bilinear_factored = context.factor(bilinear_product);
+    assert(bilinear_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(bilinear_factored) == bilinear_product);
+    exact_expr quadratic_a = context.power(x, context.integer(2)) +
+        context.power(y, context.integer(2)) + one;
+    exact_expr quadratic_b = context.power(x, context.integer(2)) +
+        context.integer(2) * context.power(y, context.integer(2)) +
+        context.integer(3);
+    exact_expr quadratic_product = context.expand(quadratic_a * quadratic_b);
+    exact_expr quadratic_factored = context.factor(quadratic_product);
+    assert(quadratic_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(quadratic_factored) == quadratic_product);
     assert(context.gcd(context.integer(48), context.integer(-18)) ==
            context.integer(6));
     assert(context.factor_integer(context.integer(360)).to_string() ==
@@ -202,11 +264,11 @@ int main(){
     assert(context.factor_integer(context.integer(1)).to_string() == "{}");
     assert(context.factor_integer(context.integer(UINT64_C(1000036000099)))
                .to_string() == "{1000003, 1000033}");
-    assert(context.factor_integer(context.value(exact_value(
+    assert(context.factor_integer(context.value(numeric_value(
                precz_t("18446799413941772685654671")))).to_string() ==
            "{1000003, 18446744073709551557}");
     precn_t fermat_eight = (precn_t(1) << 256) + 1;
-    assert(context.factor_integer(context.value(exact_value(
+    assert(context.factor_integer(context.value(numeric_value(
                precz_t(fermat_eight)))).to_string() ==
            "{1238926361552897, "
            "93461639715357977769163558199606896584051237541638188580280321}");
@@ -363,7 +425,7 @@ int main(){
     Number approximate_complex_one(1);
     approximate_complex_one.set_precision(256);
     exact_expr approximate_i = context.multiply({imaginary,
-        context.value(exact_value(std::move(approximate_complex_one)))});
+        context.value(numeric_value(std::move(approximate_complex_one)))});
     exact_expr log_i = context.natural_logarithm(approximate_i);
     assert(log_i.to_string().find("ln") == std::string::npos);
     assert(log_i.to_string().find("i") != std::string::npos);
@@ -456,7 +518,7 @@ int main(){
     Number approximate_system_constant(2.0);
     approximate_system_constant.set_precision(256);
     exact_expr approximate_system = context.solve(
-        {x + system_y - context.value(exact_value(approximate_system_constant)),
+        {x + system_y - context.value(numeric_value(approximate_system_constant)),
          x - system_y}, {x, system_y}, 256);
     assert(approximate_system.to_string() ==
            "{{x -> 1, system_y -> 1}}");
@@ -478,7 +540,7 @@ int main(){
     bool approximate_exact_solve = false;
     try{
         (void)context.exact_solve(
-            context.value(exact_value(std::move(approximate_coefficient))) * x - one,
+            context.value(numeric_value(std::move(approximate_coefficient))) * x - one,
             {x});
     }catch(const std::invalid_argument &){ approximate_exact_solve = true; }
     assert(approximate_exact_solve);
@@ -1162,7 +1224,7 @@ int main(){
         rationalized_four, four_root_denominator})) == one);
     Number approximate_eleven(11.0);
     exact_expr approximate_root_eleven = context.square_root(
-        context.value(exact_value(std::move(approximate_eleven))));
+        context.value(numeric_value(std::move(approximate_eleven))));
     exact_expr approximate_denominator = context.add({
         rational_root_two, root_three, approximate_root_eleven});
     assert(approximate_denominator.is_value());
@@ -1180,9 +1242,9 @@ int main(){
                           context.power(x, context.integer(3))}),
         one});
     assert(signed_polynomial.to_string() == "x^5 - x^3 + 1");
-    assert(exact_value(7) - exact_value(10) == exact_value(-3));
-    assert(exact_value(3) / exact_value(4) ==
-           exact_value(precq_t(precn_t(3), precn_t(4))));
+    assert(numeric_value(7) - numeric_value(10) == numeric_value(-3));
+    assert(numeric_value(3) / numeric_value(4) ==
+           numeric_value(precq_t(precn_t(3), precn_t(4))));
     assert(sqrt(context.integer(144)) == context.integer(12));
     assert(sqrt(context.rational(precq_t(precn_t(1), precn_t(6)))) ==
            context.rational(precq_t(precn_t(1), precn_t(6))) *
@@ -1373,7 +1435,7 @@ int main(){
     exact_add_builder builder = bulk_context.make_add_builder();
     for(uint64_t i = 1; i <= 10000000; ++i) builder.add_integer(i);
     exact_expr bulk_total = builder.finish();
-    assert(bulk_total.value() == exact_value(UINT64_C(50000005000000)));
+    assert(bulk_total.value() == numeric_value(UINT64_C(50000005000000)));
     assert(bulk_context.node_count() == 1);
     assert(bulk_context.operand_id_count() == 0);
 
@@ -1382,7 +1444,7 @@ int main(){
     exact_expr ten_million_sum = sum_context.bounded_sum(
         i, sum_context.integer(1), sum_context.integer(10000000), i);
     assert(ten_million_sum.is_value());
-    assert(ten_million_sum.value() == exact_value(UINT64_C(50000005000000)));
+    assert(ten_million_sum.value() == numeric_value(UINT64_C(50000005000000)));
     assert(sum_context.node_count() == 4);
 
     exact_expr symbolic_sum = sum_context.bounded_sum(

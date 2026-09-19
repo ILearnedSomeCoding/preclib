@@ -1,395 +1,93 @@
 # preclib
 
-`preclib` is an experimental C++17 arbitrary-precision integer library. It
-stores magnitudes as little-endian arrays of 64-bit limbs and selects different
-multiplication and division algorithms according to operand size.
+`preclib` 是一个实验性的 C++17 高精度计算库。整数采用小端序的 64 位 limb；乘法和除法会根据操作数规模选择不同算法。仓库还包含 π 计算程序、交互式计算器、符号计算（CAS）以及测试和基准程序。
 
-It provides these number types:
+本项目主要用于研究、验证和比较高精度算法，API 与 ABI 尚不稳定，不建议直接替代经过长期检验的 GMP。
 
-- `precn_t`: an arbitrary-precision unsigned integer
-- `precz_t`: an arbitrary-precision signed integer built from a private
-  `precn_t` magnitude and a sign
-- `precf_t`: a signed fixed-point number backed by `precz_t`
-- `Number` (in `prec_num.hpp`): a precision-tagged binary floating-point
-  number backed by `precz_t`
-- `precq_t`: a reduced arbitrary-precision rational built from two private
-  `precn_t` values and a sign
+## 数值类型
 
-We suggest you to use `precz_t` for integers and `Number` for non-integers.
+| 类型 | 头文件 | 用途 |
+| --- | --- | --- |
+| `precn_t` | `prec.hpp` | 非负任意精度整数 |
+| `precz_t` | `prec.hpp` | 有符号任意精度整数 |
+| `precq_t` | `prec.hpp` | 自动约分的有理数 |
+| `precf_t` | `prec.hpp` | 使用全局二进制精度的定点数 |
+| `Number` | `prec_num.hpp` | 各对象独立记录精度的二进制浮点数 |
 
-The repository also includes a Chudnovsky/binary-splitting program that uses
-the library to calculate large numbers of digits of pi.
+一般整数运算建议使用 `precz_t`，非整数近似计算建议使用 `Number`。`precn_t` 的值为 `a[0] + a[1] * 2^64 + ...`，其中 `rsiz` 是有效 limb 数，零的 `rsiz` 为 0。`precz_t` 使用符号加绝对值表示；有符号除法向零截断，余数符号跟随被除数。
 
-## Features
+`precq_t` 保存最简分数，乘除时会先交叉约分。`precf_t` 构造时会保存当前 `precf_digit` 的精度，不同精度的对象混合运算会中止。`Number` 的精度属于对象自身，混合运算不会要求全局精度相同；详细语义见 [NUMBER.md](NUMBER.md)。
 
-- Construction from integral values and decimal strings
-- Conversion to decimal and other bases
-- Addition and unsigned subtraction
-- Multiplication, division, and remainder
-- Comparisons, bit shifts, and bitwise operations
-- Greatest common divisor and integer square root
-- Specialized multiplication implementations:
-  - Schoolbook
-  - Karatsuba
-  - Toom-Cook
-  - FFT
-  - NTT
-  - Schönhage-Strassen-style Fermat-ring multiplication
-- Schoolbook, divide-and-conquer, and Newton reciprocal division
+## 快速开始
 
-## Representation
+从仓库根目录编译自己的程序，直接链接 `src` 中的实现：
 
-The main type is `precn_t`, declared in [`prec.hpp`](prec.hpp):
-
-```cpp
-struct precn_t {
-    size_t asiz; // allocated limb count
-    size_t rsiz; // significant limb count
-    uint64_t *a; // little-endian limbs
-};
+```powershell
+clang++ -O3 -mavx2 -std=c++17 example.cpp src\*.cpp -o example.exe
 ```
 
-An integer is represented as:
-
-```text
-a[0] + a[1] * 2^64 + a[2] * 2^128 + ...
-```
-
-Zero has `rsiz == 0`. The implementation owns its limb allocation and provides
-copy and move operations.
-
-`precz_t` uses sign-and-magnitude internally. Its sign is private, and every
-result is normalized so zero is always positive; `-0` cannot be produced
-through its public API. Signed division truncates toward zero and the remainder
-has the dividend's sign, matching C++ integer division.
-
-### Signed division semantics
-
-`precz_t` division and remainder follow the C++ rules for nonzero divisors:
-
-| Expression | Result |
-| --- | ---: |
-| `7 / 3` | `2` |
-| `-7 / 3` | `-2` |
-| `7 / -3` | `-2` |
-| `-7 / -3` | `2` |
-| `7 % 3` | `1` |
-| `-7 % 3` | `-1` |
-| `7 % -3` | `1` |
-| `-7 % -3` | `-1` |
-
-For every nonzero `b`:
-
-```text
-a == (a / b) * b + (a % b)
-abs(a % b) < abs(b)
-```
-
-The quotient truncates toward zero. A nonzero remainder has the dividend's
-sign; an exact remainder is canonical positive zero. These rules are tested
-against native signed integer division over all sign combinations.
-
-### Rational representation
-
-`precq_t` represents a rational as a nonnegative numerator, a positive
-denominator, and a private sign. Every public constructor and arithmetic
-operation enforces:
-
-```text
-gcd(numerator, denominator) == 1
-denominator > 0
-zero == +0/1
-```
-
-Construction, addition, subtraction, multiplication, and division all reduce
-their results. Multiplication and division cross-cancel factors before forming
-large intermediate products. A zero denominator and division by a zero
-rational call `abort`, because neither operation has a valid rational result.
-
-## Example
+仅在 CPU 支持 AVX2 时使用 `-mavx2`；不支持时去掉该参数。当前没有统一的库安装步骤。
 
 ```cpp
 #include "prec.hpp"
-
 #include <iostream>
 #include <string>
 
-int main() {
-    precn_t a(std::string("123456789012345678901234567890"));
-    precn_t b(std::string("98765432109876543210"));
-
-    precn_t product = a * b;
-    precn_t quotient = a / b;
-    precn_t remainder = a % b;
-
-    std::cout << static_cast<std::string>(product) << '\n';
-    std::cout << static_cast<std::string>(quotient) << '\n';
-    std::cout << static_cast<std::string>(remainder) << '\n';
+int main(){
+    precz_t a(std::string("123456789012345678901234567890"));
+    precz_t b(-42);
+    std::cout << std::string(a * b) << '\n';
 }
 ```
 
-Signed values use the same operators:
+`precn_t` 是无符号类型，做有符号计算请用 `precz_t`。`precn_t` 若减去比自身更大的数会得到零。当前整数除零也返回零；不要将此行为当作数学上有效的结果。构造非法有理数（例如分母为零）会中止程序。
 
-```cpp
-precz_t x(std::string("-12345678901234567890"));
-precz_t y(42);
-precz_t z = x * y + 7;
+## 算法概览
 
-std::cout << static_cast<std::string>(z) << '\n';
-```
+- 乘法包含单 limb、学校式、Karatsuba、Toom-Cook、FFT、浮点模变换 VST 和整数 NTT；另有实验性的 Fermat 环/SSA 接口。
+- 默认乘法按操作数长度和比例分派。AVX2 构建在大乘法区间优先使用 VST，超出其变换长度限制时回退到 NTT。中间区间可由 FFT 或 Toom-Cook 处理，特别不平衡的输入会分块。
+- VST 的设计思想借鉴自 y-cruncher；算法流程、来源和正确性边界见 [VST.md](VST.md)。
+- 平方有单独的学校式实现。`mul_high()` 支持高位乘积计算：先裁去不会影响结果的低位输入，再提取所需高位。
+- 除法包含单 limb、学校式、分治及倒数乘法路径；实际分派还取决于除数和商的长度。
+- 提供比较、位移、GCD、整数平方根及进制转换。
 
-Fixed-point values store a snapshot of the global binary precision
-`precf_digit`. Changing the global affects newly constructed values but does
-not reinterpret existing ones. Arithmetic, comparison, or assignment between
-different stored precisions aborts:
+分派阈值是实验参数，具体以 [src/mul_basic.cpp](src/mul_basic.cpp) 和 [src/div_basic.cpp](src/div_basic.cpp) 为准；不同 CPU 上的最佳阈值可能不同。
 
-```cpp
-precf_digit = 128;
-precf_t x(std::string("1.25"));
-precf_t y(2);
-precf_t z = x / y;
+## 计算 π
 
-std::cout << static_cast<std::string>(z) << '\n'; // 0.625
-```
-
-Multiplication and division truncate toward zero at the configured binary
-precision. Division by zero aborts.
-
-[`Number`](NUMBER.md) stores a signed significand, a radix point measured in
-64-bit limbs, and an independent precision for each object:
-
-```text
-value = significand * 2^(-64 * radix_point)
-```
-
-Finite precisions retain two guard limbs and discard lower limbs during
-normalization. Exact integers use infinite precision. Mixed-precision
-arithmetic propagates the lower operand accuracy instead of aborting. Include
-`prec_num.hpp` to use this type. Division by zero and square root of a negative
-number abort; NaN and infinity are not represented.
-
-The signed API includes arithmetic, division and remainder, comparisons,
-shifts, increment/decrement, `abs`, `gcd`, and `precz_sqrt`. Right shift acts
-on the magnitude and therefore truncates negative values toward zero.
-
-Rational values may be constructed from integers, signed integers, numerator
-and denominator magnitudes, or strings:
-
-```cpp
-precq_t a(std::string("-6/8")); // normalized to -3/4
-precq_t b(precn_t(5), precn_t(6));
-precq_t c = a + b;              // 1/12
-
-std::cout << static_cast<std::string>(c) << '\n';
-```
-
-Rational string conversion always includes the denominator, including for
-integers and zero (`"3/1"` and `"0/1"`). The signed rational API includes
-arithmetic, comparisons, compound assignment, `abs`, and `reciprocal`.
-
-Build it from the repository root by compiling the program together with all
-library source files:
-
-```bash
-clang++ -O3 -std=c++17 example.cpp src/*.cpp -o example
-```
-
-There is currently no separate library build system or installation step.
-
-## Multiplication dispatch
-
-`operator*` automatically chooses an implementation. The current dispatcher
-uses approximately the following policy, measured in 64-bit limbs:
-
-| Operand shape or size | Implementation |
-| --- | --- |
-| One-limb operand | Scalar multiplication |
-| Up to 24 limbs | Schoolbook |
-| 25-192 limbs | Karatsuba |
-| 193-4096 limbs | FFT |
-| More than 4096 limbs with AVX2 | NTT |
-| More than 2:1 imbalance | Blocked multiplication |
-
-Dedicated Toom-Cook and SSA entry points are available for testing and
-experimentation but are not selected by the default dispatcher.
-
-## Division dispatch
-
-Division includes:
-
-- A single-limb `128 / 64 -> 64` loop
-- Normalized schoolbook long division
-- Divide-and-conquer division starting at 256 divisor limbs
-- Newton reciprocal division starting at 32768 divisor limbs when the
-  divide-and-conquer path is not used
-
-On x86-64 Clang builds, single-limb division uses the hardware `divq`
-instruction. Each call maintains `high_limb < divisor`, which guarantees that
-the quotient fits in one `uint64_t`.
-
-## Building the pi example
-
-### Portable build
-
-```bash
-clang++ -O3 -std=c++17 pi/pi_chudnovsky.cpp src/*.cpp \
-  -o pi/pi_chudnovsky
-```
-
-### Intel macOS with AVX2
-
-```bash
-clang++ -O3 -mavx2 -std=c++17 pi/pi_chudnovsky.cpp src/*.cpp \
-  -o pi/pi_chudnovsky
-```
-
-Only use `-mavx2` on a CPU that supports AVX2. The FFT and NTT implementations
-contain explicit AVX2 paths. FMA is not required.
-
-### Windows with Clang
+[pi/pi_chudnovsky.cpp](pi/pi_chudnovsky.cpp) 使用 Chudnovsky 级数与二分拆分。Windows 下构建及运行：
 
 ```powershell
 clang++ -O3 -mavx2 -std=c++17 pi\pi_chudnovsky.cpp src\*.cpp -o pi\pi_chudnovsky.exe
+.\pi\pi_chudnovsky.exe 1000000 --phases --bs-threads 9 --threads 2
 ```
 
-### Usage
+位置参数是小数点后的位数。长结果默认只显示开头和末尾；`--full` 打印完整结果，`--file PATH` 将完整结果写入文件，`--progress` 显示进度，`--phases` 显示二分拆分、开方、最终除法和十进制转换的耗时。`--bs-threads` 和 `--threads` 分别控制二分拆分 worker 与变换内部线程数。详细说明见 [pi/README.md](pi/README.md)。
 
-Calculate 1,000 digits after the decimal point:
+## 计算器与 CAS
 
-```bash
-./pi/pi_chudnovsky 1000
+`calculator/` 是基于 `Number` 的近似数值计算器；`cas/` 提供精确表达式、化简、求解、求导和积分等符号计算功能，`cas/html/` 包含 WebAssembly 网页版。具体支持范围和指令见 [计算器说明](cas/CALCULATOR.md)、[CAS 文档](cas/README.md) 及 [网页版说明](cas/html/README.md)。
+
+## 测试
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 test\test_prec.cpp src\*.cpp -o test\test_prec.exe
+.\test\test_prec.exe --checks-only
 ```
 
-Long results are abbreviated to their first and last ten digits by default.
-Use `--full` to print every digit:
+省略 `--checks-only` 会运行包含较大规模计时的完整测试。其他测试、FFT 压力测试、VST 基准和 GMP 对比的命令见 [test/README.md](test/README.md)。性能比较应使用同一台机器、相同输入形状和构建选项，并留意 CPU 频率与温度变化。
 
-```bash
-./pi/pi_chudnovsky 1000 --full
-```
+## 目录
 
-Write the full result to a file:
+| 路径 | 内容 |
+| --- | --- |
+| `prec.hpp`、`prec_num.hpp` | 主要数值类型与 API |
+| `src/` | 高精度运算实现 |
+| `pi/` | π 计算程序 |
+| `calculator/` | `Number` 交互式计算器 |
+| `cas/` | 符号计算器及网页版 |
+| `test/` | 正确性测试与基准 |
 
-```bash
-./pi/pi_chudnovsky 100000 --file pi100000.txt
-```
+## 许可证
 
-Show phase timings:
-
-```bash
-./pi/pi_chudnovsky 100000 --phases
-```
-
-The phases report time spent in binary splitting, scaled square root, final
-division, and decimal conversion.
-
-## Tests
-
-Build and run the main test suite:
-
-```bash
-clang++ -O3 -mavx2 -std=c++17 test/test_prec.cpp src/*.cpp \
-  -o test/test_prec
-./test/test_prec
-```
-
-The full suite includes large stress and timing cases and may take some time.
-For a shorter optimized-build check:
-
-```bash
-clang++ -O3 -mavx2 -std=c++17 test/test_opt_smoke.cpp src/*.cpp \
-  -o test/test_opt_smoke
-./test/test_opt_smoke
-```
-
-### FFT torture test
-
-The FFT torture test compares FFT multiplication against exact NTT
-multiplication on adversarial operand patterns:
-
-```bash
-clang++ -O3 -mavx2 -std=c++17 -DCOUNT_FFTS=1 \
-  test/fft_torture.cpp src/*.cpp -o test/fft_torture
-./test/fft_torture
-```
-
-It also reports the distance of reconstructed FFT values from their selected
-integers. That rounding statistic is a warning indicator, not an independent
-proof of correctness: after an error crosses a half-integer boundary, rounding
-may select the wrong integer while the measured distance becomes smaller
-again. The exact FFT-versus-NTT product comparison is the correctness check.
-
-An experimental fast-math build can be tested with:
-
-```bash
-clang++ -O3 -mavx2 -ffast-math -std=c++17 -DCOUNT_FFTS=1 \
-  test/fft_torture.cpp src/*.cpp -o test/fft_torture_fastmath
-```
-
-Do not assume `-ffast-math` is safe for every FFT size merely because the
-included torture cases pass.
-
-### GMP comparison
-
-When GMP is installed, build the comparison benchmark with the appropriate
-include and library paths for the local installation. For example, with an
-Intel Homebrew installation on macOS:
-
-```bash
-clang++ -O3 -mavx2 -std=c++17 test/bench_gmp.cpp src/*.cpp \
-  -I/usr/local/opt/gmp/include -L/usr/local/opt/gmp/lib -lgmp \
-  -o test/bench_gmp
-```
-
-Run multiplication and division comparisons through `2^N` limbs:
-
-```bash
-./test/bench_gmp 10
-```
-
-Run only the GCD comparison:
-
-```bash
-./test/bench_gmp 8 gcd
-```
-
-Each GCD result is checked against `mpz_gcd`. The reported ratio is preclib
-time divided by GMP time, so smaller is better.
-
-## API notes and limitations
-
-- `precn_t` is unsigned; negative integers are not supported.
-- Subtracting a larger value from a smaller value returns zero.
-- Division or remainder by zero currently returns positive zero for both
-  `precn_t` and `precz_t`. Unlike this library, division by zero in C and C++ is
-  undefined behavior.
-- `precq_t` instead rejects a zero denominator and division by zero with
-  `abort`, preserving its valid reduced-rational invariant.
-- Decimal string construction ignores non-decimal characters. For example,
-  `"12a34"` is parsed as `1234`.
-- The representation fields are public and memory is managed with
-  `malloc`/`realloc`/`free`.
-- The project currently has no stable ABI, namespace, package definition, or
-  installed-library target.
-- Thresholds are implementation constants tuned experimentally and may not be
-  optimal on every CPU.
-
-These properties make the project most suitable for numerical experiments,
-algorithm development, and benchmarking rather than as a hardened replacement
-for GMP or Boost.Multiprecision.
-
-## Repository layout
-
-```text
-prec.hpp          Public type and function declarations
-src/              Arithmetic implementations
-pi/               Chudnovsky pi calculator
-calculator/       Interactive expression calculator using Number
-test/             Correctness tests, torture tests, and benchmarks
-tools/            Helper scripts for generated numerical constants
-```
-
-## License
-
-Original prec-cpp contributions are available under the [MIT License](LICENSE).
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for upstream attribution
-and redistribution requirements.
+本项目原创部分采用 [MIT 许可证](LICENSE)。第三方来源和相关许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

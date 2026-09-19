@@ -106,9 +106,12 @@ precn_t::operator std::string() const{
 
 precn_t &precn_t::operator=(const precn_t &o){
     if(this == &o) return *this;
-    asiz = std::max<size_t>(o.rsiz, 1);
+    size_t needed = std::max<size_t>(o.rsiz, 1);
+    if(a == nullptr || asiz < needed){
+        a = (uint64_t*) realloc(a, needed * sizeof(uint64_t));
+        asiz = needed;
+    }
     rsiz = o.rsiz;
-    a = (uint64_t*) realloc(a, asiz * sizeof(uint64_t));
     if(rsiz) memcpy(a, o.a, rsiz * sizeof(uint64_t));
     else a[0] = 0;
     return *this;

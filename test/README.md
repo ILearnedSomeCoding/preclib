@@ -1,5 +1,41 @@
 # Tests
 
+Compare VST forward radix-4 butterflies with the original radix-2 stages:
+
+```powershell
+$sources = (Get-ChildItem src -Filter *.cpp | Where-Object Name -ne 'mul_vst.cpp').FullName
+clang++ -O3 -mavx2 -std=c++17 test\test_vst_forward.cpp $sources -o test\test_vst_forward.exe
+.\test\test_vst_forward.exe
+```
+
+This white-box test checks double and compact buffers, maximal residues,
+random residues, and zero padding. The double-buffer serial path uses radix-4
+from 65536 transform points; define `VST_DOUBLE_RADIX4=0` for the old path.
+The compact-buffer algorithm is unchanged. This test also compares inverse
+butterflies. Double-buffer inverse radix-4 remains an opt-in experiment
+(`VST_DOUBLE_INVERSE_RADIX4=1`) because full-product timings were inconsistent.
+
+Integer square root certifies a Newton result using the division remainder
+and a square of the smaller correction, avoiding another full-size square
+when the bound succeeds. Use `PRECN_SQRT_RESIDUAL_CERTIFY=0` for a baseline.
+`test_prec --checks-only` covers exact squares, neighboring squares, and
+interior values around the recursive seed threshold and at large sizes.
+
+Test the NTT convolution finish against an independent cyclic convolution:
+
+```powershell
+$sources = (Get-ChildItem src -Filter *.cpp | Where-Object Name -ne 'mul_ntt.cpp').FullName
+clang++ -O3 -mavx2 -std=c++17 test\test_ntt_finish.cpp $sources -o test\test_ntt_finish.exe
+.\test\test_ntt_finish.exe
+```
+
+This white-box test includes `mul_ntt.cpp` itself, so omit that file from the
+link inputs. It covers all five moduli, one-point and small transforms, squares,
+and repeated use of a transformed right operand. The normal convolution finish
+fuses pointwise multiplication with the first inverse butterfly, and combines
+inverse scaling with Montgomery output conversion. Ring transforms retain their
+Montgomery output for untwisting. Define `NTT_FUSED_FINISH=0` for an A/B baseline.
+
 Build and run:
 
 ```powershell
@@ -63,6 +99,20 @@ the large exact-transform backend. `mul_vst` handles transforms through 2^20
 points and falls back to `mul_ntt` above that limit. Define
 `MUL_DISPATCH_USE_VST=0` to retain the integer-NTT-only dispatcher for A/B
 testing.
+
+Compare serial VST dispatch near power-of-two transform boundaries:
+
+```powershell
+clang++ -O3 -mavx2 -std=c++17 -DMUL_DISPATCH_SPLIT_TAIL=1 test\bench_mul_boundary.cpp src\*.cpp -o test\bench_mul_boundary.exe
+.\test\bench_mul_boundary.exe
+```
+
+The benchmark alternates dispatch and whole VST on identical inputs and checks
+each product against NTT. The opt-in serial AVX2 path splits a short high tail
+when the total limb count is just over a transform boundary. It is disabled by
+default because whole-program pi timings did not consistently improve. Define
+`MUL_DISPATCH_SPLIT_TAIL=0` for an otherwise identical baseline. Use the same
+`=1` flag with `test_prec --checks-only` to exercise its boundary and alias tests.
 
 Build and run the non-AVX2 smoke and dispatch tests:
 

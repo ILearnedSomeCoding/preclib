@@ -32,11 +32,15 @@
 #endif
 
 #ifndef PI_FACTOR_CANCEL_MIN_LEVEL
-#define PI_FACTOR_CANCEL_MIN_LEVEL 5
+#define PI_FACTOR_CANCEL_MIN_LEVEL 4
 #endif
 
 #ifndef PI_FACTOR_PAIR_THRESHOLD
 #define PI_FACTOR_PAIR_THRESHOLD 2048
+#endif
+
+#ifndef PI_TRACE_T_SHAPES
+#define PI_TRACE_T_SHAPES 0
 #endif
 
 
@@ -167,6 +171,17 @@ static uint64_t steady_ms(){
 }
 
 static uint64_t process_cpu_ms(){
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    FILETIME created, exited, kernel, user;
+    if(GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)){
+        ULARGE_INTEGER kernel_ticks, user_ticks;
+        kernel_ticks.LowPart = kernel.dwLowDateTime;
+        kernel_ticks.HighPart = kernel.dwHighDateTime;
+        user_ticks.LowPart = user.dwLowDateTime;
+        user_ticks.HighPart = user.dwHighDateTime;
+        return (kernel_ticks.QuadPart + user_ticks.QuadPart) / 10000;
+    }
+#endif
     return (uint64_t)((double)std::clock() * 1000.0 / (double)CLOCKS_PER_SEC);
 }
 
@@ -686,6 +701,13 @@ static bs_t chud_merge(bs_t l, bs_t r, bool need_p, size_t level, size_t span){
     if(level >= PI_FACTOR_CANCEL_MIN_LEVEL)
         factor_cancel(l.p, l.fp, r.q, r.fq);
 #endif
+#if PI_TRACE_T_SHAPES
+    if(level <= 4){
+        fprintf(stderr, "t_shape level=%zu span=%zu ab=%zu,%zu cd=%zu,%zu q=%zu,%zu\n",
+                level, span, l.t.magnitude().rsiz, r.q.rsiz,
+                r.t.magnitude().rsiz, l.p.rsiz, l.q.rsiz, r.q.rsiz);
+    }
+#endif
 #if PI_ROOT_SHARED_NTT
     if(!need_p && level == 0 && l.q.rsiz >= 2048 &&
        l.t.magnitude().rsiz >= 2048 && r.q.rsiz >= 2048){
@@ -911,7 +933,7 @@ static void pi_merge_bs_task(std::vector<pi_bs_task_t> &tasks, int index){
 
 static bs_t pi_chud_bs_root(size_t a, size_t b, bool need_p,
                             const chud_factor_sieve_t &sieve){
-    if(PI_PARALLEL_SPLIT_DEPTH == 0 || b - a < 8192)
+    if(bs_threads <= 1 || PI_PARALLEL_SPLIT_DEPTH == 0 || b - a < 8192)
         return chud_bs(a, b, need_p, 0, sieve);
 
     std::vector<pi_bs_task_t> tasks;
@@ -945,7 +967,8 @@ static bs_t pi_chud_bs_root(size_t a, size_t b, bool need_p,
             }
 
             pi_bs_task_t &task = tasks[index];
-            precn_set_ntt_thread_parallel(task.level <= PI_NESTED_NTT_MAX_LEVEL);
+            precn_set_ntt_thread_parallel(ntt_threads != 1 &&
+                task.level <= PI_NESTED_NTT_MAX_LEVEL);
             if(task.left < 0)
                 task.value = chud_bs(task.a, task.b, task.need_p, task.level, sieve);
             else
@@ -1181,6 +1204,7 @@ static std::string pi_digits(size_t digits){
     };
 
     bool overlap = PI_OVERLAP_BS_SQRT && !show_progress &&
+                   ntt_threads != 1 && bs_threads > 1 &&
                    work_digits >= PI_OVERLAP_BS_SQRT_MIN_DIGITS;
 #if defined(__EMSCRIPTEN__) || (defined(COUNT_NTT_CALLS) && COUNT_NTT_CALLS)
     overlap = false;
@@ -1301,6 +1325,7 @@ int main(int argc, char **argv){
             bs_threads = (unsigned int)std::strtoul(argv[++i], nullptr, 10);
     }
     precn_set_ntt_threads(ntt_threads);
+    if(ntt_threads == 1) precn_set_ntt_thread_parallel(false);
     if(bs_threads == 0) bs_threads = 1;
     double start = now_sec();
     uint64_t cpu_start = process_cpu_ms();

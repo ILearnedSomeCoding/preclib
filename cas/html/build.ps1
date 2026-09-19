@@ -101,28 +101,4 @@ $html = [Text.RegularExpressions.Regex]::Replace(
     })
 [IO.File]::WriteAllText((Join-Path $here 'calculator_single.html'), $html, $utf8)
 
-function Write-GzipFile([string]$path){
-    $input = [IO.File]::OpenRead($path)
-    try{
-        $output = [IO.File]::Create("$path.gz")
-        try{
-            $gzip = [IO.Compression.GZipStream]::new(
-                $output, [IO.Compression.CompressionLevel]::Optimal)
-            try{ $input.CopyTo($gzip) }
-            finally{ $gzip.Dispose() }
-        }finally{ $output.Dispose() }
-    }finally{ $input.Dispose() }
-}
-
-$artifacts = @(
-    (Join-Path $here 'cas_engine.js'),
-    (Join-Path $here 'worker_bundle.js'),
-    (Join-Path $here 'calculator_single.html')
-)
-foreach($artifact in $artifacts){
-    Write-GzipFile $artifact
-    $brotli = Get-Command 'brotli' -ErrorAction SilentlyContinue
-    if($brotli){ & $brotli.Source '-f' '-q' '11' $artifact }
-}
-
-Write-Host "Built CAS assets plus .gz and .br compressed variants"
+Write-Host "Built CAS assets"

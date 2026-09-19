@@ -149,6 +149,7 @@ PRECLIB_API void precn_ntt_call_profile_dump();
 // Configure the native NTT worker pool before its first multiplication.
 // Zero chooses a sensible hardware-based default; WebAssembly stays single-threaded.
 PRECLIB_API void precn_set_ntt_threads(unsigned int threads);
+PRECLIB_API unsigned int precn_ntt_threads();
 PRECLIB_API precn_t mul_ssa(const precn_t &a, const precn_t &b);
 
 PRECLIB_API precn_t operator+(const precn_t &a, const precn_t &b);

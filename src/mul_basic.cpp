@@ -15,6 +15,11 @@
 #ifndef MUL_DISPATCH_USE_VST
 #define MUL_DISPATCH_USE_VST 1
 #endif
+#ifndef MUL_DISPATCH_SPLIT_TAIL
+// The split helps individual boundary products, but did not consistently
+// improve complete pi runs. Keep it opt-in while tuning other workloads.
+#define MUL_DISPATCH_SPLIT_TAIL 0
+#endif
 #if !defined(MUL_DISPATCH_NTT_THRESHOLD)
 #if defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD
 // The scalar NTT remains slower than the scalar FFT through the largest
@@ -368,6 +373,56 @@ static void mul_unbalanced_into(precn_t &r, const precn_t &a, const precn_t &b){
     mul_norm(r);
 }
 
+static bool mul_split_transform_tail(precn_t &r, const precn_t &a,
+                                     const precn_t &b){
+#if MUL_DISPATCH_SPLIT_TAIL && MUL_DISPATCH_USE_VST && \
+    (defined(__AVX2__) || defined(_M_AVX2)) && \
+    !(defined(PRECN_FORCE_NO_SIMD) && PRECN_FORCE_NO_SIMD)
+    // A product just beyond a power-of-two boundary nearly doubles the VST
+    // work. Keep the main product at that boundary and multiply the short
+    // high tail separately. These thresholds are for serial transforms;
+    // parallel VST has different size-dependent worker counts.
+    if(precn_ntt_thread_parallel_enabled()) return false;
+    const precn_t *x = &a, *y = &b;
+    if(x->rsiz < y->rsiz) std::swap(x, y);
+    if(y->rsiz < 8192 || x->rsiz > y->rsiz * 2) return false;
+    size_t total = x->rsiz + y->rsiz;
+    size_t boundary = 1;
+    while(boundary < total) boundary <<= 1;
+    boundary >>= 1;
+    if(boundary < 32768 || boundary > 131072) return false;
+    size_t max_tail = boundary == 32768 ? boundary / 32 : boundary / 16;
+    if(total - boundary > max_tail) return false;
+
+    size_t cut = boundary - y->rsiz;
+    size_t tail_size = x->rsiz - cut;
+    precn_t low = precn_t::with_capacity(cut);
+    low.rsiz = cut;
+    memcpy(low.a, x->a, cut * sizeof(uint64_t));
+    mul_norm(low);
+    precn_t tail = precn_t::with_capacity(tail_size);
+    tail.rsiz = tail_size;
+    memcpy(tail.a, x->a + cut, tail_size * sizeof(uint64_t));
+
+    // Both inputs must remain intact until both products finish: r may
+    // alias either operand. Recombine without a full-size shifted temporary.
+    precn_t main_product = low * *y;
+    precn_t tail_product = tail * *y;
+    size_t old_size = main_product.rsiz;
+    mul_reserve(main_product, total + 1);
+    memset(main_product.a + old_size, 0,
+           (total + 1 - old_size) * sizeof(uint64_t));
+    main_product.rsiz = total + 1;
+    mul_add_shift(main_product, tail_product, cut);
+    mul_norm(main_product);
+    r = std::move(main_product);
+    return true;
+#else
+    (void)r; (void)a; (void)b;
+    return false;
+#endif
+}
+
 static size_t mul_ntt_transform_size(size_t a_limbs, size_t b_limbs){
     size_t need = (a_limbs + b_limbs) * 4;
     size_t n = 1;
@@ -426,6 +481,7 @@ void mul_into(precn_t &r, const precn_t &a, const precn_t &b){
         mul_schoolbook_into(r, a, b);
         return;
     }
+    if(mul_split_transform_tail(r, a, b)) return;
     bool split_exact_2x = hi == lo * 2 && lo >= 512 && lo <= 1024;
     if(hi > lo * 2 || split_exact_2x){
         // For mildly unbalanced large products, blocking can make the first

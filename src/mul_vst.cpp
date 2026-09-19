@@ -28,6 +28,15 @@
 #define PRECN_VST_STRICT_CHECKS 0
 #endif
 
+#ifndef VST_DOUBLE_RADIX4
+#define VST_DOUBLE_RADIX4 1
+#endif
+
+#ifndef VST_DOUBLE_INVERSE_RADIX4
+// Full-product benchmarks did not show a stable gain; retain as an experiment.
+#define VST_DOUBLE_INVERSE_RADIX4 0
+#endif
+
 // These primes all contain 2^20 in p-1 and satisfy p^2 < 2^53. Therefore a
 // product of two residues is still an exactly represented double integer.
 static const uint32_t VST_MODS[4] = {
@@ -495,7 +504,7 @@ static void vst_pointwise(std::vector<vst_word_t> &a,
 
 #if PRECN_VST_HAVE_AVX2
 template<class Word>
-static void vst_forward2_outer(std::vector<Word> &a,
+static void vst_forward2_radix2_outer(std::vector<Word> &a,
                                const vst_plan_t &plan){
     size_t n = a.size() << 1;
     __m256d mod = vst_load(plan.mod2);
@@ -522,8 +531,9 @@ static void vst_forward2_outer(std::vector<Word> &a,
     }
 }
 
+template<class Word>
 static inline void vst_forward2_radix4_range(
-    std::vector<vst_packed_word_t> &a, const vst_plan_t &plan,
+    std::vector<Word> &a, const vst_plan_t &plan,
     size_t len, size_t first, size_t last,
     __m256d mod, __m256d reciprocal){
     size_t quarter_words = len >> 3;
@@ -567,8 +577,9 @@ static inline void vst_forward2_radix4_range(
     }
 }
 
+template<class Word>
 static inline void vst_forward2_radix2_range(
-    std::vector<vst_packed_word_t> &a, const vst_plan_t &plan,
+    std::vector<Word> &a, const vst_plan_t &plan,
     size_t first, size_t last, __m256d mod, __m256d reciprocal){
     __m256d root = vst_load(plan.roots2_f[1]);
     for(size_t i = first; i < last; ++i){
@@ -581,8 +592,16 @@ static inline void vst_forward2_radix2_range(
     }
 }
 
-static void vst_forward2_outer(std::vector<vst_packed_word_t> &a,
+template<class Word>
+static void vst_forward2_outer(std::vector<Word> &a,
                                const vst_plan_t &plan){
+    // The double workspace benefits from the same two-stage fusion as the
+    // compact workspace: intermediate butterfly values stay in registers.
+    if(std::is_same<Word, vst_word_t>::value &&
+       (!VST_DOUBLE_RADIX4 || plan.n < (size_t(1) << 16))){
+        vst_forward2_radix2_outer(a, plan);
+        return;
+    }
     size_t n = a.size() << 1;
     __m256d mod = vst_load(plan.mod2);
     __m256d reciprocal = vst_load(plan.reciprocal2);
@@ -639,7 +658,7 @@ static void vst_fused_len2_product(std::vector<Word> &a,
 }
 
 template<class Word>
-static void vst_inverse2_outer(std::vector<Word> &a,
+static void vst_inverse2_radix2_outer(std::vector<Word> &a,
                                const vst_plan_t &plan){
     size_t n = a.size() << 1;
     __m256d mod = vst_load(plan.mod2);
@@ -666,8 +685,14 @@ static void vst_inverse2_outer(std::vector<Word> &a,
     }
 }
 
-static void vst_inverse2_outer(std::vector<vst_packed_word_t> &a,
+template<class Word>
+static void vst_inverse2_outer(std::vector<Word> &a,
                                const vst_plan_t &plan){
+    if(std::is_same<Word, vst_word_t>::value &&
+       (!VST_DOUBLE_INVERSE_RADIX4 || plan.n < (size_t(1) << 16))){
+        vst_inverse2_radix2_outer(a, plan);
+        return;
+    }
     size_t n = a.size() << 1;
     __m256d mod = vst_load(plan.mod2);
     __m256d reciprocal = vst_load(plan.reciprocal2);
@@ -931,7 +956,9 @@ static void vst_pointwise_inverse2_parallel(
     if constexpr(std::is_same<Word, vst_packed_word_t>::value){
         size_t eight_thread_threshold = b ? VST_EIGHT_THREAD_TRANSFORM :
             VST_EIGHT_THREAD_SQUARE_TRANSFORM;
-        parts = n >= eight_thread_threshold ? 8 : 4;
+        unsigned int configured = precn_ntt_threads();
+        if(configured >= 8 && n >= eight_thread_threshold) parts = 8;
+        else if(configured >= 4) parts = 4;
     }
     vst_spin_barrier_t barrier((unsigned int)parts);
     vst_spin_barrier_t forward_a_barrier((unsigned int)(parts >> 1));

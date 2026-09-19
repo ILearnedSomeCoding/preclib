@@ -18,6 +18,10 @@
 #include<mutex>
 #include<vector>
 
+#ifndef NTT_FUSED_FINISH
+#define NTT_FUSED_FINISH 1
+#endif
+
 #if !defined(__EMSCRIPTEN__)
 #include<atomic>
 #include<condition_variable>
@@ -220,9 +224,10 @@ static std::unique_ptr<ntt_thread_pool_t> ntt_pool;
 static unsigned int ntt_pool_threads;
 static thread_local bool ntt_parallel_disabled;
 static thread_local size_t ntt_parallel_min_transform;
+static unsigned int ntt_default_thread_count();
 
 bool precn_ntt_thread_parallel_enabled(){
-    return !ntt_parallel_disabled;
+    return !ntt_parallel_disabled && precn_ntt_threads() > 1;
 }
 
 void precn_set_ntt_thread_parallel(bool enabled){
@@ -266,6 +271,11 @@ static unsigned int ntt_worker_count(){
     return ntt_pool_threads;
 }
 
+unsigned int precn_ntt_threads(){
+    std::lock_guard<std::mutex> lock(ntt_pool_config_mutex);
+    return ntt_pool ? ntt_pool_threads : ntt_default_thread_count();
+}
+
 void precn_set_ntt_threads(unsigned int threads){
     std::lock_guard<std::mutex> lock(ntt_pool_config_mutex);
     if(ntt_pool) return;
@@ -288,6 +298,7 @@ static void ntt_parallel_tasks(size_t count, F f){
 }
 #else
 void precn_set_ntt_threads(unsigned int){}
+unsigned int precn_ntt_threads(){ return 1; }
 
 bool precn_ntt_thread_parallel_enabled(){ return false; }
 void precn_set_ntt_thread_parallel(bool){}
@@ -628,13 +639,14 @@ static void ntt_forward(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     }
 }
 
-static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
+template<size_t first_len, bool ordinary_output>
+static void ntt_inverse_from(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     size_t n = a.size();
     const mont_ctx_t &c = p.c;
     const std::vector<uint32_t> &roots = p.roots_i;
     uint32_t mod = c.mod;
 
-    for(size_t len = 2; len <= n; len <<= 1){
+    for(size_t len = first_len; len <= n; len <<= 1){
         size_t half = len >> 1;
         size_t block_count = n / len;
         auto transform_blocks = [&](size_t block_begin, size_t block_end){
@@ -692,7 +704,10 @@ static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
         else transform_blocks(0, block_count);
     }
 
-    uint32_t inv_n = p.inv_n;
+    // Multiplying a Montgomery residue by an ordinary n^-1 both scales it
+    // and removes its Montgomery factor. Ring transforms still need the
+    // Montgomery result for their subsequent untwisting step.
+    uint32_t inv_n = ordinary_output ? mont_reduce(c, p.inv_n) : p.inv_n;
     size_t i = 0;
 #if PRECN_NTT_HAVE_AVX2
     __m256i inv8 = _mm256_set1_epi32((int)inv_n);
@@ -707,6 +722,40 @@ static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
     }
 #endif
     for(; i < n; ++i) a[i] = mont_mul(c, a[i], inv_n);
+}
+
+static void ntt_inverse(std::vector<uint32_t> &a, const ntt_mod_plan_t &p){
+    ntt_inverse_from<2, false>(a, p);
+}
+
+static void ntt_pointwise_inverse_first(std::vector<uint32_t> &out,
+                                       const std::vector<uint32_t> &right,
+                                       const mont_ctx_t &c){
+    // DIF forward ordering puts each inverse length-2 butterfly in adjacent
+    // slots. Fuse pointwise products with that butterfly, whose twiddle is 1.
+    // Load both operands before storing so out == right also handles squares.
+    size_t n = out.size(), i = 0;
+#if PRECN_NTT_HAVE_AVX2
+    for(; i + 7 < n; i += 8){
+        __m256i a = _mm256_loadu_si256((const __m256i*)(out.data() + i));
+        __m256i b = _mm256_loadu_si256((const __m256i*)(right.data() + i));
+        __m256i product = mont_mul8(c, a, b);
+        __m256i swapped = _mm256_shuffle_epi32(product, _MM_SHUFFLE(2, 3, 0, 1));
+        __m256i sum = ntt_add8(product, swapped, c.mod);
+        __m256i difference = ntt_sub8(swapped, product, c.mod);
+        _mm256_storeu_si256((__m256i*)(out.data() + i),
+                           _mm256_blend_epi32(sum, difference, 0xAA));
+    }
+#endif
+    for(; i + 1 < n; i += 2){
+        uint32_t u = mont_mul(c, out[i], right[i]);
+        uint32_t v = mont_mul(c, out[i + 1], right[i + 1]);
+        uint32_t sum = u + v;
+        out[i] = sum >= c.mod ? sum - c.mod : sum;
+        out[i + 1] = u >= v ? u - v : u + c.mod - v;
+    }
+    // A one-point transform has no butterfly.
+    if(i < n) out[i] = mont_mul(c, out[i], right[i]);
 }
 
 static void ntt_digits(const precn_t &a, std::vector<uint32_t> &d){
@@ -758,6 +807,10 @@ static void ntt_load_inputs(const std::vector<uint32_t> &a,
 static void ntt_finish_convolution(std::vector<uint32_t> &out,
                                    std::vector<uint32_t> &scratch,
                                    const ntt_mod_plan_t &p){
+#if NTT_FUSED_FINISH
+    ntt_pointwise_inverse_first(out, scratch, p.c);
+    ntt_inverse_from<4, true>(out, p);
+#else
     size_t n = out.size();
     size_t i = 0;
 #if PRECN_NTT_HAVE_AVX2
@@ -782,6 +835,7 @@ static void ntt_finish_convolution(std::vector<uint32_t> &out,
     }
 #endif
     for(; i < n; ++i) out[i] = mont_reduce(p.c, out[i]);
+#endif
 }
 
 static void ntt_convolve_plan(const std::vector<uint32_t> &a,
@@ -2087,10 +2141,8 @@ precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs){
 #if defined(COUNT_NTT_HIGH_SHAPES) && COUNT_NTT_HIGH_SHAPES
     fprintf(stderr, "mul_high a=%zu b=%zu drop=%zu\n", a.rsiz, b.rsiz, drop_limbs);
 #endif
-    // Let x = x0 + B^cut*x1, where B is one 64-bit limb. If
-    // cut + y.rsiz == drop_limbs, then x0*y is strictly below B^drop,
-    // so it cannot affect floor(x*y / B^drop). This removes the low
-    // prefix before the NTT and is especially important for Newton division.
+    // Discarded prefixes can carry into the requested window. Keep guard
+    // limbs, then certify that their upper bound cannot cross the boundary.
     const precn_t *x = &a;
     const precn_t *y = &b;
     if(x->rsiz < y->rsiz) std::swap(x, y);
@@ -2103,23 +2155,36 @@ precn_t mul_high(const precn_t &a, const precn_t &b, size_t drop_limbs){
         // boundary, while still reducing both transform operands sharply.
         if(drop_limbs > x->rsiz){
             size_t cut_y = drop_limbs - x->rsiz;
-            size_t result_limbs = y->rsiz - cut_y;
             --cut_x;
             --cut_y;
             precn_t high_x = *x >> (cut_x * 64);
             precn_t high_y = *y >> (cut_y * 64);
 #if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
-            return mul_vst(high_x, high_y) >> ((result_limbs + 2) * 64);
+            precn_t partial = mul_vst(high_x, high_y);
 #else
-            return mul_ntt_impl(high_x, high_y, (result_limbs + 2) * 4);
+            precn_t partial = mul_ntt_impl(high_x, high_y, 0);
 #endif
+            size_t discarded = drop_limbs - cut_x - cut_y;
+            // The omitted cross terms sum to less than 3*B^(drop-1).
+            if((cut_x == 0 && cut_y == 0) ||
+               discarded > partial.rsiz ||
+               partial.a[discarded - 1] <= UINT64_MAX - 3)
+                return partial >> (discarded * 64);
+            return (a * b) >> (drop_limbs * 64);
         }
+        --cut_x;
         precn_t high_x = *x >> (cut_x * 64);
 #if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
-        return mul_vst(high_x, *y) >> (y->rsiz * 64);
+        precn_t partial = mul_vst(high_x, *y);
 #else
-        return mul_ntt_impl(high_x, *y, y->rsiz * 4);
+        precn_t partial = mul_ntt_impl(high_x, *y, 0);
 #endif
+        size_t discarded = drop_limbs - cut_x;
+        // The omitted prefix contributes less than B^(drop-1).
+        if(cut_x == 0 || discarded > partial.rsiz ||
+           partial.a[discarded - 1] != UINT64_MAX)
+            return partial >> (discarded * 64);
+        return (a * b) >> (drop_limbs * 64);
     }
 #if defined(MUL_HIGH_USE_VST) && MUL_HIGH_USE_VST
     return mul_vst(a, b) >> (drop_limbs * 64);

@@ -16,6 +16,10 @@
 #define PRECN_SQRT_RESIDUAL_STEP 1
 #endif
 
+#ifndef PRECN_SQRT_RESIDUAL_CERTIFY
+#define PRECN_SQRT_RESIDUAL_CERTIFY 1
+#endif
+
 static size_t sqrt_bit_length(const precn_t &a){
     if(a.rsiz == 0) return 0;
     uint64_t top = a.a[a.rsiz - 1];
@@ -97,9 +101,22 @@ static precn_t sqrt_refine_upper(const precn_t &a, precn_t x){
             // iteration never drops below floor(sqrt(a)), so x is final.
             if(e.rsiz == 0) return x;
             precn_t den = x << 1;
+            // For 0 < x*x-a < 2*x, (x-1)^2 <= a < x*x. Avoid a
+            // division and another full square when the upper bound is one high.
+            if(PRECN_SQRT_RESIDUAL_CERTIFY && e < den)
+                return x - precn_t(1);
             precn_t remainder;
             divmod_into(y, remainder, e, den);
-            if(remainder.rsiz) y = y + precn_t(1);
+            if(remainder.rsiz){
+                y = y + precn_t(1);
+                // Write e = 2*x*q + r and d = q+1. Then
+                // (x-d)^2-a = d^2-(2*x-r). A square of the small
+                // correction can certify the answer without squaring the
+                // entire next approximation in another Newton iteration.
+                if(PRECN_SQRT_RESIDUAL_CERTIFY && y.rsiz <= (x.rsiz + 1) / 2 &&
+                   precn_sqr(y) <= den - remainder)
+                    return x - y;
+            }
             y = x - y;
         }else{
             if(PRECN_SQRT_USE_MULINV_DIV && x.rsiz >= 128) y = div_mulinv(a, x);

@@ -94,6 +94,29 @@ static void test_init(){
     expect(precn_t(std::string("12a34")), {1234});
 }
 
+static void test_copy_assignment_capacity(){
+    precn_t dst = precn_t::with_capacity(32);
+    uint64_t *storage = dst.a;
+    precn_t small = pattern(8, 17);
+    dst = small;
+    assert(dst.a == storage && dst.asiz == 32);
+    precn_t zero;
+    dst = zero;
+    assert(dst.a == storage && dst.asiz == 32 && dst.rsiz == 0);
+
+    precn_t src = pattern(40, 19);
+    dst = src;
+    expect_eq(dst, src);
+    assert(dst.asiz >= src.rsiz);
+    dst = dst;
+    expect_eq(dst, src);
+
+    precn_t moved = std::move(dst);
+    dst = src;
+    expect_eq(dst, src);
+    expect_eq(moved, src);
+}
+
 static void test_compare_shift(){
     precn_t z;
     precn_t one(1);
@@ -234,7 +257,44 @@ static void test_mul_low_zero_limbs(){
                     precn_sqr(a) << (74 * 64));
 }
 
+static void test_mul_transform_boundary(){
+    bool old_parallel = precn_ntt_thread_parallel_enabled();
+    precn_set_ntt_thread_parallel(false);
+    const size_t cases[][2] = {
+        {17000, 15768}, {17000, 15769}, // at / just beyond the boundary
+        {17700, 16092}, {17701, 16092}, // at / just beyond the tail limit
+        {37783, 31123}, {70000, 65536}
+    };
+    for(const auto &shape : cases){
+        precn_t a = pattern(shape[0], 317), b = pattern(shape[1], 911);
+        for(size_t i = 0; i < a.rsiz; ++i) a.a[i] |= a.a[i] << 32;
+        for(size_t i = 0; i < b.rsiz; ++i) b.a[i] |= b.a[i] << 32;
+        precn_t want = mul_ntt(a, b);
+        expect_eq_named("transform boundary", a * b, want);
+        expect_eq_named("transform boundary reversed", b * a, want);
+    }
+    // Carry through the split, a zero low part, and aliased output.
+    precn_t a = power_of_two(17000 * 64) - 1;
+    precn_t b = power_of_two(16000 * 64) - 1;
+    precn_t want = mul_ntt(a, b);
+    precn_t alias = a;
+    mul_into(alias, alias, b);
+    expect_eq_named("transform boundary alias left", alias, want);
+    alias = b;
+    mul_into(alias, a, alias);
+    expect_eq_named("transform boundary alias right", alias, want);
+    memset(a.a, 0, (32768 - b.rsiz) * sizeof(uint64_t));
+    want = mul_ntt(a, b);
+    expect_eq_named("transform boundary low zeros", a * b, want);
+    precn_set_ntt_thread_parallel(old_parallel);
+}
+
 static void test_mul_high(){
+    precn_t carry_a = make_prec({0xFFFFFFFFu, 0xFFFFFFFFu, 1, 0, 1});
+    precn_t carry_b = make_prec({0xFFFFFFFFu, 0xFFFFFFFFu});
+    expect_eq_named("mul_high boundary carry", mul_high(carry_a, carry_b, 2),
+                    (carry_a * carry_b) >> 128);
+
     const size_t cases[][3] = {
         {1025, 2051, 2050},
         {2049, 4099, 4098},
@@ -251,6 +311,18 @@ static void test_mul_high(){
         precn_t b = pattern(cases[i][1], (uint64_t)(1701 + i));
         precn_t reference = (a * b) >> (cases[i][2] * 64);
         expect_eq(mul_high(a, b, cases[i][2]), reference);
+    }
+    for(size_t nx : {3u, 9u, 65u, 257u}){
+        for(size_t ny : {1u, 4u, 31u, 129u}){
+            precn_t a = power_of_two(nx * 64) - precn_t(1);
+            precn_t b = power_of_two(ny * 64) - precn_t(1);
+            precn_t product = a * b;
+            for(size_t drop : {ny, nx, (nx + ny) / 2, nx + ny - 2}){
+                if(drop < nx + ny)
+                    expect_eq_named("mul_high all ones", mul_high(a, b, drop),
+                                    product >> (drop * 64));
+            }
+        }
     }
 }
 
@@ -525,12 +597,13 @@ static void test_rational(){
 }
 
 static void test_sqrt_large(){
-    const size_t sizes[] = {127, 256, 1024, 4096};
+    const size_t sizes[] = {1, 4, 5, 127, 256, 1024, 4096};
     for(size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i){
         precn_t root = pattern(sizes[i], (uint32_t)(17000 + i));
         precn_t square = root * root;
         expect_eq_named("sqrt square", precn_sqrt(square), root);
         expect_eq_named("sqrt below square", precn_sqrt(square - 1), root - 1);
+        expect_eq_named("sqrt interior", precn_sqrt(square + root), root);
         expect_eq_named("sqrt below next square",
                         precn_sqrt(square + root + root), root);
         expect_eq_named("sqrt next square",
@@ -941,6 +1014,7 @@ int main(int argc, char **argv){
 
     clock_t start = clock();
     test_init();
+    test_copy_assignment_capacity();
     test_compare_shift();
     test_base_convert();
     test_add_sub();
@@ -951,6 +1025,7 @@ int main(int argc, char **argv){
     test_division();
     test_gcd();
     test_mul_low_zero_limbs();
+    test_mul_transform_boundary();
     test_mul_high();
     test_sqrt_large();
     test_signed();

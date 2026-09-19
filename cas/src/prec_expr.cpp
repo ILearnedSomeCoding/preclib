@@ -81,15 +81,15 @@ void expr_context::set_precision(double bits){
     state_->precision = bits;
 }
 expr expr_context::number(const Number &value){
-    return expr(state_, state_->context.value(exact_value(value)));
+    return expr(state_, state_->context.value(numeric_value(value)));
 }
 expr expr_context::number(Number &&value){
-    return expr(state_, state_->context.value(exact_value(std::move(value))));
+    return expr(state_, state_->context.value(numeric_value(std::move(value))));
 }
 expr expr_context::floating(float value){ return number(Number(value)); }
 expr expr_context::floating(double value){ return number(Number(value)); }
 expr expr_context::exact_integer(const precz_t &value){
-    return expr(state_, state_->context.value(exact_value(value)));
+    return expr(state_, state_->context.value(numeric_value(value)));
 }
 expr expr_context::symbol(const std::string &name){
     return expr(state_, state_->context.symbol(name));
@@ -210,7 +210,7 @@ expr abs(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::abs(x); }, "abs");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr exp(const expr &value){
     require_state(value);
@@ -218,7 +218,7 @@ expr exp(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::exp(x); }, "exp");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr ln(const expr &value){
     require_state(value);
@@ -226,7 +226,7 @@ expr ln(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::ln(x); }, "ln");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr sin(const expr &value){
     require_state(value);
@@ -234,7 +234,7 @@ expr sin(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::sin(x); }, "sin");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr cos(const expr &value){
     require_state(value);
@@ -242,7 +242,7 @@ expr cos(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::cos(x); }, "cos");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr tan(const expr &value){
     require_state(value);
@@ -250,7 +250,7 @@ expr tan(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::tan(x); }, "tan");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr asin(const expr &value){
     require_state(value);
@@ -258,7 +258,7 @@ expr asin(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::asin(x); }, "asin");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr acos(const expr &value){
     require_state(value);
@@ -266,7 +266,7 @@ expr acos(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::acos(x); }, "acos");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr atan(const expr &value){
     require_state(value);
@@ -274,7 +274,7 @@ expr atan(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::atan(x); }, "atan");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr sinh(const expr &value){
     require_state(value);
@@ -282,7 +282,7 @@ expr sinh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::sinh(x); }, "sinh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr cosh(const expr &value){
     require_state(value);
@@ -290,7 +290,7 @@ expr cosh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::cosh(x); }, "cosh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr tanh(const expr &value){
     require_state(value);
@@ -298,7 +298,7 @@ expr tanh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::tanh(x); }, "tanh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr asinh(const expr &value){
     require_state(value);
@@ -306,7 +306,7 @@ expr asinh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::asinh(x); }, "asinh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr acosh(const expr &value){
     require_state(value);
@@ -314,7 +314,7 @@ expr acosh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::acosh(x); }, "acosh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr atanh(const expr &value){
     require_state(value);
@@ -322,7 +322,7 @@ expr atanh(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::atanh(x); }, "atanh");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr log2(const expr &value){
     require_state(value);
@@ -330,7 +330,7 @@ expr log2(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::log2(x); }, "log2");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr log10(const expr &value){
     require_state(value);
@@ -338,37 +338,37 @@ expr log10(const expr &value){
     Number result = numeric_function(
         value, [](const Number &x){ return ::log10(x); }, "log10");
     return expr(value.state_, value.state_->context.value(
-        exact_value(std::move(result))));
+        numeric_value(std::move(result))));
 }
 expr Si(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::Si(value.node_));
     Number result = numeric_function(value, [](const Number &x){ return ::Si(x); }, "Si");
-    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+    return expr(value.state_, value.state_->context.value(numeric_value(std::move(result))));
 }
 expr Ci(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::Ci(value.node_));
     Number result = numeric_function(value, [](const Number &x){ return ::Ci(x); }, "Ci");
-    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+    return expr(value.state_, value.state_->context.value(numeric_value(std::move(result))));
 }
 expr Ei(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::Ei(value.node_));
     Number result = numeric_function(value, [](const Number &x){ return ::Ei(x); }, "Ei");
-    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+    return expr(value.state_, value.state_->context.value(numeric_value(std::move(result))));
 }
 expr erf(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::erf(value.node_));
     Number result = numeric_function(value, [](const Number &x){ return ::erf(x); }, "erf");
-    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+    return expr(value.state_, value.state_->context.value(numeric_value(std::move(result))));
 }
 expr erfi(const expr &value){
     require_state(value);
     if(!value.is_number()) return expr(value.state_, ::erfi(value.node_));
     Number result = numeric_function(value, [](const Number &x){ return ::erfi(x); }, "erfi");
-    return expr(value.state_, value.state_->context.value(exact_value(std::move(result))));
+    return expr(value.state_, value.state_->context.value(numeric_value(std::move(result))));
 }
 expr partial_gamma(const expr &a, const expr &x){
     require_same_state(a, x);
@@ -378,7 +378,7 @@ expr partial_gamma(const expr &a, const expr &x){
     if(av.is_exact()) av.set_precision(a.context_precision());
     if(xv.is_exact()) xv.set_precision(a.context_precision());
     Number result = ::partial_gamma(av, xv);
-    return expr(a.state_, a.state_->context.value(exact_value(std::move(result))));
+    return expr(a.state_, a.state_->context.value(numeric_value(std::move(result))));
 }
 expr diff(const expr &expression, const expr &variable){
     require_same_state(expression, variable);

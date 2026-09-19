@@ -4,7 +4,7 @@
 
 主要类型：
 
-- `exact_value`：整数、最简有理数或近似 `Number`。
+- `numeric_value`：整数、最简有理数或近似 `Number`。
 - `exact_expr`：指向不可变表达式 DAG 节点的轻量句柄。
 - `exact_context`：拥有共享节点 arena，并负责构造、合并和化简节点。
 - `exact_add_builder`：构造大型加法时先合并数值项，减少临时节点。

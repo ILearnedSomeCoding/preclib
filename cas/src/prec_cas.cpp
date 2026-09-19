@@ -10,6 +10,7 @@
 #include<iterator>
 #include<limits>
 #include<map>
+#include<numeric>
 #include<stdexcept>
 #include<tuple>
 #include<unordered_map>
@@ -23,10 +24,10 @@ static precz_t rational_integer(const precq_t &value){
     return value.is_negative() ? -result : result;
 }
 
-static exact_value normalized_rational(precq_t value){
+static numeric_value normalized_rational(precq_t value){
     if(value.denominator() == precn_t(1))
-        return exact_value(rational_integer(value));
-    return exact_value(std::move(value));
+        return numeric_value(rational_integer(value));
+    return numeric_value(std::move(value));
 }
 
 static uint64_t hash_mix(uint64_t hash, uint64_t value){
@@ -45,7 +46,7 @@ static uint64_t hash_natural(const precn_t &value){
     return hash;
 }
 
-static uint64_t hash_exact_value(const exact_value &value){
+static uint64_t hash_exact_value(const numeric_value &value){
     if(value.is_approximate()){
         const Number &number = value.number();
         uint64_t precision_bits = 0;
@@ -70,7 +71,7 @@ static uint64_t hash_exact_value(const exact_value &value){
     return hash_mix(hash, hash_natural(rational.denominator()));
 }
 
-static bool integer_i64(const exact_value &value, int64_t &result){
+static bool integer_i64(const numeric_value &value, int64_t &result){
     if(!value.is_integer()) return false;
     const precz_t &integer = value.integer();
     const precn_t &magnitude = integer.magnitude();
@@ -87,7 +88,7 @@ static bool integer_i64(const exact_value &value, int64_t &result){
     return true;
 }
 
-static bool approximate_integer_i64(const exact_value &value, int64_t &result){
+static bool approximate_integer_i64(const numeric_value &value, int64_t &result){
     if(!value.is_approximate()) return false;
     const Number &number = value.number();
     precz_t integer = number.to_integer();
@@ -105,17 +106,17 @@ static bool approximate_integer_i64(const exact_value &value, int64_t &result){
     return true;
 }
 
-static exact_value exact_pow(exact_value base, int64_t exponent){
+static numeric_value exact_pow(numeric_value base, int64_t exponent){
     bool negative = exponent < 0;
     uint64_t power = negative
         ? (uint64_t)0 - (uint64_t)exponent : (uint64_t)exponent;
-    exact_value result(1);
+    numeric_value result(1);
     while(power){
         if(power & 1) result = result * base;
         power >>= 1;
         if(power) base = base * base;
     }
-    return negative ? exact_value(1) / result : result;
+    return negative ? numeric_value(1) / result : result;
 }
 
 static bool split_small_square_factor_u64(uint64_t remaining,
@@ -141,7 +142,7 @@ static bool split_small_square_factor_u64(uint64_t remaining,
     return true;
 }
 
-static bool split_small_square_factor(const exact_value &value,
+static bool split_small_square_factor(const numeric_value &value,
                                       uint64_t &outside, uint64_t &inside){
     if(!value.is_integer() || value.is_negative()) return false;
     const precn_t &magnitude = value.integer().magnitude();
@@ -172,7 +173,7 @@ static bool perfect_cube_root(const precn_t &value, precn_t &root){
     return true;
 }
 
-static bool exact_cube_root(const exact_value &value, exact_value &root){
+static bool exact_cube_root(const numeric_value &value, numeric_value &root){
     if(value.is_approximate()) return false;
     precq_t rational = value.rational();
     precn_t numerator, denominator;
@@ -226,8 +227,8 @@ static bool perfect_nth_root(const precn_t &value, uint64_t degree,
     return false;
 }
 
-static bool exact_nth_root(const exact_value &value, uint64_t degree,
-                           exact_value &root){
+static bool exact_nth_root(const numeric_value &value, uint64_t degree,
+                           numeric_value &root){
     if(value.is_approximate() || value.is_negative()) return false;
     precq_t rational = value.rational();
     precn_t numerator, denominator;
@@ -239,8 +240,8 @@ static bool exact_nth_root(const exact_value &value, uint64_t degree,
     return true;
 }
 
-static double approximate_precision(const exact_value &a,
-                                    const exact_value &b){
+static double approximate_precision(const numeric_value &a,
+                                    const numeric_value &b){
     double precision = std::numeric_limits<double>::infinity();
     if(a.is_approximate() && !a.number().is_exact())
         precision = std::min(precision, a.number().precision());
@@ -332,73 +333,73 @@ static int constant_decimal_digits(double binary_precision){
     return (int)digits;
 }
 
-exact_value::exact_value() : value_(precz_t()){}
-exact_value::exact_value(const precz_t &value) : value_(value){}
-exact_value::exact_value(precz_t &&value) : value_(std::move(value)){}
+numeric_value::numeric_value() : value_(precz_t()){}
+numeric_value::numeric_value(const precz_t &value) : value_(value){}
+numeric_value::numeric_value(precz_t &&value) : value_(std::move(value)){}
 
-exact_value::exact_value(const precq_t &value) : value_(value){
+numeric_value::numeric_value(const precq_t &value) : value_(value){
     if(value.denominator() == precn_t(1)) value_ = rational_integer(value);
 }
 
-exact_value::exact_value(precq_t &&value) : value_(std::move(value)){
+numeric_value::numeric_value(precq_t &&value) : value_(std::move(value)){
     if(std::get<precq_t>(value_).denominator() == precn_t(1))
         value_ = rational_integer(std::get<precq_t>(value_));
 }
-exact_value::exact_value(const Number &value) : value_(value){}
-exact_value::exact_value(Number &&value) : value_(std::move(value)){}
+numeric_value::numeric_value(const Number &value) : value_(value){}
+numeric_value::numeric_value(Number &&value) : value_(std::move(value)){}
 
-bool exact_value::is_integer() const{
+bool numeric_value::is_integer() const{
     return std::holds_alternative<precz_t>(value_);
 }
-bool exact_value::is_rational() const{
+bool numeric_value::is_rational() const{
     return std::holds_alternative<precq_t>(value_);
 }
-bool exact_value::is_approximate() const{
+bool numeric_value::is_approximate() const{
     return std::holds_alternative<Number>(value_);
 }
 
-bool exact_value::is_zero() const{
+bool numeric_value::is_zero() const{
     if(is_integer()) return std::get<precz_t>(value_).is_zero();
     if(is_rational()) return std::get<precq_t>(value_).is_zero();
     return std::get<Number>(value_).is_zero();
 }
 
-bool exact_value::is_one() const{
+bool numeric_value::is_one() const{
     if(is_integer()) return std::get<precz_t>(value_) == precz_t(1);
     if(is_rational()) return std::get<precq_t>(value_) == precq_t(1);
     return std::get<Number>(value_) == Number(1);
 }
 
-bool exact_value::is_minus_one() const{
+bool numeric_value::is_minus_one() const{
     if(is_integer()) return std::get<precz_t>(value_) == precz_t(-1);
     if(is_rational()) return std::get<precq_t>(value_) == precq_t(-1);
     return std::get<Number>(value_) == Number(-1);
 }
 
-bool exact_value::is_negative() const{
+bool numeric_value::is_negative() const{
     if(is_integer()) return std::get<precz_t>(value_).is_negative();
     if(is_rational()) return std::get<precq_t>(value_).is_negative();
     return std::get<Number>(value_).is_negative();
 }
 
-const precz_t &exact_value::integer() const{
+const precz_t &numeric_value::integer() const{
     if(!is_integer()) throw std::logic_error("exact value is not an integer");
     return std::get<precz_t>(value_);
 }
 
-precq_t exact_value::rational() const{
+precq_t numeric_value::rational() const{
     if(is_approximate())
         throw std::logic_error("approximate value is not an exact rational");
     return is_integer() ? precq_t(std::get<precz_t>(value_))
                         : std::get<precq_t>(value_);
 }
 
-const Number &exact_value::number() const{
+const Number &numeric_value::number() const{
     if(!is_approximate()) throw std::logic_error("exact value is not approximate");
     return std::get<Number>(value_);
 }
 
-Number exact_value::to_number(double precision_bits) const{
+Number numeric_value::to_number(double precision_bits) const{
     if(!(precision_bits > 0.0) || !std::isfinite(precision_bits))
         throw std::invalid_argument("approximate precision must be finite and positive");
     if(is_approximate()) return std::get<Number>(value_);
@@ -415,7 +416,7 @@ Number exact_value::to_number(double precision_bits) const{
     return result;
 }
 
-std::string exact_value::to_string() const{
+std::string numeric_value::to_string() const{
     if(is_integer()) return (std::string)std::get<precz_t>(value_);
     if(is_approximate()) return (std::string)std::get<Number>(value_);
     const precq_t &value = std::get<precq_t>(value_);
@@ -427,56 +428,56 @@ std::string exact_value::to_string() const{
     return result;
 }
 
-exact_value operator+(const exact_value &a, const exact_value &b){
+numeric_value operator+(const numeric_value &a, const numeric_value &b){
     if(a.is_approximate() || b.is_approximate()){
         double precision = approximate_precision(a, b);
-        return exact_value(a.to_number(precision + 32.0) +
+        return numeric_value(a.to_number(precision + 32.0) +
                            b.to_number(precision + 32.0));
     }
     if(a.is_integer() && b.is_integer())
-        return exact_value(a.integer() + b.integer());
+        return numeric_value(a.integer() + b.integer());
     return normalized_rational(a.rational() + b.rational());
 }
 
-exact_value operator-(const exact_value &a, const exact_value &b){
+numeric_value operator-(const numeric_value &a, const numeric_value &b){
     if(a.is_approximate() || b.is_approximate()){
         double precision = approximate_precision(a, b);
-        return exact_value(a.to_number(precision + 32.0) -
+        return numeric_value(a.to_number(precision + 32.0) -
                            b.to_number(precision + 32.0));
     }
     if(a.is_integer() && b.is_integer())
-        return exact_value(a.integer() - b.integer());
+        return numeric_value(a.integer() - b.integer());
     return normalized_rational(a.rational() - b.rational());
 }
 
-exact_value operator-(const exact_value &a){
-    if(a.is_approximate()) return exact_value(-a.number());
-    return a.is_integer() ? exact_value(-a.integer())
+numeric_value operator-(const numeric_value &a){
+    if(a.is_approximate()) return numeric_value(-a.number());
+    return a.is_integer() ? numeric_value(-a.integer())
                           : normalized_rational(-a.rational());
 }
 
-exact_value operator*(const exact_value &a, const exact_value &b){
+numeric_value operator*(const numeric_value &a, const numeric_value &b){
     if(a.is_approximate() || b.is_approximate()){
         double precision = approximate_precision(a, b);
-        return exact_value(a.to_number(precision + 32.0) *
+        return numeric_value(a.to_number(precision + 32.0) *
                            b.to_number(precision + 32.0));
     }
     if(a.is_integer() && b.is_integer())
-        return exact_value(a.integer() * b.integer());
+        return numeric_value(a.integer() * b.integer());
     return normalized_rational(a.rational() * b.rational());
 }
 
-exact_value operator/(const exact_value &a, const exact_value &b){
+numeric_value operator/(const numeric_value &a, const numeric_value &b){
     if(b.is_zero()) throw std::domain_error("division by zero");
     if(a.is_approximate() || b.is_approximate()){
         double precision = approximate_precision(a, b);
-        return exact_value(a.to_number(precision + 32.0) /
+        return numeric_value(a.to_number(precision + 32.0) /
                            b.to_number(precision + 32.0));
     }
     return normalized_rational(a.rational() / b.rational());
 }
 
-bool operator==(const exact_value &a, const exact_value &b){
+bool operator==(const numeric_value &a, const numeric_value &b){
     if(a.is_approximate() || b.is_approximate()){
         if(!a.is_approximate() || !b.is_approximate()) return false;
         const Number &av = a.number();
@@ -489,7 +490,7 @@ bool operator==(const exact_value &a, const exact_value &b){
     return a.rational() == b.rational();
 }
 
-bool operator!=(const exact_value &a, const exact_value &b){ return !(a == b); }
+bool operator!=(const numeric_value &a, const numeric_value &b){ return !(a == b); }
 
 struct exact_node{
     uint64_t hash;
@@ -503,7 +504,7 @@ struct exact_node{
 struct exact_storage{
     std::vector<exact_node> nodes;
     std::vector<uint32_t> operands;
-    std::vector<exact_value> values;
+    std::vector<numeric_value> values;
     std::vector<std::string> symbols;
     std::unordered_map<uint64_t, std::vector<uint32_t>> hash_buckets;
     std::unordered_map<uint32_t, uint8_t> assumptions;
@@ -519,13 +520,13 @@ struct exact_storage{
         return found != assumptions.end() && (found->second & property) != 0;
     }
 
-    uint32_t intern_value(exact_value value);
+    uint32_t intern_value(numeric_value value);
     uint32_t intern_symbol(const std::string &name);
     uint32_t intern_compound(exact_opcode op, const std::vector<uint32_t> &args);
     uint32_t make_add(std::vector<uint32_t> args,
-                      exact_value constant = exact_value(0));
+                      numeric_value constant = numeric_value(0));
     uint32_t make_multiply(std::vector<uint32_t> args,
-                           exact_value constant = exact_value(1));
+                           numeric_value constant = numeric_value(1));
     uint32_t make_power(uint32_t base, uint32_t exponent);
     uint32_t make_sqrt(uint32_t value);
     uint32_t make_function(exact_opcode operation, uint32_t value);
@@ -561,7 +562,7 @@ uint32_t exact_storage::append_node(exact_opcode op, uint32_t payload,
     return id;
 }
 
-uint32_t exact_storage::intern_value(exact_value value){
+uint32_t exact_storage::intern_value(numeric_value value){
     uint64_t hash = hash_mix(UINT64_C(0x76616c7565), hash_exact_value(value));
     auto found = hash_buckets.find(hash);
     if(found != hash_buckets.end()){
@@ -619,7 +620,7 @@ bool exact_storage::id_less(uint32_t a, uint32_t b) const{
 }
 
 uint32_t exact_storage::make_add(std::vector<uint32_t> args,
-                                 exact_value constant){
+                                 numeric_value constant){
     std::vector<uint32_t> terms;
     std::vector<uint32_t> pending(std::move(args));
     while(!pending.empty()){
@@ -638,9 +639,9 @@ uint32_t exact_storage::make_add(std::vector<uint32_t> args,
 
     // Split each term into a numeric coefficient and a symbolic monomial.
     // Node IDs are canonical, so equal monomials can be combined directly.
-    std::unordered_map<uint32_t, exact_value> coefficients;
+    std::unordered_map<uint32_t, numeric_value> coefficients;
     for(uint32_t term : terms){
-        exact_value coefficient(1);
+        numeric_value coefficient(1);
         uint32_t monomial = term;
         exact_node term_node = node(term);
         if(term_node.op == exact_opcode::multiply){
@@ -676,7 +677,7 @@ uint32_t exact_storage::make_add(std::vector<uint32_t> args,
     }
     if(constant.is_approximate() || !constant.is_zero())
         combined.push_back(intern_value(std::move(constant)));
-    if(combined.empty()) return intern_value(exact_value(0));
+    if(combined.empty()) return intern_value(numeric_value(0));
     if(combined.size() == 1) return combined[0];
     std::sort(combined.begin(), combined.end(),
               [this](uint32_t a, uint32_t b){
@@ -689,7 +690,7 @@ uint32_t exact_storage::make_add(std::vector<uint32_t> args,
 }
 
 uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
-                                      exact_value constant){
+                                      numeric_value constant){
     std::vector<uint32_t> factors;
     std::unordered_map<uint32_t, size_t> numeric_radicals;
     std::vector<uint32_t> pending(std::move(args));
@@ -703,7 +704,7 @@ uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
         }else if(current.op == exact_opcode::value){
             constant = constant * values[current.payload];
             if(!constant.is_approximate() && constant.is_zero())
-                return intern_value(exact_value(0));
+                return intern_value(numeric_value(0));
         }else if(current.op == exact_opcode::square_root){
             uint32_t radicand = children(current)[0];
             exact_node radicand_node = node(radicand);
@@ -718,10 +719,10 @@ uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
             factors.push_back(id);
         }
     }
-    exact_value odd_radical_product(1);
+    numeric_value odd_radical_product(1);
     bool has_odd_radical = false;
     for(const auto &entry : numeric_radicals){
-        const exact_value &radicand = values[node(entry.first).payload];
+        const numeric_value &radicand = values[node(entry.first).payload];
         if(entry.second / 2)
             constant = constant * exact_pow(
                 radicand, (int64_t)(entry.second / 2));
@@ -734,11 +735,11 @@ uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
     {
         uint64_t outside = 1, inside = 1;
         if(split_small_square_factor(odd_radical_product, outside, inside)){
-            constant = constant * exact_value(outside);
+            constant = constant * numeric_value(outside);
             if(inside != 1)
                 factors.push_back(intern_compound(
                     exact_opcode::square_root,
-                    {intern_value(exact_value(inside))}));
+                    {intern_value(numeric_value(inside))}));
         }else{
             factors.push_back(make_sqrt(
                 intern_value(std::move(odd_radical_product))));
@@ -747,10 +748,10 @@ uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
 
     // Collect exact rational powers of each base. Besides cancelling x*x^-1,
     // this reduces algebraic products such as 2^(1/3)*2^(2/3) to 2.
-    std::unordered_map<uint32_t, exact_value> exponents;
+    std::unordered_map<uint32_t, numeric_value> exponents;
     for(uint32_t factor : factors){
         uint32_t base = factor;
-        exact_value exponent(1);
+        numeric_value exponent(1);
         exact_node factor_node = node(factor);
         if(factor_node.op == exact_opcode::power){
             const uint32_t *power_args = children(factor_node);
@@ -790,7 +791,7 @@ uint32_t exact_storage::make_multiply(std::vector<uint32_t> args,
 uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
     const exact_node &exponent_node = node(exponent);
     if(exponent_node.op == exact_opcode::value){
-        const exact_value &value = values[exponent_node.payload];
+        const numeric_value &value = values[exponent_node.payload];
         if(value.is_approximate() &&
            (value.number() == Number(0.5) || value.number() == Number(-0.5))){
             bool reciprocal_root = value.number().is_negative();
@@ -801,12 +802,12 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
                     ? 64.0 : value.number().precision();
                 Number numeric_base = values[base_node.payload].to_number(precision);
                 if(numeric_base.is_exact()) numeric_base.set_precision(precision);
-                root = intern_value(exact_value(::sqrt(numeric_base)));
+                root = intern_value(numeric_value(::sqrt(numeric_base)));
             }else{
                 root = make_sqrt(base);
             }
             if(!reciprocal_root) return root;
-            return make_power(root, intern_value(exact_value(-1)));
+            return make_power(root, intern_value(numeric_value(-1)));
         }
         if(!value.is_approximate()){
             precq_t rational = value.rational();
@@ -814,7 +815,7 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
                rational.denominator() == precn_t(2)){
                 uint32_t root = make_sqrt(base);
                 if(!rational.is_negative()) return root;
-                return make_power(root, intern_value(exact_value(-1)));
+                return make_power(root, intern_value(numeric_value(-1)));
             }
             const exact_node &numeric_base = node(base);
             if(!rational.is_negative() && rational.numerator().rsiz <= 1 &&
@@ -829,10 +830,10 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
                     uint64_t whole = numerator / denominator;
                     uint64_t remainder = numerator % denominator;
                     uint32_t integral = make_power(base,
-                        intern_value(exact_value(whole)));
+                        intern_value(numeric_value(whole)));
                     if(remainder == 0) return integral;
                     uint32_t fractional = make_power(base, intern_value(
-                        exact_value(precq_t(precn_t(remainder),
+                        numeric_value(precq_t(precn_t(remainder),
                                             precn_t(denominator)))));
                     return make_multiply({integral, fractional});
                 }
@@ -844,24 +845,24 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
         (integer_i64(values[exponent_node.payload], integer_exponent) ||
          approximate_integer_i64(values[exponent_node.payload], integer_exponent));
     if(has_integer_exponent){
-        if(integer_exponent == 0) return intern_value(exact_value(1));
+        if(integer_exponent == 0) return intern_value(numeric_value(1));
         if(integer_exponent == 1) return base;
 
         exact_node imaginary_base = node(base);
         if(imaginary_base.op == exact_opcode::constant_i){
             int cycle = (int)(integer_exponent % 4);
             if(cycle < 0) cycle += 4;
-            if(cycle == 0) return intern_value(exact_value(1));
+            if(cycle == 0) return intern_value(numeric_value(1));
             if(cycle == 1) return base;
-            if(cycle == 2) return intern_value(exact_value(-1));
-            return make_multiply({intern_value(exact_value(-1)), base});
+            if(cycle == 2) return intern_value(numeric_value(-1));
+            return make_multiply({intern_value(numeric_value(-1)), base});
         }
 
         exact_node base_copy = node(base);
         if(base_copy.op == exact_opcode::square_root && integer_exponent > 0){
             uint32_t radicand = children(base_copy)[0];
             uint32_t half_exponent = intern_value(
-                exact_value((uint64_t)integer_exponent / 2));
+                numeric_value((uint64_t)integer_exponent / 2));
             uint32_t reduced = make_power(radicand, half_exponent);
             if(integer_exponent & 1) return make_multiply({reduced, base});
             return reduced;
@@ -895,7 +896,7 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
                 !values[original_base.payload].is_negative();
             if(inner_exponent_node.op == exact_opcode::value &&
                (has_integer_exponent || nonnegative_numeric_base)){
-                exact_value combined_exponent =
+                numeric_value combined_exponent =
                     values[inner_exponent_node.payload] *
                     values[exponent_node.payload];
                 return make_power(base_args[0],
@@ -905,7 +906,7 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
     }
     const exact_node &base_node = node(base);
     if(base_node.op == exact_opcode::value){
-        const exact_value &base_value = values[base_node.payload];
+        const numeric_value &base_value = values[base_node.payload];
         if(base_value.is_one()) return base;
         if(has_integer_exponent && base_value.is_approximate() &&
            integer_exponent >= -4096 && integer_exponent <= 4096)
@@ -930,9 +931,9 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
 uint32_t exact_storage::make_sqrt(uint32_t value){
     const exact_node &source = node(value);
     if(source.op == exact_opcode::value){
-        const exact_value &exact = values[source.payload];
+        const numeric_value &exact = values[source.payload];
         if(exact.is_approximate())
-            return intern_value(exact_value(::sqrt(exact.number())));
+            return intern_value(numeric_value(::sqrt(exact.number())));
         if(exact.is_negative()){
             uint32_t positive = intern_value(-exact);
             uint32_t root = make_sqrt(positive);
@@ -944,7 +945,7 @@ uint32_t exact_storage::make_sqrt(uint32_t value){
             precn_t denominator = precn_sqrt(rational.denominator());
             if(precn_sqr(numerator) == rational.numerator() &&
                precn_sqr(denominator) == rational.denominator())
-                return intern_value(exact_value(
+                return intern_value(numeric_value(
                     precq_t(std::move(numerator), std::move(denominator))));
             // Normalize sqrt(n/d) by removing square factors from both sides
             // and rationalizing the remaining square-free denominator:
@@ -969,21 +970,21 @@ uint32_t exact_storage::make_sqrt(uint32_t value){
                     radicand = mul_u64(radicand, denominator_inside);
                     uint64_t coefficient_denominator =
                         denominator_outside * denominator_inside;
-                    uint32_t coefficient = intern_value(exact_value(precq_t(
+                    uint32_t coefficient = intern_value(numeric_value(precq_t(
                         precn_t(numerator_outside),
                         precn_t(coefficient_denominator))));
-                    uint32_t radical = make_sqrt(intern_value(exact_value(
+                    uint32_t radical = make_sqrt(intern_value(numeric_value(
                         precz_t(std::move(radicand)))));
                     return make_multiply({coefficient, radical});
                 }
             }
             uint64_t outside = 1, inside = 1;
             if(split_small_square_factor(exact, outside, inside) && outside != 1){
-                if(inside == 1) return intern_value(exact_value(outside));
-                uint32_t coefficient = intern_value(exact_value(outside));
+                if(inside == 1) return intern_value(numeric_value(outside));
+                uint32_t coefficient = intern_value(numeric_value(outside));
                 uint32_t radical = intern_compound(
                     exact_opcode::square_root,
-                    {intern_value(exact_value(inside))});
+                    {intern_value(numeric_value(inside))});
                 return make_multiply({coefficient, radical});
             }
         }
@@ -1031,14 +1032,14 @@ uint32_t exact_storage::make_sqrt(uint32_t value){
             while(outside && outside > common / outside) --outside;
             while(outside + 1 <= common / (outside + 1)) ++outside;
             if(outside > 1 && outside * outside == common){
-                uint32_t inverse = intern_value(exact_value(precq_t(
+                uint32_t inverse = intern_value(numeric_value(precq_t(
                     precn_t(1), precn_t(common))));
                 std::vector<uint32_t> reduced;
                 reduced.reserve(term_count);
                 for(size_t i = 0; i < term_count; ++i)
                     reduced.push_back(make_multiply({terms[i], inverse}));
                 uint32_t inner = make_add(std::move(reduced));
-                return make_multiply({intern_value(exact_value(outside)),
+                return make_multiply({intern_value(numeric_value(outside)),
                                       make_sqrt(inner)});
             }
         }
@@ -1068,7 +1069,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
     if(operation == exact_opcode::absolute_value){
         if(argument.op == exact_opcode::absolute_value) return value;
         if(argument.op == exact_opcode::constant_i)
-            return intern_value(exact_value(1));
+            return intern_value(numeric_value(1));
         if(argument.op == exact_opcode::symbol &&
            has_assumption(value, assumed_nonnegative)) return value;
         if(argument.op == exact_opcode::multiply){
@@ -1081,8 +1082,8 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
                 return make_function(operation, make_multiply(std::move(factors)));
             }
         }
-        auto rectangular_term = [&](uint32_t id, exact_value &real,
-                                    exact_value &imaginary) -> bool{
+        auto rectangular_term = [&](uint32_t id, numeric_value &real,
+                                    numeric_value &imaginary) -> bool{
             const exact_node &term = node(id);
             if(term.op == exact_opcode::value &&
                !values[term.payload].is_approximate()){
@@ -1090,11 +1091,11 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
                 return true;
             }
             if(term.op == exact_opcode::constant_i){
-                imaginary = imaginary + exact_value(1);
+                imaginary = imaginary + numeric_value(1);
                 return true;
             }
             if(term.op != exact_opcode::multiply) return false;
-            exact_value coefficient(1);
+            numeric_value coefficient(1);
             bool found_i = false;
             const uint32_t *parts = children(term);
             for(size_t i = 0; i < term.operand_count; ++i){
@@ -1110,7 +1111,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             imaginary = imaginary + coefficient;
             return true;
         };
-        exact_value real(0), imaginary(0);
+        numeric_value real(0), imaginary(0);
         bool rectangular = true;
         if(argument.op == exact_opcode::add){
             const uint32_t *terms = children(argument);
@@ -1120,7 +1121,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             rectangular = rectangular_term(value, real, imaginary);
         }
         if(rectangular && !imaginary.is_zero()){
-            exact_value squared_norm = real * real + imaginary * imaginary;
+            numeric_value squared_norm = real * real + imaginary * imaginary;
             return make_sqrt(intern_value(std::move(squared_norm)));
         }
     }
@@ -1131,17 +1132,17 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
         return true;
     };
     auto square = [&](uint32_t source){
-        return make_power(source, intern_value(exact_value(2)));
+        return make_power(source, intern_value(numeric_value(2)));
     };
     auto one_plus_square = [&](uint32_t source, int sign){
         uint32_t squared = square(source);
         if(sign < 0)
-            squared = make_multiply({intern_value(exact_value(-1)), squared});
-        return make_add({intern_value(exact_value(1)), squared});
+            squared = make_multiply({intern_value(numeric_value(-1)), squared});
+        return make_add({intern_value(numeric_value(1)), squared});
     };
     auto quotient = [&](uint32_t numerator, uint32_t denominator){
         return make_multiply({numerator, make_power(
-            denominator, intern_value(exact_value(-1)))});
+            denominator, intern_value(numeric_value(-1)))});
     };
 
     auto imaginary_pi_coefficient = [&](precq_t &coefficient) -> bool{
@@ -1160,7 +1161,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
                 return true;
             }
             if(current.op != exact_opcode::value) return false;
-            const exact_value &exact = values[current.payload];
+            const numeric_value &exact = values[current.payload];
             if(exact.is_approximate()) return false;
             coefficient = coefficient * exact.rational();
             return true;
@@ -1190,7 +1191,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
         if(inverse_composition(exact_opcode::arc_sine, inverse_source))
             return make_sqrt(one_plus_square(inverse_source, -1));
         if(inverse_composition(exact_opcode::arc_tangent, inverse_source))
-            return quotient(intern_value(exact_value(1)),
+            return quotient(intern_value(numeric_value(1)),
                 make_sqrt(one_plus_square(inverse_source, 1)));
     }else if(operation == exact_opcode::tangent){
         if(inverse_composition(exact_opcode::arc_tangent, inverse_source))
@@ -1207,7 +1208,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
         if(inverse_composition(exact_opcode::inverse_hyperbolic_cosine,
                                inverse_source))
             return make_sqrt(make_add({square(inverse_source),
-                intern_value(exact_value(-1))}));
+                intern_value(numeric_value(-1))}));
         if(inverse_composition(exact_opcode::inverse_hyperbolic_tangent,
                                inverse_source))
             return quotient(inverse_source,
@@ -1220,7 +1221,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             return make_sqrt(one_plus_square(inverse_source, 1));
         if(inverse_composition(exact_opcode::inverse_hyperbolic_tangent,
                                inverse_source))
-            return quotient(intern_value(exact_value(1)),
+            return quotient(intern_value(numeric_value(1)),
                 make_sqrt(one_plus_square(inverse_source, -1)));
     }else if(operation == exact_opcode::hyperbolic_tangent){
         if(inverse_composition(exact_opcode::inverse_hyperbolic_tangent,
@@ -1232,13 +1233,13 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
         if(inverse_composition(exact_opcode::inverse_hyperbolic_cosine,
                                inverse_source))
             return quotient(make_sqrt(make_add({square(inverse_source),
-                    intern_value(exact_value(-1))})), inverse_source);
+                    intern_value(numeric_value(-1))})), inverse_source);
     }
 
     if(operation == exact_opcode::exponential){
         precq_t coefficient;
         if(imaginary_pi_coefficient(coefficient)){
-            uint32_t coefficient_node = intern_value(exact_value(coefficient));
+            uint32_t coefficient_node = intern_value(numeric_value(coefficient));
             uint32_t pi = intern_compound(exact_opcode::constant_pi, {});
             uint32_t angle = make_multiply({coefficient_node, pi});
             uint32_t real = make_function(exact_opcode::cosine, angle);
@@ -1249,11 +1250,11 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             bool real_zero = real_node.op == exact_opcode::value &&
                 values[real_node.payload].is_zero();
             if(real_zero && imaginary_node.op == exact_opcode::value){
-                const exact_value &coefficient_value =
+                const numeric_value &coefficient_value =
                     values[imaginary_node.payload];
                 if(coefficient_value.is_one()) return imaginary;
-                if(coefficient_value == exact_value(-1))
-                    return make_multiply({intern_value(exact_value(-1)),
+                if(coefficient_value == numeric_value(-1))
+                    return make_multiply({intern_value(numeric_value(-1)),
                                           imaginary});
             }
             return make_add({real, make_multiply({imaginary_part, imaginary})});
@@ -1264,7 +1265,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             result = children(candidate)[0];
             const exact_node &source = node(result);
             if(source.op == exact_opcode::value){
-                const exact_value &exact = values[source.payload];
+                const numeric_value &exact = values[source.payload];
                 if(exact.is_zero() || exact.is_negative()) return false;
             }
             return true;
@@ -1296,13 +1297,13 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
 
     if(operation == exact_opcode::natural_logarithm){
         if(argument.op == exact_opcode::constant_i){
-            uint32_t half = intern_value(exact_value(
+            uint32_t half = intern_value(numeric_value(
                 precq_t(precn_t(1), precn_t(2))));
             uint32_t pi = intern_compound(exact_opcode::constant_pi, {});
             return make_multiply({half, value, pi});
         }
         if(argument.op == exact_opcode::constant_e)
-            return intern_value(exact_value(1));
+            return intern_value(numeric_value(1));
         if(argument.op == exact_opcode::exponential)
             return children(argument)[0];
         if(argument.op == exact_opcode::power){
@@ -1322,7 +1323,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
                 return true;
             }
             if(current.op != exact_opcode::value) return false;
-            const exact_value &exact = values[current.payload];
+            const numeric_value &exact = values[current.payload];
             if(exact.is_approximate()) return false;
             coefficient = coefficient * exact.rational();
             return true;
@@ -1358,17 +1359,17 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             int64_t scaled = numerator * 12;
             if(scaled % (int64_t)denominator == 0){
                 unsigned angle = (unsigned)(scaled / (int64_t)denominator) % 24;
-                uint32_t zero = intern_value(exact_value(0));
-                uint32_t one = intern_value(exact_value(1));
-                uint32_t minus_one = intern_value(exact_value(-1));
-                uint32_t half = intern_value(exact_value(
+                uint32_t zero = intern_value(numeric_value(0));
+                uint32_t one = intern_value(numeric_value(1));
+                uint32_t minus_one = intern_value(numeric_value(-1));
+                uint32_t half = intern_value(numeric_value(
                     precq_t(precn_t(1), precn_t(2))));
                 auto negate = [&](uint32_t id){
                     return make_multiply({minus_one, id});
                 };
                 auto radical_over = [&](uint64_t radicand, uint64_t divisor){
-                    uint32_t radical = make_sqrt(intern_value(exact_value(radicand)));
-                    uint32_t coefficient = intern_value(exact_value(
+                    uint32_t radical = make_sqrt(intern_value(numeric_value(radicand)));
+                    uint32_t coefficient = intern_value(numeric_value(
                         precq_t(precn_t(1), precn_t(divisor))));
                     return make_multiply({coefficient, radical});
                 };
@@ -1411,7 +1412,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
     }
 
     if(argument.op == exact_opcode::value){
-        const exact_value &exact = values[argument.payload];
+        const numeric_value &exact = values[argument.payload];
         // Decimal inputs carry an approximation contract even when their
         // current binary value is exactly 0 or 1.  Keep that contract until
         // promote_approximate evaluates the complete numeric expression.
@@ -1419,7 +1420,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             if(operation == exact_opcode::cosine ||
                operation == exact_opcode::hyperbolic_cosine ||
                operation == exact_opcode::exponential)
-                return intern_value(exact_value(1));
+                return intern_value(numeric_value(1));
             if(operation == exact_opcode::sine ||
                operation == exact_opcode::tangent ||
                operation == exact_opcode::arc_sine ||
@@ -1435,7 +1436,7 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             operation == exact_opcode::logarithm_base_2 ||
             operation == exact_opcode::logarithm_base_10 ||
             operation == exact_opcode::inverse_hyperbolic_cosine)){
-            return intern_value(exact_value(0));
+            return intern_value(numeric_value(0));
         }
         if(!exact.is_approximate() && exact.is_one() &&
            operation == exact_opcode::exponential)
@@ -1464,20 +1465,20 @@ uint32_t exact_storage::make_function(exact_opcode operation, uint32_t value){
             else if(operation == exact_opcode::error_function) number = ::erf(number);
             else if(operation == exact_opcode::imaginary_error_function) number = ::erfi(number);
             else number = ::log10(number);
-            return intern_value(exact_value(std::move(number)));
+            return intern_value(numeric_value(std::move(number)));
         }
         if(operation == exact_opcode::absolute_value)
             return exact.is_negative() ? intern_value(-exact) : value;
     }
     if(argument.op == exact_opcode::constant_pi){
         if(operation == exact_opcode::sine || operation == exact_opcode::tangent)
-            return intern_value(exact_value(0));
+            return intern_value(numeric_value(0));
         if(operation == exact_opcode::cosine)
-            return intern_value(exact_value(-1));
+            return intern_value(numeric_value(-1));
     }
     if(argument.op == exact_opcode::constant_e &&
        operation == exact_opcode::natural_logarithm)
-        return intern_value(exact_value(1));
+        return intern_value(numeric_value(1));
     return intern_compound(operation, {value});
 }
 
@@ -1489,14 +1490,14 @@ uint32_t exact_storage::make_sum(uint32_t variable, uint32_t lower,
     if(variable_node.op == exact_opcode::symbol && body == variable &&
        lower_node.op == exact_opcode::value &&
        upper_node.op == exact_opcode::value){
-        const exact_value &lo_value = values[lower_node.payload];
-        const exact_value &hi_value = values[upper_node.payload];
+        const numeric_value &lo_value = values[lower_node.payload];
+        const numeric_value &hi_value = values[upper_node.payload];
         if(lo_value.is_integer() && hi_value.is_integer() &&
            hi_value.integer() >= lo_value.integer()){
             precz_t count = hi_value.integer() - lo_value.integer() + precz_t(1);
             precz_t total = (lo_value.integer() + hi_value.integer()) * count;
             total /= precz_t(2);
-            return intern_value(exact_value(std::move(total)));
+            return intern_value(numeric_value(std::move(total)));
         }
     }
     return intern_compound(exact_opcode::bounded_sum,
@@ -1514,7 +1515,7 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
         if(current.op == exact_opcode::symbol ||
            current.op == exact_opcode::bounded_sum) return false;
         if(current.op == exact_opcode::value){
-            const exact_value &value = values[current.payload];
+            const numeric_value &value = values[current.payload];
             if(value.is_approximate()){
                 saw_approximate = true;
                 if(!value.number().is_exact())
@@ -1609,9 +1610,9 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
         real.set_precision(precision);
         imag.set_precision(precision);
         bool real_zero = real.is_zero();
-        uint32_t real_node = intern_value(exact_value(std::move(real)));
+        uint32_t real_node = intern_value(numeric_value(std::move(real)));
         if(imag.is_zero()) return real_node;
-        uint32_t imag_node = intern_value(exact_value(std::move(imag)));
+        uint32_t imag_node = intern_value(numeric_value(std::move(imag)));
         uint32_t imaginary = intern_compound(exact_opcode::constant_i, {});
         uint32_t imag_term = make_multiply({imag_node, imaginary});
         return real_zero ? imag_term : make_add({real_node, imag_term});
@@ -1705,7 +1706,7 @@ uint32_t exact_storage::promote_approximate(uint32_t expression){
     };
     Number result = evaluate(evaluate, expression);
     result.set_precision(precision);
-    return intern_value(exact_value(std::move(result)));
+    return intern_value(numeric_value(std::move(result)));
 }
 
 static unsigned expression_precedence(exact_opcode op){
@@ -1959,7 +1960,7 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
             std::stable_sort(numerator.begin(), numerator.end(), factor_less);
             size_t begin = 0;
             if(numerator.size() > 1 && node(numerator[0]).op == exact_opcode::value){
-                const exact_value &coefficient = values[node(numerator[0]).payload];
+                const numeric_value &coefficient = values[node(numerator[0]).payload];
                 if(coefficient.is_minus_one()){
                     result.push_back('-');
                     begin = 1;
@@ -1976,7 +1977,7 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
                 size_t begin = 0;
                 if(numerator.size() > 1 &&
                    node(numerator[0]).op == exact_opcode::value){
-                    const exact_value &coefficient =
+                    const numeric_value &coefficient =
                         values[node(numerator[0]).payload];
                     if(coefficient.is_minus_one()){
                         result.push_back('-');
@@ -2005,8 +2006,8 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
            power.op == exact_opcode::value &&
            (values[printed_base.payload].is_approximate() ||
             values[power.payload].is_approximate())){
-            const exact_value &base_value = values[printed_base.payload];
-            const exact_value &power_value = values[power.payload];
+            const numeric_value &base_value = values[printed_base.payload];
+            const numeric_value &power_value = values[power.payload];
             double precision = approximate_precision(base_value, power_value);
             Number numeric = ::pow(base_value.to_number(precision + 32.0),
                                    power_value.to_number(precision + 32.0));
@@ -2142,7 +2143,7 @@ std::string exact_expr::debug_tree(size_t maximum_nodes) const{
 bool exact_expr::is_value() const{
     return valid() && storage_->node(root_).op == exact_opcode::value;
 }
-exact_value exact_expr::value() const{
+numeric_value exact_expr::value() const{
     if(!is_value()) throw std::logic_error("exact expression is not a value");
     return storage_->values[storage_->node(root_).payload];
 }
@@ -2154,7 +2155,7 @@ std::string exact_expr::to_string() const{
 exact_complex::exact_complex() : real_(), imag_(){}
 exact_complex::exact_complex(const exact_expr &real) : real_(real), imag_(){
     if(real.valid()) imag_ = exact_expr(real.storage_,
-        real.storage_->intern_value(exact_value(0)));
+        real.storage_->intern_value(numeric_value(0)));
 }
 exact_complex::exact_complex(const exact_expr &real, const exact_expr &imag)
     : real_(real), imag_(imag){
@@ -2213,13 +2214,13 @@ exact_complex &exact_complex::operator/=(const exact_complex &other){
 exact_context::exact_context() : storage_(std::make_shared<exact_storage>()){}
 exact_context::exact_context(std::shared_ptr<exact_storage> storage)
     : storage_(std::move(storage)){}
-exact_expr exact_context::value(const exact_value &value){
+exact_expr exact_context::value(const numeric_value &value){
     return exact_expr(storage_, storage_->intern_value(value));
 }
-exact_expr exact_context::value(exact_value &&value){
+exact_expr exact_context::value(numeric_value &&value){
     return exact_expr(storage_, storage_->intern_value(std::move(value)));
 }
-exact_expr exact_context::rational(const precq_t &value){ return this->value(exact_value(value)); }
+exact_expr exact_context::rational(const precq_t &value){ return this->value(numeric_value(value)); }
 exact_expr exact_context::symbol(const std::string &name){
     if(name.empty()) throw std::invalid_argument("symbol name cannot be empty");
     return exact_expr(storage_, storage_->intern_symbol(name));
@@ -2276,7 +2277,7 @@ exact_expr exact_context::add(std::initializer_list<exact_expr> terms){
 exact_expr exact_context::subtract(const exact_expr &a, const exact_expr &b){
     if(!a.valid() || !b.valid() || a.storage_ != storage_ || b.storage_ != storage_)
         throw std::invalid_argument("exact expressions belong to different contexts");
-    uint32_t negative = storage_->intern_value(exact_value(-1));
+    uint32_t negative = storage_->intern_value(numeric_value(-1));
     uint32_t negated = storage_->make_multiply({negative, b.root_});
     uint32_t result = storage_->make_add({a.root_, negated});
     return exact_expr(storage_, storage_->promote_approximate(result));
@@ -2303,7 +2304,7 @@ exact_expr exact_context::divide(const exact_expr &a, const exact_expr &b){
        storage_->values[denominator.payload].is_zero())
         throw std::domain_error("division by zero");
 
-    uint32_t minus_one = storage_->intern_value(exact_value(-1));
+    uint32_t minus_one = storage_->intern_value(numeric_value(-1));
     std::vector<uint32_t> factors;
     factors.push_back(a.root_);
     if(denominator.op == exact_opcode::multiply){
@@ -2487,7 +2488,7 @@ exact_expr exact_context::partial_gamma(const exact_expr &a,
         Number number = ::partial_gamma(a.value().to_number(precision),
                                         x.value().to_number(precision));
         number.set_precision(precision);
-        result = storage_->intern_value(exact_value(std::move(number)));
+        result = storage_->intern_value(numeric_value(std::move(number)));
     }else{
         result = storage_->intern_compound(exact_opcode::partial_gamma,
                                             {a.root_, x.root_});
@@ -2655,7 +2656,7 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
 
 namespace{
 
-using integration_poly = std::vector<exact_value>;
+using integration_poly = std::vector<numeric_value>;
 
 static void integration_trim(integration_poly &a){
     while(a.size() > 1 && a.back().is_zero()) a.pop_back();
@@ -2663,7 +2664,7 @@ static void integration_trim(integration_poly &a){
 
 static integration_poly integration_add(const integration_poly &a,
                                          const integration_poly &b){
-    integration_poly r(std::max(a.size(), b.size()), exact_value(0));
+    integration_poly r(std::max(a.size(), b.size()), numeric_value(0));
     for(size_t i = 0; i < a.size(); ++i) r[i] = r[i] + a[i];
     for(size_t i = 0; i < b.size(); ++i) r[i] = r[i] + b[i];
     integration_trim(r);
@@ -2672,7 +2673,7 @@ static integration_poly integration_add(const integration_poly &a,
 
 static integration_poly integration_mul(const integration_poly &a,
                                          const integration_poly &b){
-    integration_poly r(a.size() + b.size() - 1, exact_value(0));
+    integration_poly r(a.size() + b.size() - 1, numeric_value(0));
     for(size_t i = 0; i < a.size(); ++i)
         for(size_t j = 0; j < b.size(); ++j)
             r[i + j] = r[i + j] + a[i] * b[j];
@@ -2682,7 +2683,7 @@ static integration_poly integration_mul(const integration_poly &a,
 
 static bool integration_exponent(const exact_expr &value, size_t &result){
     if(!value.is_value() || !value.value().is_integer()) return false;
-    exact_value exact = value.value();
+    numeric_value exact = value.value();
     const precz_t &integer = exact.integer();
     if(integer.is_negative() || integer.magnitude().rsiz > 1) return false;
     result = integer.magnitude().rsiz ? (size_t)integer.magnitude().a[0] : 0;
@@ -2693,7 +2694,7 @@ static bool integration_parse_poly(const exact_expr &expression,
                                    const exact_expr &variable,
                                    integration_poly &result){
     if(expression == variable){
-        result = {exact_value(0), exact_value(1)};
+        result = {numeric_value(0), numeric_value(1)};
         return true;
     }
     if(expression.is_value() && !expression.value().is_approximate()){
@@ -2701,7 +2702,7 @@ static bool integration_parse_poly(const exact_expr &expression,
         return true;
     }
     if(expression.operation() == exact_opcode::add){
-        result = {exact_value(0)};
+        result = {numeric_value(0)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly term;
             if(!integration_parse_poly(expression.operand(i), variable, term))
@@ -2711,7 +2712,7 @@ static bool integration_parse_poly(const exact_expr &expression,
         return true;
     }
     if(expression.operation() == exact_opcode::multiply){
-        result = {exact_value(1)};
+        result = {numeric_value(1)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly factor;
             if(!integration_parse_poly(expression.operand(i), variable, factor))
@@ -2727,7 +2728,7 @@ static bool integration_parse_poly(const exact_expr &expression,
         integration_poly base;
         if(!integration_parse_poly(expression.operand(0), variable, base))
             return false;
-        result = {exact_value(1)};
+        result = {numeric_value(1)};
         while(exponent){
             if(exponent & 1) result = integration_mul(result, base);
             exponent >>= 1;
@@ -2757,11 +2758,11 @@ static bool integration_divide_poly(integration_poly numerator,
                                     integration_poly &quotient){
     if(denominator.empty() || denominator.back().is_zero()) return false;
     quotient.assign(numerator.size() >= denominator.size()
-        ? numerator.size() - denominator.size() + 1 : 1, exact_value(0));
+        ? numerator.size() - denominator.size() + 1 : 1, numeric_value(0));
     while(numerator.size() >= denominator.size() &&
           !(numerator.size() == 1 && numerator[0].is_zero())){
         size_t shift = numerator.size() - denominator.size();
-        exact_value scale = numerator.back() / denominator.back();
+        numeric_value scale = numerator.back() / denominator.back();
         quotient[shift] = quotient[shift] + scale;
         for(size_t i = 0; i < denominator.size(); ++i)
             numerator[i + shift] = numerator[i + shift] -
@@ -2778,11 +2779,11 @@ static bool integration_divmod_poly(integration_poly numerator,
                                     integration_poly &remainder){
     if(denominator.empty() || denominator.back().is_zero()) return false;
     quotient.assign(numerator.size() >= denominator.size()
-        ? numerator.size() - denominator.size() + 1 : 1, exact_value(0));
+        ? numerator.size() - denominator.size() + 1 : 1, numeric_value(0));
     while(numerator.size() >= denominator.size() &&
           !(numerator.size() == 1 && numerator[0].is_zero())){
         size_t shift = numerator.size() - denominator.size();
-        exact_value scale = numerator.back() / denominator.back();
+        numeric_value scale = numerator.back() / denominator.back();
         quotient[shift] = quotient[shift] + scale;
         for(size_t i = 0; i < denominator.size(); ++i)
             numerator[i + shift] = numerator[i + shift] -
@@ -2797,7 +2798,7 @@ static bool integration_divmod_poly(integration_poly numerator,
 static bool integration_signed_exponent(const exact_expr &value,
                                         int64_t &result){
     if(!value.is_value() || !value.value().is_integer()) return false;
-    exact_value exact = value.value();
+    numeric_value exact = value.value();
     const precz_t &integer = exact.integer();
     if(integer.magnitude().rsiz > 1 ||
        (integer.magnitude().rsiz &&
@@ -2810,7 +2811,7 @@ static bool integration_signed_exponent(const exact_expr &value,
 
 static integration_poly integration_pow_poly(integration_poly base,
                                              size_t exponent){
-    integration_poly result{exact_value(1)};
+    integration_poly result{numeric_value(1)};
     while(exponent){
         if(exponent & 1) result = integration_mul(result, base);
         exponent >>= 1;
@@ -2824,12 +2825,12 @@ static bool integration_parse_rational(const exact_expr &expression,
                                        integration_poly &numerator,
                                        integration_poly &denominator){
     if(integration_parse_poly(expression, variable, numerator)){
-        denominator = {exact_value(1)};
+        denominator = {numeric_value(1)};
         return true;
     }
     if(expression.operation() == exact_opcode::multiply){
-        numerator = {exact_value(1)};
-        denominator = {exact_value(1)};
+        numerator = {numeric_value(1)};
+        denominator = {numeric_value(1)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly child_numerator, child_denominator;
             if(!integration_parse_rational(expression.operand(i), variable,
@@ -2841,8 +2842,8 @@ static bool integration_parse_rational(const exact_expr &expression,
         return true;
     }
     if(expression.operation() == exact_opcode::add){
-        numerator = {exact_value(0)};
-        denominator = {exact_value(1)};
+        numerator = {numeric_value(0)};
+        denominator = {numeric_value(1)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly child_numerator, child_denominator;
             if(!integration_parse_rational(expression.operand(i), variable,
@@ -2864,8 +2865,8 @@ static bool integration_parse_rational(const exact_expr &expression,
                                        base_numerator, base_denominator))
             return false;
         if(exponent == 0){
-            numerator = {exact_value(1)};
-            denominator = {exact_value(1)};
+            numerator = {numeric_value(1)};
+            denominator = {numeric_value(1)};
         }else if(exponent > 0){
             numerator = integration_pow_poly(base_numerator, (size_t)exponent);
             denominator = integration_pow_poly(base_denominator, (size_t)exponent);
@@ -2924,11 +2925,11 @@ static exact_expr integration_squarefree_rational(
         unknowns += (factor.polynomial.size() - 1) * factor.multiplicity;
     if(unknowns + 1 != denominator_poly.size()) return exact_expr();
 
-    std::vector<std::vector<exact_value>> matrix(
-        unknowns, std::vector<exact_value>(unknowns + 1, exact_value(0)));
+    std::vector<std::vector<numeric_value>> matrix(
+        unknowns, std::vector<numeric_value>(unknowns + 1, numeric_value(0)));
     size_t column = 0;
     for(const integration_factor &entry : factors){
-        integration_poly divisor{exact_value(1)};
+        integration_poly divisor{numeric_value(1)};
         for(size_t order = 1; order <= entry.multiplicity; ++order){
             divisor = integration_mul(divisor, entry.polynomial);
             integration_poly cofactor;
@@ -2948,12 +2949,12 @@ static exact_expr integration_squarefree_rational(
         while(row < unknowns && matrix[row][pivot].is_zero()) ++row;
         if(row == unknowns) return exact_expr();
         if(row != pivot) std::swap(matrix[row], matrix[pivot]);
-        exact_value divisor = matrix[pivot][pivot];
+        numeric_value divisor = matrix[pivot][pivot];
         for(size_t j = pivot; j <= unknowns; ++j)
             matrix[pivot][j] = matrix[pivot][j] / divisor;
         for(size_t i = 0; i < unknowns; ++i){
             if(i == pivot || matrix[i][pivot].is_zero()) continue;
-            exact_value scale = matrix[i][pivot];
+            numeric_value scale = matrix[i][pivot];
             for(size_t j = pivot; j <= unknowns; ++j)
                 matrix[i][j] = matrix[i][j] - scale * matrix[pivot][j];
         }
@@ -2968,38 +2969,38 @@ static exact_expr integration_squarefree_rational(
             integration_poly_expr(context, factor, variable);
         for(size_t order = 1; order <= entry.multiplicity; ++order){
             if(degree == 1){
-                exact_value numerator = matrix[column++][unknowns];
+                numeric_value numerator = matrix[column++][unknowns];
                 if(order == 1){
                     result = result + context.value(numerator / factor[1]) *
                         context.natural_logarithm(
                             context.absolute_value(factor_expression));
                 }else{
-                    exact_value coefficient = numerator /
-                        (factor[1] * exact_value(1 - (int64_t)order));
+                    numeric_value coefficient = numerator /
+                        (factor[1] * numeric_value(1 - (int64_t)order));
                     result = result + context.value(coefficient) *
                         context.power(factor_expression,
                                       context.integer(1 - (int64_t)order));
                 }
                 continue;
             }
-            exact_value constant = matrix[column++][unknowns];
-            exact_value linear = matrix[column++][unknowns];
-            exact_value alpha = linear / (exact_value(2) * factor[2]);
-            exact_value residual = constant - alpha * factor[1];
+            numeric_value constant = matrix[column++][unknowns];
+            numeric_value linear = matrix[column++][unknowns];
+            numeric_value alpha = linear / (numeric_value(2) * factor[2]);
+            numeric_value residual = constant - alpha * factor[1];
             if(order == 1){
                 result = result + context.value(alpha) *
                     context.natural_logarithm(
                         context.absolute_value(factor_expression));
             }else{
                 result = result + context.value(
-                    alpha / exact_value(1 - (int64_t)order)) *
+                    alpha / numeric_value(1 - (int64_t)order)) *
                     context.power(factor_expression,
                                   context.integer(1 - (int64_t)order));
             }
-            exact_value discriminant = exact_value(4) * factor[2] * factor[0] -
+            numeric_value discriminant = numeric_value(4) * factor[2] * factor[0] -
                                        factor[1] * factor[1];
             if(discriminant.is_zero()) return exact_expr();
-            exact_expr linear_term = context.value(exact_value(2) * factor[2]) *
+            exact_expr linear_term = context.value(numeric_value(2) * factor[2]) *
                                      variable + context.value(factor[1]);
             exact_expr j;
             if(!discriminant.is_negative()){
@@ -3013,11 +3014,11 @@ static exact_expr integration_squarefree_rational(
             }
             for(size_t k = 2; k <= order; ++k){
                 exact_expr boundary = linear_term /
-                    (context.value(exact_value((uint64_t)k - 1) * discriminant) *
+                    (context.value(numeric_value((uint64_t)k - 1) * discriminant) *
                      context.power(factor_expression, context.integer(k - 1)));
-                exact_value recurrence = exact_value(2) * factor[2] *
-                    exact_value((uint64_t)(2 * k - 3)) /
-                    (exact_value((uint64_t)k - 1) * discriminant);
+                numeric_value recurrence = numeric_value(2) * factor[2] *
+                    numeric_value((uint64_t)(2 * k - 3)) /
+                    (numeric_value((uint64_t)k - 1) * discriminant);
                 j = boundary + context.value(recurrence) * j;
             }
             result = result + context.value(residual) * j;
@@ -3112,8 +3113,8 @@ static exact_expr integration_rational_antiderivative(
     exact_expr polynomial_part = context.integer(0);
     for(size_t degree = 0; degree < quotient.size(); ++degree){
         if(quotient[degree].is_zero()) continue;
-        exact_value coefficient = quotient[degree] /
-                                  exact_value((uint64_t)degree + 1);
+        numeric_value coefficient = quotient[degree] /
+                                  numeric_value((uint64_t)degree + 1);
         polynomial_part = polynomial_part + context.value(coefficient) *
             context.power(variable, context.integer(degree + 1));
     }
@@ -3132,10 +3133,10 @@ static exact_expr integration_rational_antiderivative(
 
 static integration_poly integration_derivative_poly(
     const integration_poly &source){
-    if(source.size() <= 1) return {exact_value(0)};
-    integration_poly result(source.size() - 1, exact_value(0));
+    if(source.size() <= 1) return {numeric_value(0)};
+    integration_poly result(source.size() - 1, numeric_value(0));
     for(size_t i = 1; i < source.size(); ++i)
-        result[i - 1] = source[i] * exact_value((uint64_t)i);
+        result[i - 1] = source[i] * numeric_value((uint64_t)i);
     integration_trim(result);
     return result;
 }
@@ -3146,7 +3147,7 @@ static bool integration_zero_poly(const integration_poly &polynomial){
 
 static integration_poly integration_sub(const integration_poly &a,
                                         const integration_poly &b){
-    integration_poly result(std::max(a.size(), b.size()), exact_value(0));
+    integration_poly result(std::max(a.size(), b.size()), numeric_value(0));
     for(size_t i = 0; i < a.size(); ++i) result[i] = result[i] + a[i];
     for(size_t i = 0; i < b.size(); ++i) result[i] = result[i] - b[i];
     integration_trim(result);
@@ -3160,20 +3161,20 @@ static integration_poly integration_gcd_poly(integration_poly a,
     while(!integration_zero_poly(b)){
         integration_poly quotient, remainder;
         if(!integration_divmod_poly(a, b, quotient, remainder))
-            return {exact_value(1)};
+            return {numeric_value(1)};
         a = std::move(b);
         b = std::move(remainder);
     }
-    if(integration_zero_poly(a)) return {exact_value(1)};
-    exact_value leading = a.back();
-    for(exact_value &coefficient : a) coefficient = coefficient / leading;
+    if(integration_zero_poly(a)) return {numeric_value(1)};
+    numeric_value leading = a.back();
+    for(numeric_value &coefficient : a) coefficient = coefficient / leading;
     integration_trim(a);
     return a;
 }
 
 static bool integration_solve_linear(
-    std::vector<std::vector<exact_value>> &matrix, size_t columns,
-    std::vector<exact_value> &solution){
+    std::vector<std::vector<numeric_value>> &matrix, size_t columns,
+    std::vector<numeric_value> &solution){
     const size_t rows = matrix.size();
     size_t pivot_row = 0;
     std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
@@ -3182,12 +3183,12 @@ static bool integration_solve_linear(
         while(row < rows && matrix[row][column].is_zero()) ++row;
         if(row == rows) continue;
         if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
-        exact_value pivot = matrix[pivot_row][column];
+        numeric_value pivot = matrix[pivot_row][column];
         for(size_t j = column; j <= columns; ++j)
             matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
         for(size_t i = 0; i < rows; ++i){
             if(i == pivot_row || matrix[i][column].is_zero()) continue;
-            exact_value scale = matrix[i][column];
+            numeric_value scale = matrix[i][column];
             for(size_t j = column; j <= columns; ++j)
                 matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
         }
@@ -3202,7 +3203,7 @@ static bool integration_solve_linear(
             }
         if(empty && !matrix[row][columns].is_zero()) return false;
     }
-    solution.assign(columns, exact_value(0));
+    solution.assign(columns, numeric_value(0));
     for(size_t column = 0; column < columns; ++column){
         if(pivot_for_column[column] == SIZE_MAX) return false;
         solution[column] = matrix[pivot_for_column[column]][columns];
@@ -3459,8 +3460,8 @@ static exact_expr integration_hyperexponential_rational(
     std::vector<integration_poly> differential_columns;
     differential_columns.reserve(a_columns);
     for(size_t degree = 0; degree < a_columns; ++degree){
-        integration_poly basis(degree + 1, exact_value(0));
-        basis[degree] = exact_value(1);
+        integration_poly basis(degree + 1, numeric_value(0));
+        basis[degree] = numeric_value(1);
         integration_poly basis_derivative = integration_derivative_poly(basis);
         integration_poly differential_numerator = integration_sub(
             integration_mul(basis_derivative, universal_denominator),
@@ -3484,15 +3485,15 @@ static exact_expr integration_hyperexponential_rational(
     integration_poly complete_rhs = integration_mul(numerator,
         integration_mul(universal_denominator, universal_denominator));
     complete_rows = std::max(complete_rows, complete_rhs.size());
-    std::vector<std::vector<exact_value>> complete_matrix(
+    std::vector<std::vector<numeric_value>> complete_matrix(
         complete_rows,
-        std::vector<exact_value>(a_columns + 1, exact_value(0)));
+        std::vector<numeric_value>(a_columns + 1, numeric_value(0)));
     for(size_t column = 0; column < a_columns; ++column)
         for(size_t row = 0; row < complete_columns[column].size(); ++row)
             complete_matrix[row][column] = complete_columns[column][row];
     for(size_t row = 0; row < complete_rhs.size(); ++row)
         complete_matrix[row][a_columns] = complete_rhs[row];
-    std::vector<exact_value> coefficients;
+    std::vector<numeric_value> coefficients;
     if(integration_solve_linear(complete_matrix, a_columns, coefficients)){
         exact_expr a = integration_poly_expr(context, coefficients, variable);
         exact_expr b = integration_poly_expr(
@@ -3526,7 +3527,7 @@ static exact_expr integration_hyperexponential_rational(
         universal_denominator, universal_denominator);
     for(size_t degree = 0; degree < residual_columns; ++degree){
         integration_poly column(degree + denominator_squared.size(),
-                                exact_value(0));
+                                numeric_value(0));
         for(size_t i = 0; i < denominator_squared.size(); ++i)
             column[degree + i] = denominator_squared[i];
         integration_trim(column);
@@ -3535,8 +3536,8 @@ static exact_expr integration_hyperexponential_rational(
     }
     integration_poly rhs = integration_mul(numerator, universal_denominator);
     rows = std::max(rows, rhs.size());
-    std::vector<std::vector<exact_value>> matrix(
-        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
     for(size_t column = 0; column < columns; ++column)
         for(size_t row = 0; row < reduction_columns[column].size(); ++row)
             matrix[row][column] = reduction_columns[column][row];
@@ -3591,17 +3592,17 @@ static exact_expr integration_quadratic_hyperexponential(
     const size_t residual_column = r_columns;
     const size_t columns = r_columns + 1;
     const size_t rows = degree_p + 1;
-    std::vector<std::vector<exact_value>> matrix(
-        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
-    const exact_value twice_a = exact_value(2) * g[2];
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    const numeric_value twice_a = numeric_value(2) * g[2];
     for(size_t column = 0; column < r_columns; ++column){
         if(column)
             matrix[column - 1][column] = matrix[column - 1][column] +
-                exact_value((uint64_t)column);
+                numeric_value((uint64_t)column);
         matrix[column][column] = matrix[column][column] + g[1];
         matrix[column + 1][column] = matrix[column + 1][column] + twice_a;
     }
-    matrix[0][residual_column] = exact_value(1);
+    matrix[0][residual_column] = numeric_value(1);
     for(size_t row = 0; row < p.size(); ++row)
         matrix[row][columns] = p[row];
 
@@ -3612,12 +3613,12 @@ static exact_expr integration_quadratic_hyperexponential(
         while(row < rows && matrix[row][column].is_zero()) ++row;
         if(row == rows) continue;
         if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
-        exact_value pivot = matrix[pivot_row][column];
+        numeric_value pivot = matrix[pivot_row][column];
         for(size_t j = column; j <= columns; ++j)
             matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
         for(size_t i = 0; i < rows; ++i){
             if(i == pivot_row || matrix[i][column].is_zero()) continue;
-            exact_value scale = matrix[i][column];
+            numeric_value scale = matrix[i][column];
             for(size_t j = column; j <= columns; ++j)
                 matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
         }
@@ -3635,10 +3636,10 @@ static exact_expr integration_quadratic_hyperexponential(
     for(size_t column = 0; column < columns; ++column)
         if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
 
-    integration_poly r(r_columns ? r_columns : 1, exact_value(0));
+    integration_poly r(r_columns ? r_columns : 1, numeric_value(0));
     for(size_t column = 0; column < r_columns; ++column)
         r[column] = matrix[pivot_for_column[column]][columns];
-    exact_value residual = matrix[pivot_for_column[residual_column]][columns];
+    numeric_value residual = matrix[pivot_for_column[residual_column]][columns];
     exact_expr result = integration_poly_expr(context, r, variable) *
                         context.exponential(inner);
     if(residual.is_zero()) return constant * result;
@@ -3647,9 +3648,9 @@ static exact_expr integration_quadratic_hyperexponential(
     exact_expr magnitude = context.value(negative ? -g[2] : g[2]);
     exact_expr root = context.square_root(magnitude);
     exact_expr shift = variable + context.value(g[1] /
-        (exact_value(2) * g[2]));
-    exact_value completed_constant = g[0] - g[1] * g[1] /
-        (exact_value(4) * g[2]);
+        (numeric_value(2) * g[2]));
+    numeric_value completed_constant = g[0] - g[1] * g[1] /
+        (numeric_value(4) * g[2]);
     exact_expr base = context.square_root(context.pi()) /
         (context.integer(2) * root);
     base = context.exponential(context.value(completed_constant)) * base;
@@ -3667,9 +3668,9 @@ static exact_expr integration_quadratic_inverse_sqrt(
     integration_poly q;
     if(!integration_parse_poly(radicand, variable, q) || q.size() != 3 ||
        q[2].is_zero()) return exact_expr();
-    const exact_value a = q[2];
-    const exact_value discriminant = exact_value(4) * a * q[0] - q[1] * q[1];
-    exact_expr linear = context.value(exact_value(2) * a) * variable +
+    const numeric_value a = q[2];
+    const numeric_value discriminant = numeric_value(4) * a * q[0] - q[1] * q[1];
+    exact_expr linear = context.value(numeric_value(2) * a) * variable +
         context.value(q[1]);
     if(a.is_negative()){
         if(!discriminant.is_negative()) return exact_expr();
@@ -3708,19 +3709,19 @@ static exact_expr integration_quadratic_root_polynomial(
     const size_t residual_column = r_columns;
     const size_t columns = r_columns + 1;
     const size_t rows = degree_p + 1;
-    std::vector<std::vector<exact_value>> matrix(
-        rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
     for(size_t column = 0; column < r_columns; ++column){
         if(column){
             for(size_t j = 0; j < q.size(); ++j)
                 matrix[column - 1 + j][column] =
                     matrix[column - 1 + j][column] +
-                    exact_value((uint64_t)column) * q[j];
+                    numeric_value((uint64_t)column) * q[j];
         }
-        matrix[column][column] = matrix[column][column] + q[1] / exact_value(2);
+        matrix[column][column] = matrix[column][column] + q[1] / numeric_value(2);
         matrix[column + 1][column] = matrix[column + 1][column] + q[2];
     }
-    matrix[0][residual_column] = exact_value(1);
+    matrix[0][residual_column] = numeric_value(1);
     for(size_t row = 0; row < p.size(); ++row)
         matrix[row][columns] = p[row];
 
@@ -3731,12 +3732,12 @@ static exact_expr integration_quadratic_root_polynomial(
         while(row < rows && matrix[row][column].is_zero()) ++row;
         if(row == rows) continue;
         if(row != pivot_row) std::swap(matrix[row], matrix[pivot_row]);
-        exact_value pivot = matrix[pivot_row][column];
+        numeric_value pivot = matrix[pivot_row][column];
         for(size_t j = column; j <= columns; ++j)
             matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
         for(size_t i = 0; i < rows; ++i){
             if(i == pivot_row || matrix[i][column].is_zero()) continue;
-            exact_value scale = matrix[i][column];
+            numeric_value scale = matrix[i][column];
             for(size_t j = column; j <= columns; ++j)
                 matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
         }
@@ -3745,10 +3746,10 @@ static exact_expr integration_quadratic_root_polynomial(
     for(size_t column = 0; column < columns; ++column)
         if(pivot_for_column[column] == SIZE_MAX) return exact_expr();
 
-    integration_poly r(r_columns ? r_columns : 1, exact_value(0));
+    integration_poly r(r_columns ? r_columns : 1, numeric_value(0));
     for(size_t column = 0; column < r_columns; ++column)
         r[column] = matrix[pivot_for_column[column]][columns];
-    exact_value residual = matrix[pivot_for_column[residual_column]][columns];
+    numeric_value residual = matrix[pivot_for_column[residual_column]][columns];
     exact_expr result = integration_poly_expr(context, r, variable) *
         context.square_root(radicand);
     if(residual.is_zero()) return result;
@@ -3864,8 +3865,8 @@ static exact_expr integration_polynomial_primitive(
     exact_expr result = context.integer(0);
     for(size_t degree = 0; degree < polynomial.size(); ++degree){
         if(polynomial[degree].is_zero()) continue;
-        exact_value coefficient = polynomial[degree] /
-                                  exact_value((uint64_t)degree + 1);
+        numeric_value coefficient = polynomial[degree] /
+                                  numeric_value((uint64_t)degree + 1);
         result = result + context.value(coefficient) *
             context.power(variable, context.integer(degree + 1));
     }
@@ -4733,7 +4734,7 @@ class exact_factor_simplifier{
     bool full_factorization_;
     std::unordered_map<uint32_t, uint32_t> memo_;
 
-    using polynomial = std::map<size_t, exact_value>;
+    using polynomial = std::map<size_t, numeric_value>;
     using multivariate_monomial = std::map<uint32_t, size_t>;
     struct multivariate_order{
         bool operator()(const multivariate_monomial &a,
@@ -4756,7 +4757,7 @@ class exact_factor_simplifier{
         }
     };
     using multivariate_polynomial =
-        std::map<multivariate_monomial, exact_value, multivariate_order>;
+        std::map<multivariate_monomial, numeric_value, multivariate_order>;
 
     static multivariate_monomial multiply_monomials(
             multivariate_monomial a, const multivariate_monomial &b){
@@ -4779,7 +4780,7 @@ class exact_factor_simplifier{
 
     static void add_coefficient(multivariate_polynomial &value,
                                 multivariate_monomial monomial,
-                                const exact_value &coefficient){
+                                const numeric_value &coefficient){
         auto found = value.find(monomial);
         if(found == value.end()){
             if(!coefficient.is_zero())
@@ -4791,10 +4792,10 @@ class exact_factor_simplifier{
     }
 
     bool multivariate_term(uint32_t expression, multivariate_monomial &monomial,
-                           exact_value &coefficient){
+                           numeric_value &coefficient){
         exact_node current = storage_.node(expression);
         if(current.op == exact_opcode::value){
-            const exact_value &value = storage_.values[current.payload];
+            const numeric_value &value = storage_.values[current.payload];
             if(value.is_approximate()) return false;
             coefficient = coefficient * value;
             return true;
@@ -4836,7 +4837,7 @@ class exact_factor_simplifier{
             return !result.empty();
         }
         if(current.op == exact_opcode::multiply){
-            result.emplace(multivariate_monomial(), exact_value(1));
+            result.emplace(multivariate_monomial(), numeric_value(1));
             const uint32_t *args = storage_.children(current);
             for(size_t i = 0; i < current.operand_count; ++i){
                 multivariate_polynomial factor, product;
@@ -4863,7 +4864,7 @@ class exact_factor_simplifier{
                storage_.node(args[0]).op != exact_opcode::symbol){
                 multivariate_polynomial base;
                 if(!parse_multivariate(args[0], base)) return false;
-                result.emplace(multivariate_monomial(), exact_value(1));
+                result.emplace(multivariate_monomial(), numeric_value(1));
                 uint64_t bits = (uint64_t)exponent;
                 while(bits){
                     if(bits & 1){
@@ -4894,7 +4895,7 @@ class exact_factor_simplifier{
             }
         }
         multivariate_monomial monomial;
-        exact_value coefficient(1);
+        numeric_value coefficient(1);
         if(!multivariate_term(expression, monomial, coefficient)) return false;
         add_coefficient(result, std::move(monomial), coefficient);
         return !result.empty();
@@ -4909,7 +4910,7 @@ class exact_factor_simplifier{
             for(const auto &power : entry.first){
                 factors.push_back(power.second == 1 ? power.first :
                     storage_.make_power(power.first, storage_.intern_value(
-                        exact_value((uint64_t)power.second))));
+                        numeric_value((uint64_t)power.second))));
             }
             terms.push_back(storage_.make_multiply(std::move(factors)));
         }
@@ -4924,14 +4925,14 @@ class exact_factor_simplifier{
         multivariate_polynomial remainder = numerator;
         multivariate_polynomial quotient;
         const multivariate_monomial denominator_lead = denominator.rbegin()->first;
-        const exact_value denominator_coefficient = denominator.rbegin()->second;
+        const numeric_value denominator_coefficient = denominator.rbegin()->second;
         size_t steps = 0;
         while(!remainder.empty()){
             if(++steps > 100000) return false;
             multivariate_monomial monomial;
             if(!divide_monomials(remainder.rbegin()->first, denominator_lead,
                                  monomial)) return false;
-            exact_value coefficient =
+            numeric_value coefficient =
                 remainder.rbegin()->second / denominator_coefficient;
             add_coefficient(quotient, monomial, coefficient);
             for(const auto &entry : denominator){
@@ -4958,7 +4959,7 @@ class exact_factor_simplifier{
 
         auto one = []{
             multivariate_polynomial value;
-            value.emplace(multivariate_monomial(), exact_value(1));
+            value.emplace(multivariate_monomial(), numeric_value(1));
             return value;
         };
         auto is_unit = [](const multivariate_polynomial &value){
@@ -4984,14 +4985,14 @@ class exact_factor_simplifier{
             multivariate_polynomial remainder = a;
             quotient.clear();
             const multivariate_monomial lead = b.rbegin()->first;
-            const exact_value lead_coefficient = b.rbegin()->second;
+            const numeric_value lead_coefficient = b.rbegin()->second;
             size_t steps = 0;
             while(!remainder.empty()){
                 if(++steps > 100000) return false;
                 multivariate_monomial monomial;
                 if(!divide_monomials(remainder.rbegin()->first, lead, monomial))
                     return false;
-                exact_value coefficient =
+                numeric_value coefficient =
                     remainder.rbegin()->second / lead_coefficient;
                 add_coefficient(quotient, monomial, coefficient);
                 for(const auto &entry : b)
@@ -5057,12 +5058,12 @@ class exact_factor_simplifier{
         };
         auto make_monomial = [](const multivariate_monomial &monomial){
             multivariate_polynomial result;
-            result.emplace(monomial, exact_value(1));
+            result.emplace(monomial, numeric_value(1));
             return result;
         };
         auto make_monic = [](multivariate_polynomial &value){
             if(value.empty()) return;
-            exact_value lead = value.rbegin()->second;
+            numeric_value lead = value.rbegin()->second;
             for(auto &entry : value) entry.second = entry.second / lead;
         };
         auto univariate_remainder = [&](const multivariate_polynomial &left,
@@ -5071,14 +5072,14 @@ class exact_factor_simplifier{
             if(right.empty()) return false;
             remainder = left;
             const multivariate_monomial lead = right.rbegin()->first;
-            const exact_value lead_coefficient = right.rbegin()->second;
+            const numeric_value lead_coefficient = right.rbegin()->second;
             size_t steps = 0;
             while(!remainder.empty()){
                 if(++steps > 100000) return false;
                 multivariate_monomial quotient_monomial;
                 if(!divide_monomials(remainder.rbegin()->first, lead,
                                      quotient_monomial)) break;
-                exact_value quotient_coefficient =
+                numeric_value quotient_coefficient =
                     remainder.rbegin()->second / lead_coefficient;
                 for(const auto &entry : right)
                     add_coefficient(remainder,
@@ -5301,10 +5302,10 @@ class exact_factor_simplifier{
     }
 
     bool monomial(uint32_t expression, uint32_t &variable,
-                  size_t &degree, exact_value &coefficient){
+                  size_t &degree, numeric_value &coefficient){
         exact_node current = storage_.node(expression);
         if(current.op == exact_opcode::value){
-            const exact_value &value = storage_.values[current.payload];
+            const numeric_value &value = storage_.values[current.payload];
             if(value.is_approximate()) return false;
             coefficient = coefficient * value;
             return true;
@@ -5349,7 +5350,7 @@ class exact_factor_simplifier{
         }
         for(uint32_t term : terms){
             size_t degree = 0;
-            exact_value coefficient(1);
+            numeric_value coefficient(1);
             if(!monomial(term, variable, degree, coefficient)) return false;
             auto found = result.find(degree);
             if(found == result.end()) result.emplace(degree, coefficient);
@@ -5367,7 +5368,7 @@ class exact_factor_simplifier{
             if(entry.first){
                 uint32_t power = entry.first == 1 ? variable :
                     storage_.make_power(variable, storage_.intern_value(
-                        exact_value((uint64_t)entry.first)));
+                        numeric_value((uint64_t)entry.first)));
                 term = storage_.make_multiply({term, power});
             }
             terms.push_back(term);
@@ -5386,20 +5387,20 @@ class exact_factor_simplifier{
         polynomial remainder = numerator;
         polynomial quotient;
         size_t denominator_degree = denominator.rbegin()->first;
-        exact_value denominator_lead = denominator.rbegin()->second;
+        numeric_value denominator_lead = denominator.rbegin()->second;
         size_t steps = 0;
         while(!remainder.empty() &&
               remainder.rbegin()->first >= denominator_degree){
             if(++steps > 4096) return false;
             size_t degree = remainder.rbegin()->first - denominator_degree;
-            exact_value coefficient =
+            numeric_value coefficient =
                 remainder.rbegin()->second / denominator_lead;
             auto q = quotient.find(degree);
             if(q == quotient.end()) quotient.emplace(degree, coefficient);
             else q->second = q->second + coefficient;
             for(const auto &entry : denominator){
                 size_t target = entry.first + degree;
-                exact_value subtrahend = entry.second * coefficient;
+                numeric_value subtrahend = entry.second * coefficient;
                 auto r = remainder.find(target);
                 if(r == remainder.end())
                     remainder.emplace(target, -subtrahend);
@@ -5440,7 +5441,7 @@ class exact_factor_simplifier{
                 factors[numerator] = reduced_numerator;
                 factors[inverse] = storage_.make_power(
                     reduced_denominator,
-                    storage_.intern_value(exact_value(-1)));
+                    storage_.intern_value(numeric_value(-1)));
                 return cancel_polynomial_factors(factors);
             }
         }
@@ -5452,11 +5453,11 @@ class exact_factor_simplifier{
         for(size_t i = 0; i < factors.size(); ++i){
             exact_node current = storage_.node(factors[i]);
             if(current.op != exact_opcode::value) continue;
-            const exact_value &value = storage_.values[current.payload];
-            if(value == exact_value(2)){
+            const numeric_value &value = storage_.values[current.payload];
+            if(value == numeric_value(2)){
                 coefficient = i;
                 coefficient_sign = 1;
-            }else if(value == exact_value(-2)){
+            }else if(value == numeric_value(-2)){
                 coefficient = i;
                 coefficient_sign = -1;
             }
@@ -5474,7 +5475,7 @@ class exact_factor_simplifier{
                    storage_.children(cosine_node)[0]) continue;
                 uint32_t argument = storage_.children(sine_node)[0];
                 uint32_t doubled = storage_.make_multiply({
-                    storage_.intern_value(exact_value(2)), argument});
+                    storage_.intern_value(numeric_value(2)), argument});
                 uint32_t replacement = storage_.make_function(
                     exact_opcode::sine, doubled);
                 std::vector<uint32_t> reduced;
@@ -5483,7 +5484,7 @@ class exact_factor_simplifier{
                     if(i != coefficient && i != sine && i != cosine)
                         reduced.push_back(factors[i]);
                 if(coefficient_sign < 0)
-                    reduced.push_back(storage_.intern_value(exact_value(-1)));
+                    reduced.push_back(storage_.intern_value(numeric_value(-1)));
                 reduced.push_back(replacement);
                 factors = std::move(reduced);
                 return;
@@ -5521,7 +5522,7 @@ class exact_factor_simplifier{
 
     bool signed_power(uint32_t term, int &sign, uint32_t &base,
                       uint64_t &exponent){
-        exact_value coefficient(1);
+        numeric_value coefficient(1);
         std::vector<uint32_t> symbolic;
         exact_node current = storage_.node(term);
         if(current.op == exact_opcode::multiply){
@@ -5539,7 +5540,7 @@ class exact_factor_simplifier{
             symbolic.push_back(term);
         }
         if(symbolic.empty()){
-            base = storage_.intern_value(exact_value(1));
+            base = storage_.intern_value(numeric_value(1));
             exponent = 1;
         }else{
             if(symbolic.size() != 1) return false;
@@ -5560,11 +5561,11 @@ class exact_factor_simplifier{
         }
         sign = coefficient.is_negative() ? -1 : 1;
         if(sign < 0) coefficient = -coefficient;
-        if(coefficient == exact_value(1)) return true;
+        if(coefficient == numeric_value(1)) return true;
 
         // Absorb any exact nth-power coefficient into the symbolic base, so
         // one rule handles scaled differences of squares, cubes, fifths, etc.
-        exact_value root_value;
+        numeric_value root_value;
         if(!exact_nth_root(coefficient, exponent, root_value)) return false;
         uint32_t root = storage_.intern_value(std::move(root_value));
         base = storage_.make_multiply({root, base});
@@ -5631,13 +5632,13 @@ class exact_factor_simplifier{
                 for(size_t degree = 0; degree < coefficients.size(); ++degree)
                     if(!coefficients[degree].is_zero())
                         expression.emplace(degree,
-                                           exact_value(coefficients[degree]));
+                                           numeric_value(coefficients[degree]));
                 cyclotomic_factors.push_back(
                     polynomial_expression(expression, base_a));
             }
             return storage_.make_multiply(std::move(cyclotomic_factors));
         }
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
         uint32_t difference = storage_.make_add({
             base_a, storage_.make_multiply({minus_one, base_b})});
         std::vector<uint32_t> quotient_terms;
@@ -5647,10 +5648,10 @@ class exact_factor_simplifier{
             uint64_t power_a = exponent_a - 1 - i;
             if(power_a) factors.push_back(power_a == 1 ? base_a :
                 storage_.make_power(base_a, storage_.intern_value(
-                    exact_value(power_a))));
+                    numeric_value(power_a))));
             if(i) factors.push_back(i == 1 ? base_b :
                 storage_.make_power(base_b, storage_.intern_value(
-                    exact_value(i))));
+                    numeric_value(i))));
             quotient_terms.push_back(storage_.make_multiply(std::move(factors)));
         }
         uint32_t quotient = storage_.make_add(std::move(quotient_terms));
@@ -5661,8 +5662,8 @@ class exact_factor_simplifier{
         if(terms.size() != 2) return UINT32_MAX;
         uint32_t base_a = 0, base_b = 0;
         uint64_t exponent_a = 0, exponent_b = 0;
-        exact_value coefficient_a(1), coefficient_b(1);
-        auto coefficient_power = [&](uint32_t term, exact_value &coefficient,
+        numeric_value coefficient_a(1), coefficient_b(1);
+        auto coefficient_power = [&](uint32_t term, numeric_value &coefficient,
                                      uint32_t &base, uint64_t &exponent){
             std::vector<uint32_t> symbolic;
             exact_node current = storage_.node(term);
@@ -5716,10 +5717,10 @@ class exact_factor_simplifier{
         if(exponent_a == 2 && coefficient_a == coefficient_b)
             return storage_.intern_value(std::move(coefficient_a));
         if(exponent_a == 4 && coefficient_a == -coefficient_b){
-            uint32_t two = storage_.intern_value(exact_value(2));
+            uint32_t two = storage_.intern_value(numeric_value(2));
             uint32_t square_a = storage_.make_power(base_a, two);
             uint32_t square_b = storage_.make_power(base_b, two);
-            uint32_t minus_one = storage_.intern_value(exact_value(-1));
+            uint32_t minus_one = storage_.intern_value(numeric_value(-1));
             uint32_t difference = storage_.make_add({
                 square_a, storage_.make_multiply({minus_one, square_b})});
             return storage_.make_multiply({
@@ -5736,7 +5737,7 @@ class exact_factor_simplifier{
            source.rbegin()->first < 2) return UINT32_MAX;
 
         size_t degree = source.rbegin()->first;
-        std::vector<exact_value> coefficients(degree + 1, exact_value(0));
+        std::vector<numeric_value> coefficients(degree + 1, numeric_value(0));
         for(const auto &entry : source){
             if(!entry.second.is_integer()) return UINT32_MAX;
             coefficients[entry.first] = entry.second;
@@ -5769,14 +5770,14 @@ class exact_factor_simplifier{
         std::vector<uint64_t> denominators = divisors(leading_abs);
         std::vector<uint32_t> factors;
 
-        auto divide_at_root = [&](const exact_value &root) -> bool{
+        auto divide_at_root = [&](const numeric_value &root) -> bool{
             size_t n = coefficients.size() - 1;
-            std::vector<exact_value> quotient(n, exact_value(0));
+            std::vector<numeric_value> quotient(n, numeric_value(0));
             quotient[n - 1] = coefficients[n];
             for(size_t index = n - 1; index > 0; --index)
                 quotient[index - 1] = coefficients[index] +
                                       root * quotient[index];
-            exact_value remainder = coefficients[0] + root * quotient[0];
+            numeric_value remainder = coefficients[0] + root * quotient[0];
             if(!remainder.is_zero()) return false;
             coefficients = std::move(quotient);
             while(coefficients.size() > 1 && coefficients.back().is_zero())
@@ -5788,9 +5789,9 @@ class exact_factor_simplifier{
             for(uint64_t denominator : denominators){
                 if(denominator == 0) continue;
                 precq_t positive{precn_t(numerator), precn_t(denominator)};
-                const exact_value candidates[] = {
-                    exact_value(positive), exact_value(-positive)};
-                for(const exact_value &root : candidates){
+                const numeric_value candidates[] = {
+                    numeric_value(positive), numeric_value(-positive)};
+                for(const numeric_value &root : candidates){
                     while(coefficients.size() > 1 && divide_at_root(root)){
                         uint32_t negative_root = storage_.intern_value(-root);
                         factors.push_back(storage_.make_add({variable,
@@ -5816,8 +5817,8 @@ class exact_factor_simplifier{
         if(!parse_polynomial(expression, variable, parsed) ||
            variable == UINT32_MAX || parsed.empty() ||
            parsed.rbegin()->first < 2) return UINT32_MAX;
-        using dense_polynomial = std::vector<exact_value>;
-        dense_polynomial source(parsed.rbegin()->first + 1, exact_value(0));
+        using dense_polynomial = std::vector<numeric_value>;
+        dense_polynomial source(parsed.rbegin()->first + 1, numeric_value(0));
         for(const auto &entry : parsed){
             if(entry.second.is_approximate()) return UINT32_MAX;
             int64_t small_coefficient = 0;
@@ -5834,8 +5835,8 @@ class exact_factor_simplifier{
         };
         auto monic = [&](dense_polynomial value){
             trim(value);
-            exact_value lead = value.back();
-            for(exact_value &coefficient : value)
+            numeric_value lead = value.back();
+            for(numeric_value &coefficient : value)
                 coefficient = coefficient / lead;
             return value;
         };
@@ -5846,16 +5847,16 @@ class exact_factor_simplifier{
             trim(dividend);
             if(divisor.empty() || divisor.back().is_zero()) return false;
             if(dividend.size() < divisor.size()){
-                quotient.assign(1, exact_value(0));
+                quotient.assign(1, numeric_value(0));
                 remainder = std::move(dividend);
                 return true;
             }
             quotient.assign(dividend.size() - divisor.size() + 1,
-                            exact_value(0));
+                            numeric_value(0));
             while(dividend.size() >= divisor.size() &&
                   !(dividend.size() == 1 && dividend[0].is_zero())){
                 size_t degree = dividend.size() - divisor.size();
-                exact_value coefficient = dividend.back() / divisor.back();
+                numeric_value coefficient = dividend.back() / divisor.back();
                 quotient[degree] = quotient[degree] + coefficient;
                 for(size_t i = 0; i < divisor.size(); ++i)
                     dividend[i + degree] = dividend[i + degree] -
@@ -5884,10 +5885,10 @@ class exact_factor_simplifier{
             }
             return monic(std::move(a));
         };
-        dense_polynomial derivative(source.size() - 1, exact_value(0));
+        dense_polynomial derivative(source.size() - 1, numeric_value(0));
         for(size_t exponent = 1; exponent < source.size(); ++exponent)
             derivative[exponent - 1] = source[exponent] *
-                                       exact_value((uint64_t)exponent);
+                                       numeric_value((uint64_t)exponent);
         dense_polynomial repeated = polynomial_gcd(source, derivative);
         if(is_one(repeated)) return UINT32_MAX;
         dense_polynomial remaining;
@@ -5913,7 +5914,7 @@ class exact_factor_simplifier{
                 if(quartic != UINT32_MAX) factor_id = quartic;
                 if(multiplicity != 1)
                     factor_id = storage_.make_power(factor_id,
-                        storage_.intern_value(exact_value(multiplicity)));
+                        storage_.intern_value(numeric_value(multiplicity)));
                 factors.push_back(factor_id);
             }
             remaining = std::move(shared);
@@ -5960,12 +5961,12 @@ class exact_factor_simplifier{
         auto make_quadratic = [&](int64_t linear, int64_t constant){
             std::vector<uint32_t> terms;
             terms.push_back(storage_.make_power(variable,
-                storage_.intern_value(exact_value(2))));
+                storage_.intern_value(numeric_value(2))));
             if(linear)
                 terms.push_back(storage_.make_multiply({
-                    storage_.intern_value(exact_value(linear)), variable}));
+                    storage_.intern_value(numeric_value(linear)), variable}));
             if(constant)
-                terms.push_back(storage_.intern_value(exact_value(constant)));
+                terms.push_back(storage_.intern_value(numeric_value(constant)));
             return storage_.make_add(std::move(terms));
         };
         auto accept = [&](int64_t a, int64_t b, int64_t c, int64_t d){
@@ -6120,7 +6121,7 @@ class exact_factor_simplifier{
         auto expression_from = [&](const std::vector<int64_t> &coefficients){
             polynomial sparse;
             for(size_t i = 0; i < coefficients.size(); ++i)
-                if(coefficients[i]) sparse.emplace(i, exact_value(coefficients[i]));
+                if(coefficients[i]) sparse.emplace(i, numeric_value(coefficients[i]));
             return polynomial_expression(sparse, variable);
         };
         auto hensel_lift = [&](const std::vector<int> &g_mod, int prime,
@@ -6416,6 +6417,321 @@ class exact_factor_simplifier{
         return UINT32_MAX;
     }
 
+    uint32_t factor_multivariate_content(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 256)
+            return UINT32_MAX;
+
+        std::map<uint32_t, size_t> variables;
+        for(const auto &term : input)
+            for(const auto &power : term.first)
+                variables[power.first] = std::max(variables[power.first],
+                                                  power.second);
+        if(variables.size() < 2) return UINT32_MAX;
+
+        for(const auto &variable : variables){
+            std::map<size_t, multivariate_polynomial> coefficients;
+            for(const auto &term : input){
+                multivariate_monomial monomial = term.first;
+                size_t degree = 0;
+                auto found = monomial.find(variable.first);
+                if(found != monomial.end()){
+                    degree = found->second;
+                    monomial.erase(found);
+                }
+                add_coefficient(coefficients[degree], std::move(monomial),
+                                term.second);
+            }
+            if(coefficients.size() < 2 || coefficients.size() > 64)
+                continue;
+
+            uint32_t content = multivariate_expression(coefficients.begin()->second);
+            bool complete = true;
+            for(auto it = std::next(coefficients.begin());
+                it != coefficients.end(); ++it){
+                uint32_t ignored_left = 0, ignored_right = 0, common = 0;
+                if(!multivariate_gcd_quotients(content,
+                    multivariate_expression(it->second), ignored_left,
+                    ignored_right, &common)){
+                    complete = false;
+                    break;
+                }
+                content = common;
+                if(storage_.node(content).op == exact_opcode::value) break;
+            }
+            if(!complete || storage_.node(content).op == exact_opcode::value)
+                continue;
+
+            uint32_t quotient = 0;
+            if(!multivariate_quotient(expression, content, quotient)) continue;
+            return storage_.make_multiply({simplify(content), simplify(quotient)});
+        }
+        return UINT32_MAX;
+    }
+
+    bool divide_multivariate_polynomials(const multivariate_polynomial &numerator,
+                                         const multivariate_polynomial &denominator,
+                                         multivariate_polynomial &quotient){
+        if(denominator.empty()) return false;
+        multivariate_polynomial remainder = numerator;
+        quotient.clear();
+        const multivariate_monomial lead = denominator.rbegin()->first;
+        const numeric_value lead_coefficient = denominator.rbegin()->second;
+        size_t steps = 0;
+        while(!remainder.empty()){
+            if(++steps > 100000) return false;
+            multivariate_monomial monomial;
+            if(!divide_monomials(remainder.rbegin()->first, lead, monomial))
+                return false;
+            numeric_value coefficient = remainder.rbegin()->second / lead_coefficient;
+            add_coefficient(quotient, monomial, coefficient);
+            for(const auto &term : denominator)
+                add_coefficient(remainder,
+                    multiply_monomials(monomial, term.first),
+                    -(coefficient * term.second));
+        }
+        return !quotient.empty();
+    }
+
+    uint32_t factor_multivariate_square_free(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 512)
+            return UINT32_MAX;
+
+        std::vector<uint32_t> variables;
+        for(const auto &term : input)
+            for(const auto &power : term.first)
+                if(std::find(variables.begin(), variables.end(), power.first) ==
+                   variables.end()) variables.push_back(power.first);
+        if(variables.size() < 2) return UINT32_MAX;
+
+        for(uint32_t variable : variables){
+            multivariate_polynomial derivative;
+            for(const auto &term : input){
+                auto found = term.first.find(variable);
+                if(found == term.first.end()) continue;
+                multivariate_monomial monomial = term.first;
+                size_t degree = found->second;
+                auto reduced = monomial.find(variable);
+                if(--reduced->second == 0) monomial.erase(reduced);
+                add_coefficient(derivative, std::move(monomial),
+                    term.second * numeric_value((uint64_t)degree));
+            }
+            if(derivative.empty()) continue;
+
+            uint32_t ignored_left = 0, ignored_right = 0, common = 0;
+            if(!multivariate_gcd_quotients(
+                expression, multivariate_expression(derivative),
+                ignored_left, ignored_right, &common)) continue;
+            if(storage_.node(common).op == exact_opcode::value) continue;
+
+            uint32_t quotient = 0;
+            if(!multivariate_quotient(expression, common, quotient)) continue;
+            multivariate_polynomial quotient_polynomial;
+            if(!parse_multivariate(quotient, quotient_polynomial)) continue;
+            bool quotient_has_variable = false;
+            for(const auto &term : quotient_polynomial)
+                if(!term.first.empty()){
+                    quotient_has_variable = true;
+                    break;
+                }
+            if(!quotient_has_variable) continue;
+            return storage_.make_multiply({simplify(common), simplify(quotient)});
+        }
+        return UINT32_MAX;
+    }
+
+    uint32_t factor_multivariate_linear(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 256)
+            return UINT32_MAX;
+
+        std::vector<uint32_t> variables;
+        for(const auto &term : input)
+            for(const auto &power : term.first)
+                if(std::find(variables.begin(), variables.end(), power.first) ==
+                   variables.end()) variables.push_back(power.first);
+        std::sort(variables.begin(), variables.end());
+        if(variables.size() < 2 || variables.size() > 4) return UINT32_MAX;
+
+        std::vector<int> coefficients(variables.size() + 1, -3);
+        uint64_t combinations = 1;
+        for(size_t i = 0; i < coefficients.size(); ++i) combinations *= 7;
+        for(uint64_t code = 0; code < combinations; ++code){
+            uint64_t value = code;
+            bool any_variable = false;
+            int first = 0;
+            int divisor = 0;
+            for(size_t i = 0; i < coefficients.size(); ++i){
+                coefficients[i] = (int)(value % 7) - 3;
+                value /= 7;
+                if(i < variables.size() && coefficients[i]) any_variable = true;
+                if(first == 0 && coefficients[i]) first = coefficients[i];
+                divisor = std::gcd(divisor, std::abs(coefficients[i]));
+            }
+            // Primitive coefficients and a fixed sign avoid equivalent trials.
+            if(!any_variable || first < 0 || divisor != 1) continue;
+
+            multivariate_polynomial candidate;
+            for(size_t i = 0; i < variables.size(); ++i){
+                if(!coefficients[i]) continue;
+                multivariate_monomial monomial;
+                monomial[variables[i]] = 1;
+                add_coefficient(candidate, std::move(monomial),
+                                numeric_value(coefficients[i]));
+            }
+            if(coefficients.back())
+                add_coefficient(candidate, multivariate_monomial(),
+                                numeric_value(coefficients.back()));
+
+            multivariate_polynomial quotient;
+            if(!divide_multivariate_polynomials(input, candidate, quotient))
+                continue;
+            bool quotient_has_variable = false;
+            for(const auto &term : quotient)
+                if(!term.first.empty()){
+                    quotient_has_variable = true;
+                    break;
+                }
+            if(!quotient_has_variable) continue;
+            uint32_t left = simplify(multivariate_expression(candidate));
+            uint32_t right = simplify(multivariate_expression(quotient));
+            return storage_.make_multiply({left, right});
+        }
+        return UINT32_MAX;
+    }
+
+    uint32_t factor_multivariate_bilinear(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 256)
+            return UINT32_MAX;
+
+        std::vector<uint32_t> variables;
+        for(const auto &term : input)
+            for(const auto &power : term.first)
+                if(std::find(variables.begin(), variables.end(), power.first) ==
+                   variables.end()) variables.push_back(power.first);
+        std::sort(variables.begin(), variables.end());
+        if(variables.size() != 2) return UINT32_MAX;
+
+        // a*x*y + b*x + c*y + d. Small coefficients are a bounded
+        // undetermined-coefficient search; exact division certifies a hit.
+        int coefficient[4];
+        const uint64_t combinations = 7 * 7 * 7 * 7;
+        for(uint64_t code = 0; code < combinations; ++code){
+            uint64_t value = code;
+            int first = 0;
+            int divisor = 0;
+            for(size_t i = 0; i < 4; ++i){
+                coefficient[i] = (int)(value % 7) - 3;
+                value /= 7;
+                if(first == 0 && coefficient[i]) first = coefficient[i];
+                divisor = std::gcd(divisor, std::abs(coefficient[i]));
+            }
+            if(coefficient[0] == 0 || first < 0 || divisor != 1) continue;
+
+            multivariate_polynomial candidate;
+            multivariate_monomial product;
+            product[variables[0]] = 1;
+            product[variables[1]] = 1;
+            add_coefficient(candidate, std::move(product),
+                            numeric_value(coefficient[0]));
+            for(size_t i = 0; i < 2; ++i){
+                if(!coefficient[i + 1]) continue;
+                multivariate_monomial monomial;
+                monomial[variables[i]] = 1;
+                add_coefficient(candidate, std::move(monomial),
+                                numeric_value(coefficient[i + 1]));
+            }
+            if(coefficient[3])
+                add_coefficient(candidate, multivariate_monomial(),
+                                numeric_value(coefficient[3]));
+
+            multivariate_polynomial quotient;
+            if(!divide_multivariate_polynomials(input, candidate, quotient))
+                continue;
+            bool quotient_has_variable = false;
+            for(const auto &term : quotient)
+                if(!term.first.empty()){
+                    quotient_has_variable = true;
+                    break;
+                }
+            if(!quotient_has_variable) continue;
+            return storage_.make_multiply({
+                simplify(multivariate_expression(candidate)),
+                simplify(multivariate_expression(quotient))});
+        }
+        return UINT32_MAX;
+    }
+
+    uint32_t factor_multivariate_quadratic(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 64)
+            return UINT32_MAX;
+
+        std::vector<uint32_t> variables;
+        size_t maximum_degree = 0;
+        for(const auto &term : input){
+            size_t degree = 0;
+            for(const auto &power : term.first){
+                degree += power.second;
+                if(std::find(variables.begin(), variables.end(), power.first) ==
+                   variables.end()) variables.push_back(power.first);
+            }
+            maximum_degree = std::max(maximum_degree, degree);
+        }
+        std::sort(variables.begin(), variables.end());
+        if(variables.size() != 2 || maximum_degree < 4 || maximum_degree > 8)
+            return UINT32_MAX;
+
+        // Coefficients of x^2, x*y, y^2, x, y, 1. Restricting the range
+        // keeps irreducible inputs cheap enough while covering common forms.
+        int coefficient[6];
+        uint64_t combinations = 1;
+        for(size_t i = 0; i < 6; ++i) combinations *= 5;
+        for(uint64_t code = 0; code < combinations; ++code){
+            uint64_t value = code;
+            int first = 0;
+            int divisor = 0;
+            for(size_t i = 0; i < 6; ++i){
+                coefficient[i] = (int)(value % 5) - 2;
+                value /= 5;
+                if(first == 0 && coefficient[i]) first = coefficient[i];
+                divisor = std::gcd(divisor, std::abs(coefficient[i]));
+            }
+            if((coefficient[0] == 0 && coefficient[1] == 0 &&
+                coefficient[2] == 0) || first < 0 || divisor != 1) continue;
+
+            multivariate_polynomial candidate;
+            const size_t exponents[6][2] = {
+                {2, 0}, {1, 1}, {0, 2}, {1, 0}, {0, 1}, {0, 0}
+            };
+            for(size_t i = 0; i < 6; ++i){
+                if(!coefficient[i]) continue;
+                multivariate_monomial monomial;
+                if(exponents[i][0]) monomial[variables[0]] = exponents[i][0];
+                if(exponents[i][1]) monomial[variables[1]] = exponents[i][1];
+                add_coefficient(candidate, std::move(monomial),
+                                numeric_value(coefficient[i]));
+            }
+
+            multivariate_polynomial quotient;
+            if(!divide_multivariate_polynomials(input, candidate, quotient))
+                continue;
+            bool quotient_has_variable = false;
+            for(const auto &term : quotient)
+                if(!term.first.empty()){
+                    quotient_has_variable = true;
+                    break;
+                }
+            if(!quotient_has_variable) continue;
+            return storage_.make_multiply({
+                simplify(multivariate_expression(candidate)),
+                simplify(multivariate_expression(quotient))});
+        }
+        return UINT32_MAX;
+    }
+
     uint32_t factor_add(std::vector<uint32_t> terms){
         if(terms.size() < 2) return storage_.make_add(std::move(terms));
         uint32_t trigonometric = trigonometric_power_identity(terms);
@@ -6424,7 +6740,7 @@ class exact_factor_simplifier{
         precz_t integer_content;
         bool have_integer_content = false;
         for(uint32_t term : terms){
-            exact_value coefficient(1);
+            numeric_value coefficient(1);
             exact_node current = storage_.node(term);
             if(current.op == exact_opcode::value){
                 coefficient = storage_.values[current.payload];
@@ -6447,8 +6763,8 @@ class exact_factor_simplifier{
             have_integer_content = true;
         }
         if(have_integer_content && integer_content > precz_t(1)){
-            exact_value content(integer_content);
-            uint32_t inverse = storage_.intern_value(exact_value(1) / content);
+            numeric_value content(integer_content);
+            uint32_t inverse = storage_.intern_value(numeric_value(1) / content);
             std::vector<uint32_t> reduced;
             reduced.reserve(terms.size());
             for(uint32_t term : terms)
@@ -6474,6 +6790,16 @@ class exact_factor_simplifier{
             if(difference != UINT32_MAX) return difference;
             uint32_t expression = storage_.make_add(terms);
             if(!full_factorization_) return expression;
+            uint32_t content_factor = factor_multivariate_content(expression);
+            if(content_factor != UINT32_MAX) return content_factor;
+            uint32_t repeated_factor = factor_multivariate_square_free(expression);
+            if(repeated_factor != UINT32_MAX) return repeated_factor;
+            uint32_t linear_factor = factor_multivariate_linear(expression);
+            if(linear_factor != UINT32_MAX) return linear_factor;
+            uint32_t bilinear_factor = factor_multivariate_bilinear(expression);
+            if(bilinear_factor != UINT32_MAX) return bilinear_factor;
+            uint32_t quadratic_factor = factor_multivariate_quadratic(expression);
+            if(quadratic_factor != UINT32_MAX) return quadratic_factor;
             auto refactor_product = [&](uint32_t candidate){
                 exact_node product = storage_.node(candidate);
                 if(product.op != exact_opcode::multiply) return candidate;
@@ -6504,18 +6830,18 @@ class exact_factor_simplifier{
             if(parse_polynomial(expression, variable, quadratic) &&
                variable != UINT32_MAX && !quadratic.empty() &&
                quadratic.rbegin()->first == 2){
-                exact_value a = quadratic.count(2) ? quadratic[2] : exact_value(0);
-                exact_value b = quadratic.count(1) ? quadratic[1] : exact_value(0);
-                exact_value c = quadratic.count(0) ? quadratic[0] : exact_value(0);
-                exact_value discriminant = b * b - exact_value(4) * a * c;
+                numeric_value a = quadratic.count(2) ? quadratic[2] : numeric_value(0);
+                numeric_value b = quadratic.count(1) ? quadratic[1] : numeric_value(0);
+                numeric_value c = quadratic.count(0) ? quadratic[0] : numeric_value(0);
+                numeric_value discriminant = b * b - numeric_value(4) * a * c;
                 uint32_t radical = storage_.make_sqrt(
                     storage_.intern_value(discriminant));
                 exact_node radical_node = storage_.node(radical);
                 if(radical_node.op == exact_opcode::value){
-                    exact_value root = storage_.values[radical_node.payload];
-                    exact_value denominator = exact_value(2) * a;
-                    exact_value root_a = (-b + root) / denominator;
-                    exact_value root_b = (-b - root) / denominator;
+                    numeric_value root = storage_.values[radical_node.payload];
+                    numeric_value denominator = numeric_value(2) * a;
+                    numeric_value root_a = (-b + root) / denominator;
+                    numeric_value root_b = (-b - root) / denominator;
                     uint32_t minus_root_a = storage_.intern_value(-root_a);
                     uint32_t minus_root_b = storage_.intern_value(-root_b);
                     uint32_t factor_a = storage_.make_add({variable, minus_root_a});
@@ -6529,11 +6855,11 @@ class exact_factor_simplifier{
 
         std::vector<uint32_t> common_factors;
         std::vector<uint32_t> inverse_factors;
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
         for(const auto &entry : common){
             uint32_t factor = entry.second == 1 ? entry.first :
                 storage_.make_power(entry.first,
-                    storage_.intern_value(exact_value(entry.second)));
+                    storage_.intern_value(numeric_value(entry.second)));
             common_factors.push_back(factor);
             inverse_factors.push_back(storage_.make_power(factor, minus_one));
         }
@@ -6601,7 +6927,7 @@ class exact_factor_simplifier{
 
     bool expanded_power(uint32_t base, uint64_t exponent, uint32_t &result,
                         size_t &products){
-        result = storage_.intern_value(exact_value(1));
+        result = storage_.intern_value(numeric_value(1));
         uint32_t factor = base;
         while(exponent){
             if(exponent & 1)
@@ -6618,7 +6944,7 @@ class exact_factor_simplifier{
         if(current.op == exact_opcode::square_root){
             exact_node value_node = storage_.node(storage_.children(current)[0]);
             if(value_node.op != exact_opcode::value) return false;
-            const exact_value &value = storage_.values[value_node.payload];
+            const numeric_value &value = storage_.values[value_node.payload];
             if(!value.is_integer() || value.is_negative() ||
                value.integer().magnitude().rsiz > 1) return false;
             const precn_t &magnitude = value.integer().magnitude();
@@ -6657,7 +6983,7 @@ class exact_factor_simplifier{
         const uint32_t *args = storage_.children(current);
         exact_node exponent_node = storage_.node(args[1]);
         if(exponent_node.op != exact_opcode::value) return false;
-        const exact_value &exponent = storage_.values[exponent_node.payload];
+        const numeric_value &exponent = storage_.values[exponent_node.payload];
         if(exponent.is_approximate()) return false;
         precq_t rational = exponent.rational();
         if(rational.is_negative() || rational.numerator() != precn_t(1) ||
@@ -6677,7 +7003,7 @@ class exact_factor_simplifier{
         if(root_index == 1 && !root_degree(terms[1], degree)) return false;
         uint32_t root = terms[root_index];
         uint32_t other = terms[1 - root_index];
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
         std::vector<uint32_t> quotient_terms;
         quotient_terms.reserve((size_t)degree);
         for(uint64_t k = 0; k < degree; ++k){
@@ -6685,17 +7011,17 @@ class exact_factor_simplifier{
             uint64_t other_power = degree - 1 - k;
             if(other_power) factors.push_back(other_power == 1 ? other :
                 storage_.make_power(other, storage_.intern_value(
-                    exact_value(other_power))));
+                    numeric_value(other_power))));
             if(k) factors.push_back(k == 1 ? root : storage_.make_power(
-                root, storage_.intern_value(exact_value(k))));
+                root, storage_.intern_value(numeric_value(k))));
             if(k & 1) factors.push_back(minus_one);
             quotient_terms.push_back(storage_.make_multiply(std::move(factors)));
         }
         uint32_t quotient = storage_.make_add(std::move(quotient_terms));
         uint32_t other_power = storage_.make_power(other,
-            storage_.intern_value(exact_value(degree)));
+            storage_.intern_value(numeric_value(degree)));
         uint32_t root_power = storage_.make_power(root,
-            storage_.intern_value(exact_value(degree)));
+            storage_.intern_value(numeric_value(degree)));
         uint32_t denominator = degree & 1
             ? storage_.make_add({other_power, root_power})
             : storage_.make_add({other_power,
@@ -6726,8 +7052,8 @@ class exact_factor_simplifier{
            contains_square_root(other)) return false;
 
         uint32_t r = roots[0], s = roots[1];
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
-        uint32_t three = storage_.intern_value(exact_value(3));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
+        uint32_t three = storage_.intern_value(numeric_value(3));
         size_t products = 0;
 
         // First eliminate s from other + r + s.
@@ -6736,14 +7062,14 @@ class exact_factor_simplifier{
         if(!expanded_power(a_sum, 2, a_square, products) ||
            !expanded_product(a_sum, s, a_times_s, products)) return false;
         uint32_t s_square = storage_.make_power(
-            s, storage_.intern_value(exact_value(2)));
+            s, storage_.intern_value(numeric_value(2)));
         uint32_t first_numerator = storage_.make_add({
             a_square, storage_.make_multiply({minus_one, a_times_s}), s_square});
 
         uint32_t r_cube = storage_.make_power(
-            r, storage_.intern_value(exact_value(3)));
+            r, storage_.intern_value(numeric_value(3)));
         uint32_t s_cube = storage_.make_power(
-            s, storage_.intern_value(exact_value(3)));
+            s, storage_.intern_value(numeric_value(3)));
         uint32_t other_square = storage_.make_multiply({other, other});
         uint32_t other_cube = storage_.make_multiply({other_square, other});
         uint32_t c0 = storage_.make_add({other_cube, r_cube, s_cube});
@@ -6763,7 +7089,7 @@ class exact_factor_simplifier{
         uint32_t q1 = subtract(product(r_cube, square(c2)), product(c0, c1));
         uint32_t q2 = subtract(square(c1), product(c0, c2));
         uint32_t r_square = storage_.make_power(
-            r, storage_.intern_value(exact_value(2)));
+            r, storage_.intern_value(numeric_value(2)));
         uint32_t second_numerator = storage_.make_add({
             q0, product(q1, r), product(q2, r_square)});
 
@@ -6771,7 +7097,7 @@ class exact_factor_simplifier{
             product(square(c0), c0),
             product(r_cube, product(square(c1), c1)),
             product(square(r_cube), product(square(c2), c2)),
-            product(storage_.intern_value(exact_value(-3)),
+            product(storage_.intern_value(numeric_value(-3)),
                     product(r_cube, product(c0, product(c1, c2))))});
         if(contains_square_root(norm)) return false;
         uint32_t numerator = 0;
@@ -6805,8 +7131,8 @@ class exact_factor_simplifier{
         if(square_root == UINT32_MAX || cube_root == UINT32_MAX ||
            other == UINT32_MAX || contains_square_root(other)) return false;
 
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
-        uint32_t two = storage_.intern_value(exact_value(2));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
+        uint32_t two = storage_.intern_value(numeric_value(2));
         size_t products = 0;
 
         // First multiply by other + cube_root - square_root.
@@ -6818,9 +7144,9 @@ class exact_factor_simplifier{
             storage_.make_multiply({other, other}),
             storage_.make_multiply({minus_one, square_value})});
         uint32_t c1 = storage_.make_multiply({two, other});
-        uint32_t c2 = storage_.intern_value(exact_value(1));
+        uint32_t c2 = storage_.intern_value(numeric_value(1));
         uint32_t cube_value = storage_.make_power(
-            cube_root, storage_.intern_value(exact_value(3)));
+            cube_root, storage_.intern_value(numeric_value(3)));
 
         auto product = [&](uint32_t x, uint32_t y){
             return storage_.make_multiply({x, y});
@@ -6835,14 +7161,14 @@ class exact_factor_simplifier{
                                product(c0, c1));
         uint32_t q2 = subtract(square(c1), product(c0, c2));
         uint32_t cube_square = storage_.make_power(
-            cube_root, storage_.intern_value(exact_value(2)));
+            cube_root, storage_.intern_value(numeric_value(2)));
         uint32_t second_numerator = storage_.make_add({
             q0, product(q1, cube_root), product(q2, cube_square)});
         uint32_t norm = storage_.make_add({
             product(square(c0), c0),
             product(cube_value, product(square(c1), c1)),
             product(square(cube_value), product(square(c2), c2)),
-            product(storage_.intern_value(exact_value(-3)),
+            product(storage_.intern_value(numeric_value(-3)),
                     product(cube_value, product(c0, product(c1, c2))))});
         uint32_t numerator = 0;
         if(!expanded_product(first_numerator, second_numerator,
@@ -6867,9 +7193,9 @@ class exact_factor_simplifier{
            initial.operand_count >= 16 || !contains_square_root(base) ||
            contains_approximate(base)) return false;
 
-        uint32_t numerator = storage_.intern_value(exact_value(1));
+        uint32_t numerator = storage_.intern_value(numeric_value(1));
         uint32_t denominator = base;
-        uint32_t minus_one = storage_.intern_value(exact_value(-1));
+        uint32_t minus_one = storage_.intern_value(numeric_value(-1));
         size_t products = 0;
         std::unordered_set<uint32_t> seen;
         for(size_t round = 0; round < 15 && contains_square_root(denominator);
@@ -6923,12 +7249,12 @@ public:
         const exact_node &right_node = storage_.node(right);
         if(left_node.op == exact_opcode::value &&
            right_node.op == exact_opcode::value){
-            const exact_value &a = storage_.values[left_node.payload];
-            const exact_value &b = storage_.values[right_node.payload];
+            const numeric_value &a = storage_.values[left_node.payload];
+            const numeric_value &b = storage_.values[right_node.payload];
             if(!a.is_integer() || !b.is_integer())
                 throw std::invalid_argument(
                     "gcd numeric arguments must be exact integers");
-            return storage_.intern_value(exact_value(::gcd(a.integer(),
+            return storage_.intern_value(numeric_value(::gcd(a.integer(),
                                                             b.integer())));
         }
         uint32_t ignored_left = 0, ignored_right = 0, common = 0;
@@ -6997,7 +7323,7 @@ class exact_expander{
     uint32_t multiply(uint32_t a, uint32_t b){
         std::vector<uint32_t> left = terms(a);
         std::vector<uint32_t> right = terms(b);
-        uint32_t accumulated = storage_.intern_value(exact_value(0));
+        uint32_t accumulated = storage_.intern_value(numeric_value(0));
         // Canonicalize each row before proceeding. A field-like product may
         // have thousands of raw pairs but only a few dozen combined radicals.
         for(uint32_t x : left){
@@ -7048,7 +7374,7 @@ public:
             for(uint32_t &child : children) child = expand(child);
             result = storage_.make_add(std::move(children));
         }else if(source.op == exact_opcode::multiply){
-            uint32_t product = storage_.intern_value(exact_value(1));
+            uint32_t product = storage_.intern_value(numeric_value(1));
             for(uint32_t child : children) product = multiply(product, expand(child));
             result = product;
         }else if(source.op == exact_opcode::power){
@@ -7060,7 +7386,7 @@ public:
                 integer_i64(storage_.values[exponent_node.payload], power);
             exact_node base_node = storage_.node(base);
             if(integral && power >= 0 && base_node.op == exact_opcode::add){
-                uint32_t accumulated = storage_.intern_value(exact_value(1));
+                uint32_t accumulated = storage_.intern_value(numeric_value(1));
                 uint32_t factor = base;
                 uint64_t bits = (uint64_t)power;
                 while(bits){
@@ -7109,7 +7435,7 @@ class exact_trig_rewriter{
     std::unordered_map<uint32_t, uint32_t> memo_;
 
     uint32_t value(int64_t number){
-        return storage_.intern_value(exact_value(number));
+        return storage_.intern_value(numeric_value(number));
     }
 
     uint32_t function(exact_opcode operation, uint32_t argument){
@@ -7234,7 +7560,7 @@ class exact_trig_rewriter{
         uint32_t argument = storage_.children(function_node)[0];
         uint32_t doubled = storage_.make_multiply({value(2), argument});
         uint32_t cosine = function(exact_opcode::cosine, doubled);
-        uint32_t half = storage_.intern_value(exact_value(
+        uint32_t half = storage_.intern_value(numeric_value(
             precq_t(precn_t(1), precn_t(2))));
         uint32_t cosine_half = storage_.make_multiply({half, cosine});
         return function_node.op == exact_opcode::sine
@@ -7258,7 +7584,7 @@ class exact_trig_rewriter{
                 reduced.reserve(factors.size() - 1);
                 for(size_t i = 0; i < factors.size(); ++i)
                     if(i != sine && i != cosine) reduced.push_back(factors[i]);
-                reduced.push_back(storage_.intern_value(exact_value(
+                reduced.push_back(storage_.intern_value(numeric_value(
                     precq_t(precn_t(1), precn_t(2)))));
                 reduced.push_back(function(exact_opcode::sine, doubled));
                 return storage_.make_multiply(std::move(reduced));
@@ -7506,7 +7832,7 @@ exact_expr exact_context::factor_integer(const exact_expr &expression){
         throw std::domain_error("factorint is undefined for zero");
     std::vector<uint32_t> result;
     if(negative)
-        result.push_back(storage_->intern_value(exact_value(-1)));
+        result.push_back(storage_->intern_value(numeric_value(-1)));
     std::vector<precn_t> factors;
     if(!cas_factor_big(magnitude, factors)){
         throw std::runtime_error(
@@ -7516,12 +7842,12 @@ exact_expr exact_context::factor_integer(const exact_expr &expression){
     for(size_t begin = 0; begin < factors.size();){
         size_t end = begin + 1;
         while(end < factors.size() && factors[end] == factors[begin]) ++end;
-        uint32_t prime = storage_->intern_value(exact_value(
+        uint32_t prime = storage_->intern_value(numeric_value(
             precz_t(factors[begin])));
         size_t exponent = end - begin;
         result.push_back(exponent == 1 ? prime : storage_->intern_compound(
             exact_opcode::power, {prime, storage_->intern_value(
-                exact_value((uint64_t)exponent))}));
+                numeric_value((uint64_t)exponent))}));
         begin = end;
     }
     return exact_expr(storage_, storage_->intern_compound(
@@ -7803,8 +8129,8 @@ exact_expr exact_context::solve_polynomial_impl(
        storage_->node(variable_expression.root_).op != exact_opcode::symbol)
         throw std::invalid_argument("solve variable must be a symbol");
     uint32_t variable = variable_expression.root_;
-    uint32_t zero = storage_->intern_value(exact_value(0));
-    uint32_t one = storage_->intern_value(exact_value(1));
+    uint32_t zero = storage_->intern_value(numeric_value(0));
+    uint32_t one = storage_->intern_value(numeric_value(1));
 
     std::unordered_map<uint32_t, bool> contains_memo;
     auto contains_variable = [&](auto &&self, uint32_t id) -> bool{
@@ -7987,18 +8313,18 @@ exact_expr exact_context::solve_polynomial_impl(
                 }
             }
             for(int64_t candidate : candidates){
-                exact_value evaluation(0);
+                numeric_value evaluation(0);
                 for(size_t i = integer_coefficients.size(); i-- > 0;)
-                    evaluation = evaluation * exact_value(candidate) +
-                                 exact_value(integer_coefficients[i]);
+                    evaluation = evaluation * numeric_value(candidate) +
+                                 numeric_value(integer_coefficients[i]);
                 if(!evaluation.is_zero()) continue;
 
                 size_t degree = integer_coefficients.size() - 1;
-                std::vector<exact_value> quotient(degree, exact_value(0));
-                quotient[degree - 1] = exact_value(integer_coefficients[degree]);
+                std::vector<numeric_value> quotient(degree, numeric_value(0));
+                quotient[degree - 1] = numeric_value(integer_coefficients[degree]);
                 for(size_t i = degree - 1; i > 0; --i)
-                    quotient[i - 1] = exact_value(integer_coefficients[i]) +
-                        exact_value(candidate) * quotient[i];
+                    quotient[i - 1] = numeric_value(integer_coefficients[i]) +
+                        numeric_value(candidate) * quotient[i];
                 std::vector<uint32_t> quotient_terms;
                 for(size_t i = 0; i < quotient.size(); ++i){
                     if(quotient[i].is_zero()) continue;
@@ -8007,7 +8333,7 @@ exact_expr exact_context::solve_polynomial_impl(
                     else quotient_terms.push_back(storage_->make_multiply({
                         coefficient, i == 1 ? variable : storage_->make_power(
                             variable, storage_->intern_value(
-                                exact_value((uint64_t)i)))}));
+                                numeric_value((uint64_t)i)))}));
                 }
                 exact_expr remaining = solve_polynomial_impl(
                     exact_expr(storage_, storage_->make_add(
@@ -8019,7 +8345,7 @@ exact_expr exact_context::solve_polynomial_impl(
                     remaining_data,
                     remaining_data + remaining_list.operand_count);
                 std::vector<uint32_t> roots;
-                roots.push_back(storage_->intern_value(exact_value(candidate)));
+                roots.push_back(storage_->intern_value(numeric_value(candidate)));
                 roots.insert(roots.end(), remaining_roots.begin(),
                              remaining_roots.end());
                 return exact_expr(storage_, storage_->intern_compound(
@@ -8028,9 +8354,9 @@ exact_expr exact_context::solve_polynomial_impl(
         }
     }
 
-    uint32_t minus_one = storage_->intern_value(exact_value(-1));
+    uint32_t minus_one = storage_->intern_value(numeric_value(-1));
     auto integer = [&](int64_t value){
-        return storage_->intern_value(exact_value(value));
+        return storage_->intern_value(numeric_value(value));
     };
     auto divide = [&](uint32_t numerator, uint32_t denominator){
         return storage_->make_multiply({numerator, storage_->make_power(
@@ -8055,13 +8381,13 @@ exact_expr exact_context::solve_polynomial_impl(
     };
     auto rational_power = [&](uint32_t value, uint64_t numerator,
                               uint64_t denominator){
-        return storage_->make_power(value, storage_->intern_value(exact_value(
+        return storage_->make_power(value, storage_->intern_value(numeric_value(
             precq_t(precn_t(numerator), precn_t(denominator)))));
     };
     auto cube_root = [&](uint32_t value){
         const exact_node &node = storage_->node(value);
         if(node.op == exact_opcode::value){
-            exact_value root;
+            numeric_value root;
             if(exact_cube_root(storage_->values[node.payload], root))
                 return storage_->intern_value(std::move(root));
         }
@@ -8081,13 +8407,13 @@ exact_expr exact_context::solve_polynomial_impl(
         uint32_t discriminant = storage_->make_add({
             storage_->make_multiply({b, b}),
             storage_->make_multiply({
-                storage_->intern_value(exact_value(-4)), a, c})});
+                storage_->intern_value(numeric_value(-4)), a, c})});
         exact_expander discriminant_expander(*storage_, 100000);
         discriminant = discriminant_expander.expand(discriminant);
         uint32_t root = storage_->make_sqrt(discriminant);
         uint32_t negative_b = storage_->make_multiply({minus_one, b});
         uint32_t denominator = storage_->make_multiply({
-            storage_->intern_value(exact_value(2)), a});
+            storage_->intern_value(numeric_value(2)), a});
         uint32_t first = divide(storage_->make_add({
             negative_b, storage_->make_multiply({minus_one, root})}), denominator);
         solutions.push_back(first);
@@ -8370,9 +8696,9 @@ exact_expr exact_context::solve_system_impl(
                                                 b.begin(), b.end());
         }
     };
-    using polynomial = std::map<monomial, exact_value, lex_order>;
+    using polynomial = std::map<monomial, numeric_value, lex_order>;
     const size_t maximum_terms = 20000;
-    auto add_term = [](polynomial &p, const monomial &m, const exact_value &c){
+    auto add_term = [](polynomial &p, const monomial &m, const numeric_value &c){
         if(c.is_zero()) return;
         auto found = p.find(m);
         if(found == p.end()) p.emplace(m, c);
@@ -8409,7 +8735,7 @@ exact_expr exact_context::solve_system_impl(
         bool ok = true;
         out.clear();
         if(node.op == exact_opcode::value){
-            const exact_value &coefficient = storage_->values[node.payload];
+            const numeric_value &coefficient = storage_->values[node.payload];
             ok = !coefficient.is_approximate() || !require_exact_coefficients;
             if(ok)
                 add_term(out, monomial(variables.size()), coefficient);
@@ -8419,7 +8745,7 @@ exact_expr exact_context::solve_system_impl(
             else{
                 monomial m(variables.size());
                 m[(size_t)(found - variable_ids.begin())] = 1;
-                add_term(out, m, exact_value(1));
+                add_term(out, m, numeric_value(1));
             }
         }else if(node.op == exact_opcode::add){
             for(size_t i = 0; i < node.operand_count && ok; ++i){
@@ -8429,7 +8755,7 @@ exact_expr exact_context::solve_system_impl(
                     add_term(out, term.first, term.second);
             }
         }else if(node.op == exact_opcode::multiply){
-            out.emplace(monomial(variables.size()), exact_value(1));
+            out.emplace(monomial(variables.size()), numeric_value(1));
             for(size_t i = 0; i < node.operand_count && ok; ++i){
                 polynomial child, product;
                 ok = self(self, args[i], child) && multiply(out, child, product);
@@ -8443,7 +8769,7 @@ exact_expr exact_context::solve_system_impl(
                  exponent >= 0 && exponent <= 4096;
             polynomial base;
             if(ok) ok = self(self, args[0], base);
-            out.emplace(monomial(variables.size()), exact_value(1));
+            out.emplace(monomial(variables.size()), numeric_value(1));
             uint64_t bits = (uint64_t)std::max<int64_t>(exponent, 0);
             while(bits && ok){
                 if(bits & 1){
@@ -8572,8 +8898,8 @@ exact_expr exact_context::solve_system_impl(
     }
     if(linear){
         const size_t rows = input.size(), columns = variables.size();
-        std::vector<std::vector<exact_value>> matrix(
-            rows, std::vector<exact_value>(columns + 1, exact_value(0)));
+        std::vector<std::vector<numeric_value>> matrix(
+            rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
         monomial constant(columns);
         for(size_t r = 0; r < rows; ++r) for(const auto &term : input[r]){
             if(term.first == constant) matrix[r][columns] = -term.second;
@@ -8587,12 +8913,12 @@ exact_expr exact_context::solve_system_impl(
             while(selected < rows && matrix[selected][column].is_zero()) ++selected;
             if(selected == rows) continue;
             std::swap(matrix[selected], matrix[pivot_row]);
-            exact_value pivot = matrix[pivot_row][column];
+            numeric_value pivot = matrix[pivot_row][column];
             for(size_t c = column; c <= columns; ++c)
                 matrix[pivot_row][c] = matrix[pivot_row][c] / pivot;
             for(size_t r = 0; r < rows; ++r){
                 if(r == pivot_row || matrix[r][column].is_zero()) continue;
-                exact_value factor = matrix[r][column];
+                numeric_value factor = matrix[r][column];
                 for(size_t c = column; c <= columns; ++c)
                     matrix[r][c] = matrix[r][c] - factor * matrix[pivot_row][c];
             }
@@ -8668,7 +8994,7 @@ exact_expr exact_context::solve_system_impl(
         return result;
     };
     auto scaled_add = [&](polynomial &target, const polynomial &source,
-                          const monomial &shift, const exact_value &scale){
+                          const monomial &shift, const numeric_value &scale){
         for(const auto &term : source){
             monomial m(term.first.size());
             for(size_t i = 0; i < m.size(); ++i)
@@ -8677,7 +9003,7 @@ exact_expr exact_context::solve_system_impl(
         }
     };
     auto make_monic = [](polynomial &p){
-        exact_value lead = p.rbegin()->second;
+        numeric_value lead = p.rbegin()->second;
         for(auto &term : p) term.second = term.second / lead;
     };
     auto reduce = [&](polynomial p, const std::vector<polynomial> &basis){
@@ -8693,7 +9019,7 @@ exact_expr exact_context::solve_system_impl(
                    !monomial_divides(divisor.rbegin()->first, lead->first)) continue;
                 monomial shift = monomial_difference(
                     lead->first, divisor.rbegin()->first);
-                exact_value scale = -(lead->second / divisor.rbegin()->second);
+                numeric_value scale = -(lead->second / divisor.rbegin()->second);
                 scaled_add(p, divisor, shift, scale);
                 reduced = true;
                 break;
@@ -8729,9 +9055,9 @@ exact_expr exact_context::solve_system_impl(
         if(relatively_prime) continue;
         polynomial s;
         scaled_add(s, basis[i], monomial_difference(lcm, a),
-                   exact_value(1) / basis[i].rbegin()->second);
+                   numeric_value(1) / basis[i].rbegin()->second);
         scaled_add(s, basis[j], monomial_difference(lcm, b),
-                   exact_value(-1) / basis[j].rbegin()->second);
+                   numeric_value(-1) / basis[j].rbegin()->second);
         s = reduce(std::move(s), basis);
         if(s.empty()) continue;
         make_monic(s);
@@ -8751,7 +9077,7 @@ exact_expr exact_context::solve_system_impl(
             for(size_t i = 0; i < variables.size(); ++i) if(term.first[i])
                 factors.push_back(term.first[i] == 1 ? variable_ids[i] :
                     storage_->make_power(variable_ids[i], storage_->intern_value(
-                        exact_value((uint64_t)term.first[i]))));
+                        numeric_value((uint64_t)term.first[i]))));
             terms.push_back(storage_->make_multiply(std::move(factors)));
         }
         return storage_->make_add(std::move(terms));
@@ -8877,7 +9203,7 @@ exact_expr exact_context::solve_numeric_system_impl(
             copy.set_precision(precision_bits + 32.0);
             value = substitute(value, variables[i],
                 exact_expr(storage_, storage_->intern_value(
-                    exact_value(std::move(copy)))));
+                    numeric_value(std::move(copy)))));
         }
         uint32_t numeric_id = storage_->promote_approximate(value.root_);
         exact_node numeric_node = storage_->node(numeric_id);
@@ -8898,7 +9224,7 @@ exact_expr exact_context::solve_numeric_system_impl(
             Number value = point[i];
             value.set_precision(precision_bits);
             uint32_t value_id = storage_->intern_value(
-                exact_value(std::move(value)));
+                numeric_value(std::move(value)));
             rules.push_back(storage_->intern_compound(
                 exact_opcode::rule, {variables[i].root_, value_id}));
         }
@@ -9121,11 +9447,11 @@ exact_expr exact_context::solve(
         if((variable_assumptions & exact_storage::assumed_nonnegative) &&
            real.is_negative()) continue;
         bool real_zero = real.is_zero();
-        uint32_t real_node = storage_->intern_value(exact_value(std::move(real)));
+        uint32_t real_node = storage_->intern_value(numeric_value(std::move(real)));
         if(imag.is_zero()){
             results.push_back(real_node);
         }else{
-            uint32_t imag_node = storage_->intern_value(exact_value(std::move(imag)));
+            uint32_t imag_node = storage_->intern_value(numeric_value(std::move(imag)));
             uint32_t imaginary = storage_->intern_compound(
                 exact_opcode::constant_i, {});
             uint32_t imag_term = storage_->make_multiply({imag_node, imaginary});
@@ -9257,29 +9583,29 @@ exact_add_builder::exact_add_builder(std::shared_ptr<exact_storage> storage)
       negative_small_(0), terms_(){}
 void exact_add_builder::add_positive(uint64_t value){
     if(UINT64_MAX - positive_small_ < value){
-        constant_ = constant_ + exact_value(positive_small_);
+        constant_ = constant_ + numeric_value(positive_small_);
         positive_small_ = 0;
     }
     positive_small_ += value;
 }
 void exact_add_builder::add_negative(uint64_t magnitude){
     if(UINT64_MAX - negative_small_ < magnitude){
-        constant_ = constant_ - exact_value(negative_small_);
+        constant_ = constant_ - numeric_value(negative_small_);
         negative_small_ = 0;
     }
     negative_small_ += magnitude;
 }
 void exact_add_builder::flush_small(){
     if(positive_small_ >= negative_small_){
-        constant_ = constant_ + exact_value(positive_small_ - negative_small_);
+        constant_ = constant_ + numeric_value(positive_small_ - negative_small_);
     }else{
-        constant_ = constant_ - exact_value(negative_small_ - positive_small_);
+        constant_ = constant_ - numeric_value(negative_small_ - positive_small_);
     }
     positive_small_ = 0;
     negative_small_ = 0;
 }
-void exact_add_builder::add(const exact_value &value){ constant_ = constant_ + value; }
-void exact_add_builder::add(exact_value &&value){ constant_ = constant_ + value; }
+void exact_add_builder::add(const numeric_value &value){ constant_ = constant_ + value; }
+void exact_add_builder::add(numeric_value &&value){ constant_ = constant_ + value; }
 void exact_add_builder::add(const exact_expr &term){
     if(!term.valid() || term.storage_ != storage_)
         throw std::invalid_argument("exact expressions belong to different contexts");
@@ -9291,7 +9617,7 @@ exact_expr exact_add_builder::finish(){
     flush_small();
     uint32_t result = storage_->make_add(std::move(terms_), std::move(constant_));
     terms_.clear();
-    constant_ = exact_value(0);
+    constant_ = numeric_value(0);
     return exact_expr(storage_, result);
 }
 

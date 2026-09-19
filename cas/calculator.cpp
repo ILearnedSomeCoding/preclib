@@ -76,7 +76,7 @@ static std::string format_answer(const exact_expr &answer){
     size_t significant_digits = 80;
     double approximate_bits = 0.0;
     if(answer.is_value()){
-        exact_value value = answer.value();
+        numeric_value value = answer.value();
         if(value.is_approximate()) approximate_bits = value.number().precision();
     }else if(answer.operation() == exact_opcode::power){
         // Numeric powers are deliberately kept as nodes and evaluated by the
@@ -84,7 +84,7 @@ static std::string format_answer(const exact_expr &answer){
         for(size_t i = 0; i < answer.operand_count(); ++i){
             exact_expr operand = answer.operand(i);
             if(!operand.is_value()) continue;
-            exact_value value = operand.value();
+            numeric_value value = operand.value();
             if(!value.is_approximate()) continue;
             double bits = value.number().precision();
             approximate_bits = approximate_bits == 0.0
@@ -205,7 +205,7 @@ class parser{
             ++position_;
             exponent = decimal_exponent();
         }
-        if(!decimal) return state_.context.value(exact_value(precz_t(digits)));
+        if(!decimal) return state_.context.value(numeric_value(precz_t(digits)));
 
         int64_t scale = exponent - (int64_t)fractional_digits;
         precn_t numerator(digits);
@@ -216,10 +216,10 @@ class parser{
             if(scale == INT64_MIN) throw std::runtime_error("decimal scale is too large");
             denominator = calculator_pow10((size_t)-scale);
         }
-        exact_value rational(precq_t(std::move(numerator), std::move(denominator)));
+        numeric_value rational(precq_t(std::move(numerator), std::move(denominator)));
         Number approximate = rational.to_number(state_.precision);
         approximate.set_precision(state_.precision);
-        return state_.context.value(exact_value(std::move(approximate)));
+        return state_.context.value(numeric_value(std::move(approximate)));
     }
 
     exact_expr function(const std::string &name, const exact_expr &argument){
@@ -238,7 +238,7 @@ class parser{
                 throw std::runtime_error("approx requires a numeric value");
             Number approximate = argument.value().to_number(state_.precision);
             approximate.set_precision(state_.precision);
-            return state_.context.value(exact_value(std::move(approximate)));
+            return state_.context.value(numeric_value(std::move(approximate)));
         }
         if(!argument.is_value() || !argument.value().is_approximate()){
             if(name == "exp") return state_.context.exponential(argument);
@@ -295,7 +295,7 @@ class parser{
         else if(name == "erf") result = erf(value);
         else if(name == "erfi") result = erfi(value);
         else throw std::runtime_error("unknown function: " + name);
-        return state_.context.value(exact_value(std::move(result)));
+        return state_.context.value(numeric_value(std::move(result)));
     }
 
     exact_expr function(const std::string &name,

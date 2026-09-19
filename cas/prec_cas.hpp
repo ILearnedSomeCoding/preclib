@@ -53,19 +53,19 @@ enum class exact_opcode : uint8_t{
 
 const char *exact_opcode_name(exact_opcode operation);
 
-class exact_value{
+class numeric_value{
     std::variant<precz_t, precq_t, Number> value_;
 
 public:
-    exact_value();
+    numeric_value();
     template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
-    exact_value(T value) : value_(precz_t(value)){}
-    exact_value(const precz_t &value);
-    exact_value(precz_t &&value);
-    exact_value(const precq_t &value);
-    exact_value(precq_t &&value);
-    exact_value(const Number &value);
-    exact_value(Number &&value);
+    numeric_value(T value) : value_(precz_t(value)){}
+    numeric_value(const precz_t &value);
+    numeric_value(precz_t &&value);
+    numeric_value(const precq_t &value);
+    numeric_value(precq_t &&value);
+    numeric_value(const Number &value);
+    numeric_value(Number &&value);
 
     bool is_integer() const;
     bool is_rational() const;
@@ -80,21 +80,21 @@ public:
     Number to_number(double precision_bits = 64.0) const;
     std::string to_string() const;
 
-    friend exact_value operator+(const exact_value &a, const exact_value &b);
-    friend exact_value operator-(const exact_value &a, const exact_value &b);
-    friend exact_value operator-(const exact_value &a);
-    friend exact_value operator*(const exact_value &a, const exact_value &b);
-    friend exact_value operator/(const exact_value &a, const exact_value &b);
-    friend bool operator==(const exact_value &a, const exact_value &b);
+    friend numeric_value operator+(const numeric_value &a, const numeric_value &b);
+    friend numeric_value operator-(const numeric_value &a, const numeric_value &b);
+    friend numeric_value operator-(const numeric_value &a);
+    friend numeric_value operator*(const numeric_value &a, const numeric_value &b);
+    friend numeric_value operator/(const numeric_value &a, const numeric_value &b);
+    friend bool operator==(const numeric_value &a, const numeric_value &b);
 };
 
-exact_value operator+(const exact_value &a, const exact_value &b);
-exact_value operator-(const exact_value &a, const exact_value &b);
-exact_value operator-(const exact_value &a);
-exact_value operator*(const exact_value &a, const exact_value &b);
-exact_value operator/(const exact_value &a, const exact_value &b);
-bool operator==(const exact_value &a, const exact_value &b);
-bool operator!=(const exact_value &a, const exact_value &b);
+numeric_value operator+(const numeric_value &a, const numeric_value &b);
+numeric_value operator-(const numeric_value &a, const numeric_value &b);
+numeric_value operator-(const numeric_value &a);
+numeric_value operator*(const numeric_value &a, const numeric_value &b);
+numeric_value operator/(const numeric_value &a, const numeric_value &b);
+bool operator==(const numeric_value &a, const numeric_value &b);
+bool operator!=(const numeric_value &a, const numeric_value &b);
 
 struct exact_storage;
 class exact_context;
@@ -119,7 +119,7 @@ public:
     size_t depth() const;
     std::string debug_tree(size_t maximum_nodes = 256) const;
     bool is_value() const;
-    exact_value value() const;
+    numeric_value value() const;
     std::string to_string() const;
 
     friend class exact_context;
@@ -211,10 +211,10 @@ class exact_context{
 public:
     exact_context();
 
-    exact_expr value(const exact_value &value);
-    exact_expr value(exact_value &&value);
+    exact_expr value(const numeric_value &value);
+    exact_expr value(numeric_value &&value);
     template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
-    exact_expr integer(T value){ return this->value(exact_value(value)); }
+    exact_expr integer(T value){ return this->value(numeric_value(value)); }
     exact_expr rational(const precq_t &value);
     exact_expr symbol(const std::string &name);
     exact_expr pi();
@@ -350,7 +350,7 @@ public:
 
 class exact_add_builder{
     std::shared_ptr<exact_storage> storage_;
-    exact_value constant_;
+    numeric_value constant_;
     uint64_t positive_small_;
     uint64_t negative_small_;
     std::vector<uint32_t> terms_;
@@ -361,8 +361,8 @@ class exact_add_builder{
     void flush_small();
 
 public:
-    void add(const exact_value &value);
-    void add(exact_value &&value);
+    void add(const numeric_value &value);
+    void add(numeric_value &&value);
     void add(const exact_expr &term);
     template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
     void add_integer(T value){
