@@ -5352,9 +5352,17 @@ risch_result exact_context::integrate_elementary(
         for(const exact_expr &root : roots){
             integration_poly q;
             if(!integration_parse_poly(root.operand(0), variable, q) ||
-               q.size() != 3 || q[2] != numeric_value(1) ||
-               (q[1] * q[1] - numeric_value(4) * q[0]).is_zero())
+               q.size() != 3 || q[2].is_zero())
                 continue;
+            exact_expr leading_scale = square_root(value(q[2]));
+            if(!leading_scale.is_value() ||
+               leading_scale.value().is_approximate() ||
+               leading_scale.value().is_zero()) continue;
+            integration_poly monic_q(3, numeric_value(0));
+            for(size_t i = 0; i < q.size(); ++i)
+                monic_q[i] = q[i] / q[2];
+            if((monic_q[1] * monic_q[1] -
+                numeric_value(4) * monic_q[0]).is_zero()) continue;
             exact_expr parameter;
             for(size_t suffix = 0;; ++suffix){
                 parameter = symbol("_risch_quad_t_" + std::to_string(suffix));
@@ -5362,9 +5370,10 @@ risch_result exact_context::integrate_elementary(
                    !integration_depends_on(expression, parameter)) break;
             }
             exact_expr x_of_t =
-                (value(q[0]) - power(parameter, integer(2))) /
-                (integer(2) * parameter - value(q[1]));
-            exact_expr y_of_t = parameter + x_of_t;
+                (value(monic_q[0]) - power(parameter, integer(2))) /
+                (integer(2) * parameter - value(monic_q[1]));
+            exact_expr normalized_y_of_t = parameter + x_of_t;
+            exact_expr y_of_t = leading_scale * normalized_y_of_t;
             exact_expr transformed = substitute(expression, root, y_of_t);
             transformed = substitute(transformed, variable, x_of_t);
             exact_expr transformed_integrand = simplify(
@@ -5381,13 +5390,41 @@ risch_result exact_context::integrate_elementary(
             if(!parameter_primitive.valid() ||
                parameter_primitive.operation() == exact_opcode::integral)
                 continue;
-            exact_expr back_parameter = root - variable;
+            exact_expr back_parameter = root / leading_scale - variable;
             exact_expr candidate = substitute(parameter_primitive, parameter,
                                               back_parameter);
-            exact_expr error = simplify(expand(
-                differentiate(candidate, variable) - expression, 100000));
-            if(error != integer(0)) error = simplify(trig_reduce(error));
-            if(error != integer(0)) continue;
+            exact_expr verification_candidate = candidate;
+            std::vector<exact_expr> absolute_logs;
+            std::unordered_set<uint32_t> log_seen;
+            auto collect_absolute_logs = [&](auto &&self,
+                                             const exact_expr &part) -> void{
+                if(!log_seen.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::natural_logarithm &&
+                   part.operand(0).operation() == exact_opcode::absolute_value)
+                    absolute_logs.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_absolute_logs(collect_absolute_logs, candidate);
+            for(const exact_expr &logarithm : absolute_logs)
+                verification_candidate = substitute(verification_candidate,
+                    logarithm, natural_logarithm(logarithm.operand(0).operand(0)));
+            exact_expr error = differentiate(verification_candidate, variable) -
+                               expression;
+            error = substitute(error, root, y_of_t);
+            error = substitute(error, variable, x_of_t);
+            error = simplify(expand(error, 100000));
+            integration_poly error_numerator, error_denominator;
+            bool verified = error == integer(0);
+            if(!verified &&
+               integration_parse_rational(error, parameter, error_numerator,
+                                           error_denominator) &&
+               integration_normalize_rational(error_numerator,
+                                              error_denominator) &&
+               integration_zero_poly(error_numerator))
+                verified = true;
+            if(!verified)
+                continue;
             result.status = risch_status::elementary;
             result.elementary_part = std::move(candidate);
             result.remainder = integer(0);

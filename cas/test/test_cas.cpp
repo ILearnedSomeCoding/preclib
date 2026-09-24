@@ -324,6 +324,15 @@ int main(){
         context.differentiate(quadratic_curve_primitive, x));
     assert(context.integrate_elementary(quadratic_curve_integrand, x).status ==
            risch_status::elementary);
+    exact_expr scaled_quadratic_y = context.square_root(
+        context.integer(4) * context.power(x, context.integer(2)) +
+        context.integer(4) * x + context.integer(8));
+    exact_expr scaled_quadratic_primitive = scaled_quadratic_y /
+        (x + context.integer(1));
+    exact_expr scaled_quadratic_integrand = context.simplify(
+        context.differentiate(scaled_quadratic_primitive, x));
+    assert(context.integrate_elementary(scaled_quadratic_integrand, x).status ==
+           risch_status::elementary);
     assert(context.integrate_elementary(approximate_node_a * x, x).status ==
            risch_status::unsupported);
     risch_options tiny_risch_budget;
