@@ -5337,6 +5337,164 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_pure_primitive_pole()) return result;
+    auto classify_exponential_laurent = [&]() -> bool{
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable))
+                generators.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &generator : generators){
+            integration_poly inner;
+            if(!integration_parse_poly(generator.operand(0), variable, inner))
+                continue;
+            integration_poly inner_derivative =
+                integration_derivative_poly(inner);
+            if(integration_zero_poly(inner_derivative)) continue;
+
+            using laurent_terms = std::map<int64_t, exact_expr>;
+            auto add_term = [&](laurent_terms &terms, int64_t exponent,
+                                const exact_expr &coefficient){
+                auto found = terms.find(exponent);
+                if(found == terms.end()) terms.emplace(exponent, coefficient);
+                else found->second = simplify(found->second + coefficient);
+            };
+            auto parse = [&](auto &&self, const exact_expr &part,
+                             laurent_terms &terms) -> bool{
+                if(part == generator){
+                    terms.emplace(1, integer(1));
+                    return true;
+                }
+                if(!integration_depends_on(part, generator)){
+                    terms.emplace(0, part);
+                    return true;
+                }
+                if(part.operation() == exact_opcode::power &&
+                   part.operand(0) == generator){
+                    int64_t exponent = 0;
+                    if(!integration_signed_exponent(part.operand(1), exponent) ||
+                       exponent < -(int64_t)degree_budget ||
+                       exponent > (int64_t)degree_budget)
+                        return false;
+                    terms.emplace(exponent, integer(1));
+                    return true;
+                }
+                if(part.operation() == exact_opcode::add){
+                    for(size_t i = 0; i < part.operand_count(); ++i){
+                        laurent_terms child;
+                        if(!self(self, part.operand(i), child)) return false;
+                        for(const auto &term : child)
+                            add_term(terms, term.first, term.second);
+                    }
+                    return true;
+                }
+                if(part.operation() == exact_opcode::multiply){
+                    terms.emplace(0, integer(1));
+                    for(size_t i = 0; i < part.operand_count(); ++i){
+                        laurent_terms child;
+                        if(!self(self, part.operand(i), child)) return false;
+                        laurent_terms product;
+                        for(const auto &left : terms)
+                            for(const auto &right : child){
+                                if((right.first > 0 && left.first >
+                                        (int64_t)degree_budget - right.first) ||
+                                   (right.first < 0 && left.first <
+                                        -(int64_t)degree_budget - right.first))
+                                    return false;
+                                add_term(product, left.first + right.first,
+                                    simplify(left.second * right.second));
+                            }
+                        terms.swap(product);
+                        if(terms.size() > options.maximum_nodes) return false;
+                    }
+                    return true;
+                }
+                return false;
+            };
+
+            laurent_terms terms;
+            if(!parse(parse, expression, terms)) continue;
+            bool supported = true;
+            bool has_nonelementary = false;
+            exact_expr elementary_part = integer(0);
+            exact_expr nonelementary_part = integer(0);
+            for(auto &term : terms){
+                integration_poly p, q;
+                if(!integration_parse_rational(term.second, variable, p, q) ||
+                   !integration_normalize_rational(p, q)){
+                    supported = false;
+                    break;
+                }
+                term.second = integration_poly_expr(*this, p, variable) /
+                              integration_poly_expr(*this, q, variable);
+                if(term.first == 0){
+                    risch_result coefficient = integrate_elementary(
+                        term.second, variable, options);
+                    if(coefficient.status == risch_status::elementary &&
+                       coefficient.remainder == integer(0)){
+                        elementary_part = simplify(elementary_part +
+                                                   coefficient.elementary_part);
+                    }else if(coefficient.status ==
+                             risch_status::proven_nonelementary){
+                        has_nonelementary = true;
+                        elementary_part = simplify(elementary_part +
+                                                   coefficient.elementary_part);
+                        nonelementary_part = simplify(nonelementary_part +
+                                                      coefficient.remainder);
+                    }else{
+                        supported = false;
+                        break;
+                    }
+                    continue;
+                }
+                integration_poly scaled_derivative = inner_derivative;
+                numeric_value scale(term.first < 0 ?
+                    (uint64_t)(-term.first) : (uint64_t)term.first);
+                if(term.first < 0) scale = -scale;
+                for(numeric_value &coefficient : scaled_derivative)
+                    coefficient = coefficient * scale;
+                integration_rational_rde_result rde =
+                    integration_rde_rational(p, q, scaled_derivative);
+                if(rde.status == integration_rde_status::solved){
+                    exact_expr rational_solution =
+                        integration_poly_expr(*this, rde.numerator, variable) /
+                        integration_poly_expr(*this, rde.denominator, variable);
+                    exact_expr exponential_power = term.first == 1
+                        ? generator : power(generator, integer(term.first));
+                    elementary_part = simplify(elementary_part +
+                        rational_solution * exponential_power);
+                }else if(rde.status ==
+                         integration_rde_status::no_polynomial_solution){
+                    has_nonelementary = true;
+                    exact_expr exponential_power = term.first == 1
+                        ? generator : power(generator, integer(term.first));
+                    nonelementary_part = simplify(nonelementary_part +
+                        term.second * exponential_power);
+                }else{
+                    supported = false;
+                    break;
+                }
+            }
+            if(!supported) continue;
+            result.status = has_nonelementary
+                ? risch_status::proven_nonelementary
+                : risch_status::elementary;
+            result.elementary_part = std::move(elementary_part);
+            result.remainder = std::move(nonelementary_part);
+            result.diagnostic.clear();
+            if(has_nonelementary)
+                result.diagnostic =
+                    "an exponential Laurent coefficient has no rational RDE solution";
+            return true;
+        }
+        return false;
+    };
+    if(classify_exponential_laurent()) return result;
     auto classify_polynomial_hyperexponential = [&]() -> bool{
         exact_expr exponential_factor;
         exact_expr cofactor = integer(1);

@@ -28,6 +28,14 @@
 `proven_nonelementary`。`exp(x^2)`、`exp(-x^2)` 和 `exp(x)/x` 现在属于
 已证明非初等。更高微分域中的一般 RDE 分母界仍未完成。
 
+指数生成元 `t=exp(g(x))` 的有限 Laurent 多项式也已加入分派：表达式先按
+整数幂 `t^m` 收集，系数限制为 `Q(x)`。零次项递归进入下层积分，非零次项
+求解 `y'+m*g'*y=b_m`；有理 RDE 的分母界和无穷远次数界由现有求解器给出。
+解出的各项组成初等部分，无解项保留为余项并标记 `proven_nonelementary`。
+例如 `1/x + exp(x) + x*exp(x)^2` 可逐项处理。此路由不处理 `t` 的一般有理
+函数，例如 `1/(1+exp(x))` 仍依赖既有积分器的候选桥接；也不声称支持含其他
+超越下层系数的 RDE。
+
 primitive 层已实现子域 `x^m P(log(x))`（`m∈Z`、`P∈Q[t]`）。令
 `t=log(x)`：当 `m!=-1` 时精确求解 `Q'+(m+1)Q=P`，当 `m=-1` 时利用
 `dx/x=dt` 逐项积分。对于一般下层系数的 `P(t)`，现在从最高次幂向下解
@@ -45,7 +53,7 @@ primitive 层已实现子域 `x^m P(log(x))`（`m∈Z`、`P∈Q[t]`）。令
 分母为单个 `t` 幂且分子属于 `Q(x)` 的情形，尚未推广到 `Q(x)(t)` 的一般
 平方自由分母与多个 primitive 生成元。
 超过节点或次数预算返回 `resource_limit`；
-除上面列出的多项式超指数和 primitive 简单极点范围外，尚不产生
+除上面列出的多项式超指数、指数 Laurent 项和 primitive 极点范围外，尚不产生
 `proven_nonelementary` 结论；
 `conditions` 当前为空。
 现有 `integrate` 的规则与特殊函数分派尚未迁移到严格入口。

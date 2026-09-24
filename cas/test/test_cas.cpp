@@ -201,6 +201,20 @@ int main(){
     assert(context.integrate_elementary(
                generated_b * context.exponential(generated_g), x).status ==
            risch_status::elementary);
+    exact_expr exp_x = context.exponential(x);
+    exact_expr exp_laurent_primitive = context.natural_logarithm(x) + exp_x +
+        (x / context.integer(2) - context.integer(1) / context.integer(4)) *
+            context.power(exp_x, context.integer(2));
+    exact_expr exp_laurent_integrand = context.simplify(
+        context.differentiate(exp_laurent_primitive, x));
+    assert(context.integrate_elementary(exp_laurent_integrand, x).status ==
+           risch_status::elementary);
+    risch_result exp_laurent_partial = context.integrate_elementary(
+        exp_x / x + x * context.power(exp_x, context.integer(2)), x);
+    assert(exp_laurent_partial.status ==
+           risch_status::proven_nonelementary);
+    assert(exp_laurent_partial.elementary_part != context.integer(0));
+    assert(exp_laurent_partial.remainder != context.integer(0));
     assert(context.integrate_elementary(context.natural_logarithm(x), x).status ==
            risch_status::elementary);
     assert(context.integrate_elementary(
