@@ -304,6 +304,16 @@ int main(){
                    (context.integer(1) + context.exponential(x)), x).status ==
            risch_status::elementary);
     assert(context.integrate_elementary(
+               context.integer(1) /
+                   (context.integer(1) +
+                    context.integer(2) * context.exponential(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.exponential(x) /
+                   (context.integer(1) +
+                    context.integer(2) * context.exponential(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
                context.power(context.sine(x), context.integer(2)), x).status ==
            risch_status::elementary);
     assert(context.integrate_elementary(approximate_node_a * x, x).status ==

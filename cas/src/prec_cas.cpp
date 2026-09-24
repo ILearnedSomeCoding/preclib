@@ -5337,6 +5337,51 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_pure_primitive_pole()) return result;
+    auto classify_linear_exponential_rational = [&]() -> bool{
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable))
+                generators.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &generator : generators){
+            integration_poly inner, numerator, denominator;
+            if(!integration_parse_poly(generator.operand(0), variable, inner) ||
+               inner.size() != 2 || inner[1].is_zero() ||
+               !integration_parse_rational(expression, generator,
+                                           numerator, denominator) ||
+               !integration_normalize_rational(numerator, denominator))
+                continue;
+            integration_poly t{numeric_value(0), numeric_value(1)};
+            integration_poly transformed_denominator =
+                integration_mul(denominator, t);
+            for(numeric_value &coefficient : transformed_denominator)
+                coefficient = coefficient * inner[1];
+            exact_expr transformed = integration_poly_expr(
+                *this, numerator, generator) /
+                integration_poly_expr(*this, transformed_denominator,
+                                      generator);
+            exact_expr candidate = integration_rational_antiderivative(
+                *this, transformed, generator);
+            if(!candidate.valid()) continue;
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - expression, 100000));
+            if(error != integer(0)) error = simplify(trig_reduce(error));
+            if(error != integer(0)) continue;
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        return false;
+    };
+    if(classify_linear_exponential_rational()) return result;
     auto classify_exponential_laurent = [&]() -> bool{
         std::vector<exact_expr> generators;
         std::unordered_set<uint32_t> seen;
