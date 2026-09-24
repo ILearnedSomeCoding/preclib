@@ -316,6 +316,14 @@ int main(){
     assert(context.integrate_elementary(
                context.power(context.sine(x), context.integer(2)), x).status ==
            risch_status::elementary);
+    exact_expr quadratic_curve_y = context.square_root(
+        context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr quadratic_curve_primitive = quadratic_curve_y /
+        (x + context.integer(1));
+    exact_expr quadratic_curve_integrand = context.simplify(
+        context.differentiate(quadratic_curve_primitive, x));
+    assert(context.integrate_elementary(quadratic_curve_integrand, x).status ==
+           risch_status::elementary);
     assert(context.integrate_elementary(approximate_node_a * x, x).status ==
            risch_status::unsupported);
     risch_options tiny_risch_budget;

@@ -5337,6 +5337,66 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_pure_primitive_pole()) return result;
+    auto classify_monic_quadratic_function_field = [&]() -> bool{
+        std::vector<exact_expr> roots;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::square_root &&
+               integration_depends_on(part.operand(0), variable))
+                roots.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &root : roots){
+            integration_poly q;
+            if(!integration_parse_poly(root.operand(0), variable, q) ||
+               q.size() != 3 || q[2] != numeric_value(1) ||
+               (q[1] * q[1] - numeric_value(4) * q[0]).is_zero())
+                continue;
+            exact_expr parameter;
+            for(size_t suffix = 0;; ++suffix){
+                parameter = symbol("_risch_quad_t_" + std::to_string(suffix));
+                if(parameter != variable &&
+                   !integration_depends_on(expression, parameter)) break;
+            }
+            exact_expr x_of_t =
+                (value(q[0]) - power(parameter, integer(2))) /
+                (integer(2) * parameter - value(q[1]));
+            exact_expr y_of_t = parameter + x_of_t;
+            exact_expr transformed = substitute(expression, root, y_of_t);
+            transformed = substitute(transformed, variable, x_of_t);
+            exact_expr transformed_integrand = simplify(
+                transformed * differentiate(x_of_t, parameter));
+            integration_poly numerator, denominator;
+            if(!integration_parse_rational(transformed_integrand, parameter,
+                                           numerator, denominator) ||
+               !integration_normalize_rational(numerator, denominator))
+                continue;
+            exact_expr parameter_primitive = integration_rational_antiderivative(
+                *this, integration_poly_expr(*this, numerator, parameter) /
+                       integration_poly_expr(*this, denominator, parameter),
+                parameter);
+            if(!parameter_primitive.valid() ||
+               parameter_primitive.operation() == exact_opcode::integral)
+                continue;
+            exact_expr back_parameter = root - variable;
+            exact_expr candidate = substitute(parameter_primitive, parameter,
+                                              back_parameter);
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - expression, 100000));
+            if(error != integer(0)) error = simplify(trig_reduce(error));
+            if(error != integer(0)) continue;
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        return false;
+    };
+    if(classify_monic_quadratic_function_field()) return result;
     auto classify_linear_exponential_rational = [&]() -> bool{
         std::vector<exact_expr> generators;
         std::unordered_set<uint32_t> seen;
