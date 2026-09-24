@@ -3172,6 +3172,28 @@ static integration_poly integration_gcd_poly(integration_poly a,
     return a;
 }
 
+static bool integration_normalize_rational(integration_poly &numerator,
+                                            integration_poly &denominator){
+    integration_trim(numerator);
+    integration_trim(denominator);
+    if(integration_zero_poly(denominator)) return false;
+    integration_poly common = integration_gcd_poly(numerator, denominator);
+    integration_poly reduced_numerator, reduced_denominator;
+    if(!integration_divide_poly(numerator, common, reduced_numerator) ||
+       !integration_divide_poly(denominator, common, reduced_denominator))
+        return false;
+    numeric_value leading = reduced_denominator.back();
+    for(auto &coefficient : reduced_numerator)
+        coefficient = coefficient / leading;
+    for(auto &coefficient : reduced_denominator)
+        coefficient = coefficient / leading;
+    integration_trim(reduced_numerator);
+    integration_trim(reduced_denominator);
+    numerator = std::move(reduced_numerator);
+    denominator = std::move(reduced_denominator);
+    return true;
+}
+
 static bool integration_solve_linear(
     std::vector<std::vector<numeric_value>> &matrix, size_t columns,
     std::vector<numeric_value> &solution){
@@ -3209,6 +3231,132 @@ static bool integration_solve_linear(
         solution[column] = matrix[pivot_for_column[column]][columns];
     }
     return true;
+}
+
+enum class integration_rde_status{
+    solved,
+    no_polynomial_solution,
+    verification_failed
+};
+
+struct integration_rde_result{
+    integration_rde_status status;
+    integration_poly solution;
+};
+
+// Solve y' + a*y = b in Q[x]. The degree bound follows from the leading
+// term at infinity. This is the polynomial subproblem used by exponential
+// extensions; failure here is not yet a proof that no rational solution exists.
+static integration_rde_result integration_rde_polynomial(
+    integration_poly a, integration_poly b){
+    integration_trim(a);
+    integration_trim(b);
+    if(integration_zero_poly(a)){
+        integration_poly solution(b.size() + 1, numeric_value(0));
+        for(size_t i = 0; i < b.size(); ++i)
+            solution[i + 1] = b[i] / numeric_value(i + 1);
+        return {integration_rde_status::solved, std::move(solution)};
+    }
+    if(integration_zero_poly(b))
+        return {integration_rde_status::solved,
+                integration_poly{numeric_value(0)}};
+    size_t degree_a = a.size() - 1;
+    size_t degree_b = b.size() - 1;
+    if(degree_a && degree_b < degree_a)
+        return {integration_rde_status::no_polynomial_solution, {}};
+    size_t degree_y = degree_a ? degree_b - degree_a : degree_b;
+    size_t columns = degree_y + 1;
+    size_t rows = std::max(degree_b + 1, degree_y + degree_a + 1);
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t column = 0; column < columns; ++column){
+        if(column)
+            matrix[column - 1][column] =
+                matrix[column - 1][column] + numeric_value(column);
+        for(size_t i = 0; i < a.size(); ++i)
+            matrix[i + column][column] =
+                matrix[i + column][column] + a[i];
+    }
+    for(size_t row = 0; row < b.size(); ++row)
+        matrix[row][columns] = b[row];
+    integration_poly solution;
+    if(!integration_solve_linear(matrix, columns, solution))
+        return {integration_rde_status::no_polynomial_solution, {}};
+    integration_poly reconstructed = integration_add(
+        integration_derivative_poly(solution), integration_mul(a, solution));
+    integration_trim(reconstructed);
+    if(reconstructed != b)
+        return {integration_rde_status::verification_failed, {}};
+    return {integration_rde_status::solved, std::move(solution)};
+}
+
+static bool integration_hermite_reduce(
+    const integration_poly &numerator, const integration_poly &denominator,
+    integration_poly &rational_numerator,
+    integration_poly &rational_denominator,
+    integration_poly &reduced_numerator,
+    integration_poly &reduced_denominator){
+    if(denominator.size() < 2 ||
+       numerator.size() >= denominator.size()) return false;
+    integration_poly derivative = integration_derivative_poly(denominator);
+    rational_denominator = integration_gcd_poly(denominator, derivative);
+    if(!integration_divide_poly(denominator, rational_denominator,
+                                reduced_denominator)) return false;
+    integration_poly squarefree_check = integration_gcd_poly(
+        reduced_denominator,
+        integration_derivative_poly(reduced_denominator));
+    if(squarefree_check.size() != 1) return false;
+    const size_t g_degree = rational_denominator.size() - 1;
+    const size_t r_degree = reduced_denominator.size() - 1;
+    if(g_degree == 0){
+        rational_numerator = {numeric_value(0)};
+        reduced_numerator = numerator;
+        return true;
+    }
+    if(denominator.size() > 25) return false;
+
+    integration_poly g_derivative = integration_derivative_poly(
+        rational_denominator);
+    integration_poly g_squared = integration_mul(rational_denominator,
+                                                 rational_denominator);
+    integration_poly right = integration_mul(numerator,
+                                             rational_denominator);
+    const size_t columns = g_degree + r_degree;
+    const size_t rows = g_squared.size() + reduced_denominator.size() - 2;
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t row = 0; row < right.size(); ++row)
+        matrix[row][columns] = right[row];
+    for(size_t column = 0; column < columns; ++column){
+        integration_poly basis(column < g_degree ? column + 1
+                                                 : column - g_degree + 1,
+                               numeric_value(0));
+        basis.back() = numeric_value(1);
+        integration_poly contribution;
+        if(column < g_degree){
+            contribution = integration_mul(reduced_denominator,
+                integration_sub(
+                    integration_mul(integration_derivative_poly(basis),
+                                    rational_denominator),
+                    integration_mul(basis, g_derivative)));
+        }else contribution = integration_mul(basis, g_squared);
+        for(size_t row = 0; row < contribution.size(); ++row)
+            matrix[row][column] = contribution[row];
+    }
+    std::vector<numeric_value> solution;
+    if(!integration_solve_linear(matrix, columns, solution)) return false;
+    rational_numerator.assign(solution.begin(), solution.begin() + g_degree);
+    reduced_numerator.assign(solution.begin() + g_degree, solution.end());
+    integration_trim(rational_numerator);
+    integration_trim(reduced_numerator);
+    integration_poly reconstruction = integration_add(
+        integration_mul(reduced_denominator,
+            integration_sub(
+                integration_mul(integration_derivative_poly(rational_numerator),
+                                rational_denominator),
+                integration_mul(rational_numerator, g_derivative))),
+        integration_mul(reduced_numerator, g_squared));
+    return reconstruction == right;
 }
 
 static bool integration_depends_on(const exact_expr &expression,
@@ -3336,6 +3484,207 @@ static exact_expr integration_expr_poly_expr(
     return terms.empty() ? context.integer(0) : context.add(terms);
 }
 
+static bool integration_laurent_monomial(
+    const exact_expr &expression, const exact_expr &variable,
+    numeric_value &coefficient, int64_t &exponent){
+    if(expression.is_value() && !expression.value().is_approximate()){
+        coefficient = coefficient * expression.value();
+        return true;
+    }
+    if(expression == variable){
+        if(exponent == INT64_MAX) return false;
+        ++exponent;
+        return true;
+    }
+    if(expression.operation() == exact_opcode::multiply){
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            if(!integration_laurent_monomial(expression.operand(i), variable,
+                                             coefficient, exponent))
+                return false;
+        return true;
+    }
+    if(expression.operation() == exact_opcode::power &&
+       expression.operand(0) == variable){
+        int64_t power = 0;
+        if(!integration_signed_exponent(expression.operand(1), power) ||
+           (power > 0 && exponent > INT64_MAX - power) ||
+           (power < 0 && exponent < INT64_MIN - power)) return false;
+        exponent += power;
+        return true;
+    }
+    return false;
+}
+
+// Integrate x^m P(log(x)) by solving Q' + (m+1)Q = P in the primitive
+// generator t=log(x). For m=-1, dx/x=dt and only polynomial integration in
+// t remains.
+static exact_expr integration_log_laurent_polynomial(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable){
+    exact_expr generator;
+    std::unordered_set<uint32_t> seen;
+    auto find_generator = [&](auto &&self, const exact_expr &part) -> bool{
+        if(!seen.insert(part.id()).second) return true;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           part.operand(0) == variable){
+            if(generator.valid() && generator != part) return false;
+            generator = part;
+            return true;
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            if(!self(self, part.operand(i))) return false;
+        return true;
+    };
+    if(!find_generator(find_generator, expression) || !generator.valid())
+        return exact_expr();
+    integration_expr_poly coefficients;
+    if(!integration_parse_expr_poly(context, expression, generator,
+                                    coefficients) || coefficients.size() > 65)
+        return exact_expr();
+    integration_poly polynomial(coefficients.size(), numeric_value(0));
+    bool have_exponent = false;
+    int64_t common_exponent = 0;
+    for(size_t i = 0; i < coefficients.size(); ++i){
+        exact_expr coefficient_expression = context.simplify(coefficients[i]);
+        if(coefficient_expression.is_value() &&
+           coefficient_expression.value().is_zero()) continue;
+        numeric_value coefficient(1);
+        int64_t exponent = 0;
+        if(!integration_laurent_monomial(coefficient_expression, variable,
+                                         coefficient, exponent))
+            return exact_expr();
+        if(!have_exponent){
+            common_exponent = exponent;
+            have_exponent = true;
+        }else if(exponent != common_exponent) return exact_expr();
+        polynomial[i] = coefficient;
+    }
+    if(!have_exponent) return context.integer(0);
+    integration_poly q;
+    if(common_exponent == -1){
+        q.assign(polynomial.size() + 1, numeric_value(0));
+        for(size_t i = 0; i < polynomial.size(); ++i)
+            q[i + 1] = polynomial[i] / numeric_value(i + 1);
+        return integration_poly_expr(context, q, generator);
+    }
+    numeric_value lambda(common_exponent + 1);
+    q.assign(polynomial.size(), numeric_value(0));
+    for(size_t i = polynomial.size(); i-- > 0;){
+        numeric_value rhs = polynomial[i];
+        if(i + 1 < q.size())
+            rhs = rhs - numeric_value(i + 1) * q[i + 1];
+        q[i] = rhs / lambda;
+    }
+    exact_expr factor = context.power(variable,
+                                      context.integer(common_exponent + 1));
+    return factor * integration_poly_expr(context, q, generator);
+}
+
+// Integrate D(t)*P(t) for a primitive generator already present in the DAG.
+// Choosing the deepest logarithm makes the same code work for nested logs.
+static exact_expr integration_exact_primitive_polynomial(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable){
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part, variable))
+            generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    std::sort(generators.begin(), generators.end(),
+              [](const exact_expr &a, const exact_expr &b){
+                  return a.depth() > b.depth();
+              });
+    for(const exact_expr &generator : generators){
+        integration_expr_poly polynomial;
+        if(!integration_parse_expr_poly(context, expression, generator,
+                                        polynomial) || polynomial.size() > 65)
+            continue;
+        exact_expr generator_derivative = context.differentiate(generator,
+                                                                 variable);
+        integration_expr_poly primitive(polynomial.size() + 1,
+                                        context.integer(0));
+        bool valid = true;
+        for(size_t i = 0; i < polynomial.size(); ++i){
+            if(integration_expr_zero(context, polynomial[i])) continue;
+            exact_expr ratio = context.simplify(polynomial[i] /
+                                                generator_derivative);
+            if(integration_depends_on(ratio, variable)){
+                valid = false;
+                break;
+            }
+            primitive[i + 1] = context.simplify(
+                ratio / context.integer(i + 1));
+        }
+        if(valid) return integration_expr_poly_expr(context, primitive,
+                                                    generator);
+    }
+    return exact_expr();
+}
+
+// Integrate a polynomial in a primitive generator by solving its coefficient
+// equations from highest degree to lowest. Coefficients are integrated in the
+// lower differential field, then the full candidate is checked exactly.
+static exact_expr integration_recursive_primitive_polynomial(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, const risch_options &options){
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part, variable))
+            generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    std::sort(generators.begin(), generators.end(),
+              [](const exact_expr &a, const exact_expr &b){
+                  return a.depth() > b.depth();
+              });
+    for(const exact_expr &generator : generators){
+        integration_expr_poly polynomial;
+        if(!integration_parse_expr_poly(context, expression, generator,
+                                        polynomial) || polynomial.size() < 2 ||
+           polynomial.size() > options.maximum_degree + 1)
+            continue;
+        exact_expr generator_derivative = context.differentiate(generator,
+                                                                variable);
+        integration_expr_poly primitive(polynomial.size(), context.integer(0));
+        bool solved = true;
+        for(size_t degree = polynomial.size(); degree-- > 0;){
+            exact_expr rhs = polynomial[degree];
+            if(degree + 1 < primitive.size())
+                rhs = context.simplify(rhs -
+                    context.integer(degree + 1) * generator_derivative *
+                    primitive[degree + 1]);
+            if(integration_expr_zero(context, rhs)) continue;
+            risch_result coefficient = context.integrate_elementary(
+                rhs, variable, options);
+            if(coefficient.status != risch_status::elementary ||
+               coefficient.remainder != context.integer(0) ||
+               integration_depends_on(coefficient.elementary_part, generator)){
+                solved = false;
+                break;
+            }
+            primitive[degree] = coefficient.elementary_part;
+        }
+        if(!solved) continue;
+        exact_expr candidate = integration_expr_poly_expr(context, primitive,
+                                                          generator);
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(candidate, variable) - expression, 100000));
+        if(error == context.integer(0)) return candidate;
+    }
+    return exact_expr();
+}
+
 static exact_expr integration_expr_polynomial_primitive(
     exact_context &context, const integration_expr_poly &polynomial,
     const exact_expr &variable){
@@ -3374,6 +3723,17 @@ static exact_expr integration_extract_constants(
 static exact_expr integration_hyperexponential_polynomial(
     exact_context &context, const exact_expr &cofactor,
     const exact_expr &inner, const exact_expr &variable){
+    integration_poly rational_p, rational_g;
+    if(integration_parse_poly(cofactor, variable, rational_p) &&
+       integration_parse_poly(inner, variable, rational_g)){
+        integration_rde_result rde = integration_rde_polynomial(
+            integration_derivative_poly(rational_g), rational_p);
+        if(rde.status == integration_rde_status::solved)
+            return integration_poly_expr(context, rde.solution, variable) *
+                   context.exponential(inner);
+        if(rde.status == integration_rde_status::verification_failed)
+            return exact_expr();
+    }
     integration_expr_poly p, g;
     if(!integration_parse_expr_poly(context, cofactor, variable, p) ||
        !integration_parse_expr_poly(context, inner, variable, g))
@@ -3421,6 +3781,73 @@ static exact_expr integration_hyperexponential_polynomial(
     }
     return integration_expr_poly_expr(context, r, variable) *
         context.exponential(inner);
+}
+
+struct integration_rational_rde_result{
+    integration_rde_status status;
+    integration_poly numerator;
+    integration_poly denominator;
+};
+
+// Solve y' + a*y = p/q in Q(x), where a is a nonzero polynomial. At every
+// finite pole, differentiation fixes the pole order of y to one less than the
+// pole order of p/q, so gcd(q,q') is a complete denominator bound.
+static integration_rational_rde_result integration_rde_rational(
+    integration_poly p, integration_poly q, integration_poly a){
+    if(!integration_normalize_rational(p, q))
+        return {integration_rde_status::verification_failed, {}, {}};
+    integration_trim(a);
+    if(integration_zero_poly(a))
+        return {integration_rde_status::verification_failed, {}, {}};
+    integration_poly bound = integration_gcd_poly(
+        q, integration_derivative_poly(q));
+    integration_poly bound_derivative = integration_derivative_poly(bound);
+    int64_t degree_f = (int64_t)p.size() - (int64_t)q.size();
+    int64_t degree_a = (int64_t)a.size() - 1;
+    size_t polynomial_degree = degree_f > degree_a
+        ? (size_t)(degree_f - degree_a) : 0;
+    size_t degree_z = bound.size() - 1 + polynomial_degree;
+    size_t columns = degree_z + 1;
+
+    std::vector<integration_poly> matrix_columns;
+    matrix_columns.reserve(columns);
+    size_t rows = 1;
+    for(size_t degree = 0; degree < columns; ++degree){
+        integration_poly basis(degree + 1, numeric_value(0));
+        basis[degree] = numeric_value(1);
+        integration_poly differential_numerator = integration_sub(
+            integration_mul(integration_derivative_poly(basis), bound),
+            integration_mul(basis, bound_derivative));
+        differential_numerator = integration_add(differential_numerator,
+            integration_mul(a, integration_mul(basis, bound)));
+        matrix_columns.push_back(integration_mul(q, differential_numerator));
+        rows = std::max(rows, matrix_columns.back().size());
+    }
+    integration_poly rhs = integration_mul(p, integration_mul(bound, bound));
+    rows = std::max(rows, rhs.size());
+    std::vector<std::vector<numeric_value>> matrix(
+        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t column = 0; column < columns; ++column)
+        for(size_t row = 0; row < matrix_columns[column].size(); ++row)
+            matrix[row][column] = matrix_columns[column][row];
+    for(size_t row = 0; row < rhs.size(); ++row)
+        matrix[row][columns] = rhs[row];
+    integration_poly solution;
+    if(!integration_solve_linear(matrix, columns, solution))
+        return {integration_rde_status::no_polynomial_solution, {}, bound};
+
+    integration_poly reconstructed = integration_mul(q, integration_add(
+        integration_sub(
+            integration_mul(integration_derivative_poly(solution), bound),
+            integration_mul(solution, bound_derivative)),
+        integration_mul(a, integration_mul(solution, bound))));
+    integration_trim(reconstructed);
+    integration_trim(rhs);
+    if(reconstructed != rhs)
+        return {integration_rde_status::verification_failed, {}, {}};
+    integration_trim(solution);
+    return {integration_rde_status::solved, std::move(solution),
+            std::move(bound)};
 }
 
 // Rational part of the Risch differential equation. For an integrand
@@ -4612,6 +5039,589 @@ exact_expr exact_context::integrate(const exact_expr &expression,
     exact_expr expanded = expand(normalized, 100000);
     if(expanded == normalized) return simplify(direct);
     return simplify(antiderivative(expanded.root_));
+}
+
+risch_result exact_context::integrate_elementary(
+    const exact_expr &expression, const exact_expr &variable,
+    const risch_options &options){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != storage_ || variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "integrate_elementary requires an expression and a symbol in one context");
+
+    risch_result result{risch_status::unsupported, integer(0), expression, {},
+                        "outside verified Q(x) support"};
+    if(options.maximum_nodes == 0 || options.maximum_degree == 0 ||
+       expression.reachable_node_count() > options.maximum_nodes){
+        result.status = risch_status::resource_limit;
+        result.diagnostic = "node budget exceeded";
+        return result;
+    }
+    const size_t degree_budget = std::min<size_t>(options.maximum_degree, 64);
+    auto try_verified_elementary = [&]() -> bool{
+        auto verify_candidate = [&](exact_expr candidate) -> bool{
+        if(!candidate.valid() ||
+           candidate.reachable_node_count() > options.maximum_nodes)
+            return false;
+        std::vector<exact_expr> real_log_arguments;
+        std::unordered_set<uint32_t> visited;
+        auto collect_real_logs = [&](auto &&self, const exact_expr &part) -> void{
+            if(!visited.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               part.operand(0).operation() == exact_opcode::absolute_value)
+                real_log_arguments.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect_real_logs(collect_real_logs, candidate);
+        for(const exact_expr &logarithm : real_log_arguments)
+            candidate = substitute(candidate, logarithm,
+                natural_logarithm(logarithm.operand(0).operand(0)));
+        std::unordered_map<uint32_t, bool> elementary_memo;
+        auto elementary_dag = [&](auto &&self, const exact_expr &part) -> bool{
+            auto cached = elementary_memo.find(part.id());
+            if(cached != elementary_memo.end()) return cached->second;
+            bool allowed = false;
+            switch(part.operation()){
+            case exact_opcode::value:
+                allowed = !part.value().is_approximate();
+                break;
+            case exact_opcode::symbol:
+            case exact_opcode::add:
+            case exact_opcode::multiply:
+            case exact_opcode::power:
+            case exact_opcode::square_root:
+            case exact_opcode::exponential:
+            case exact_opcode::sine:
+            case exact_opcode::cosine:
+            case exact_opcode::tangent:
+            case exact_opcode::arc_sine:
+            case exact_opcode::arc_cosine:
+            case exact_opcode::arc_tangent:
+            case exact_opcode::hyperbolic_sine:
+            case exact_opcode::hyperbolic_cosine:
+            case exact_opcode::hyperbolic_tangent:
+            case exact_opcode::inverse_hyperbolic_sine:
+            case exact_opcode::inverse_hyperbolic_cosine:
+            case exact_opcode::inverse_hyperbolic_tangent:
+            case exact_opcode::natural_logarithm:
+            case exact_opcode::logarithm_base_2:
+            case exact_opcode::logarithm_base_10:
+            case exact_opcode::constant_pi:
+            case exact_opcode::constant_e:
+            case exact_opcode::constant_i:
+            case exact_opcode::absolute_value:
+                allowed = true;
+                break;
+            default:
+                allowed = false;
+                break;
+            }
+            if(allowed)
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    if(!self(self, part.operand(i))){
+                        allowed = false;
+                        break;
+                    }
+            elementary_memo.emplace(part.id(), allowed);
+            return allowed;
+        };
+        if(!elementary_dag(elementary_dag, candidate)) return false;
+        exact_expr error = simplify(expand(
+            differentiate(candidate, variable) - expression, 100000));
+        if(error != integer(0))
+            error = simplify(expand(trig_reduce(error), 100000));
+        if(error != integer(0)){
+            std::vector<exact_expr> generators;
+            std::unordered_set<uint32_t> generator_ids;
+            auto collect_generators = [&](auto &&self,
+                                          const exact_expr &part) -> void{
+                exact_opcode op = part.operation();
+                bool generator = op == exact_opcode::exponential ||
+                    op == exact_opcode::natural_logarithm ||
+                    op == exact_opcode::logarithm_base_2 ||
+                    op == exact_opcode::logarithm_base_10 ||
+                    op == exact_opcode::sine || op == exact_opcode::cosine ||
+                    op == exact_opcode::tangent ||
+                    op == exact_opcode::hyperbolic_sine ||
+                    op == exact_opcode::hyperbolic_cosine ||
+                    op == exact_opcode::hyperbolic_tangent;
+                if(generator){
+                    if(generator_ids.insert(part.id()).second)
+                        generators.push_back(part);
+                    return;
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_generators(collect_generators, error);
+            if(generators.size() != 1) return false;
+            integration_expr_poly tower_coefficients;
+            bool zero_in_tower = integration_parse_expr_poly(
+                *this, error, generators[0], tower_coefficients);
+            if(zero_in_tower){
+                for(const exact_expr &coefficient : tower_coefficients){
+                    integration_poly coefficient_numerator,
+                                     coefficient_denominator;
+                    if(!integration_parse_rational(coefficient, variable,
+                            coefficient_numerator, coefficient_denominator) ||
+                       !integration_normalize_rational(coefficient_numerator,
+                                                       coefficient_denominator) ||
+                       !integration_zero_poly(coefficient_numerator)){
+                        zero_in_tower = false;
+                        break;
+                    }
+                }
+            }
+            if(zero_in_tower) error = integer(0);
+            if(error == integer(0)){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+            size_t suffix = 0;
+            exact_expr temporary;
+            do{
+                temporary = symbol("_risch_verify_" + std::to_string(suffix++));
+            }while(temporary == variable || temporary == generators[0]);
+            exact_expr rational_error = substitute(error, generators[0], temporary);
+            integration_poly error_numerator, error_denominator;
+            if(!integration_parse_rational(rational_error, temporary,
+                                           error_numerator, error_denominator) ||
+               !integration_normalize_rational(error_numerator,
+                                               error_denominator) ||
+               !integration_zero_poly(error_numerator)) return false;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+        };
+        exact_expr exact_primitive_candidate =
+            integration_exact_primitive_polynomial(*this, expression, variable);
+        if(exact_primitive_candidate.valid() &&
+           verify_candidate(exact_primitive_candidate)) return true;
+        exact_expr recursive_primitive_candidate =
+            integration_recursive_primitive_polynomial(
+                *this, expression, variable, options);
+        if(recursive_primitive_candidate.valid() &&
+           verify_candidate(recursive_primitive_candidate)) return true;
+        exact_expr primitive_candidate = integration_log_laurent_polynomial(
+            *this, expression, variable);
+        if(primitive_candidate.valid() &&
+           verify_candidate(primitive_candidate)) return true;
+        if(expression.operation() == exact_opcode::power &&
+           expression.operand(1) == integer(2)){
+            exact_expr base = expression.operand(0);
+            if(base.operation() == exact_opcode::sine ||
+               base.operation() == exact_opcode::cosine){
+                exact_expr inner = base.operand(0);
+                exact_expr slope = simplify(differentiate(inner, variable));
+                if(!integration_depends_on(slope, variable) &&
+                   slope != integer(0)){
+                    exact_expr oscillation = sine(integer(2) * inner) /
+                                             (integer(4) * slope);
+                    exact_expr candidate = inner / (integer(2) * slope);
+                    candidate = base.operation() == exact_opcode::sine
+                        ? candidate - oscillation : candidate + oscillation;
+                    if(verify_candidate(candidate)) return true;
+                }
+            }
+        }
+        if(verify_candidate(integrate(expression, variable))) return true;
+        exact_expr expanded = expand(expression, 100000);
+        if(expanded != expression &&
+           verify_candidate(integrate(expanded, variable))) return true;
+        std::vector<exact_expr> subexpressions;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(subexpressions.size() >= 32 || !seen.insert(part.id()).second)
+                return;
+            if(part != expression && part != variable && !part.is_value())
+                subexpressions.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &part : subexpressions)
+            if(verify_candidate(part)) return true;
+        for(size_t i = 0; i < subexpressions.size(); ++i)
+            for(size_t j = i + 1; j < subexpressions.size(); ++j)
+                if(verify_candidate(simplify(subexpressions[i] *
+                                             subexpressions[j]))) return true;
+        return false;
+    };
+    auto classify_pure_primitive_pole = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        auto find = [&](auto &&self, const exact_expr &part) -> void{
+            if(generator.valid() || !seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               part.operand(0) == variable){
+                generator = part;
+                return;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        find(find, expression);
+        if(!generator.valid()) return false;
+        exact_expr residue = expression;
+        size_t pole_order = 0;
+        for(size_t order = 1; order <= options.maximum_degree; ++order){
+            residue = simplify(residue * generator);
+            if(!integration_depends_on(residue, generator)){
+                pole_order = order;
+                break;
+            }
+        }
+        if(pole_order == 0) return false;
+        exact_expr generator_derivative = differentiate(generator, variable);
+        exact_expr elementary_part = integer(0);
+        for(size_t order = pole_order; order > 1; --order){
+            integration_poly numerator, denominator;
+            if(!integration_parse_rational(residue, variable,
+                                           numerator, denominator) ||
+               !integration_normalize_rational(numerator, denominator))
+                return false;
+            exact_expr coefficient = simplify(
+                -residue / (integer((long long)order - 1) *
+                            generator_derivative));
+            if(integration_depends_on(coefficient, generator)) return false;
+            exact_expr term = coefficient /
+                power(generator, integer((long long)order - 1));
+            elementary_part = simplify(elementary_part + term);
+            exact_expr remainder = simplify(expand(
+                expression - differentiate(elementary_part, variable), 100000));
+            residue = remainder;
+            for(size_t i = 0; i + 1 < order; ++i)
+                residue = simplify(residue * generator);
+            if(integration_depends_on(residue, generator)) return false;
+        }
+        integration_poly residue_numerator, residue_denominator;
+        if(!integration_parse_rational(residue, variable,
+                                       residue_numerator, residue_denominator) ||
+           !integration_normalize_rational(residue_numerator,
+                                           residue_denominator))
+            return false;
+        exact_expr logarithmic_residue = simplify(residue /
+                                                  generator_derivative);
+        if(!integration_depends_on(logarithmic_residue, variable)){
+            if(try_verified_elementary()) return true;
+            exact_expr candidate = simplify(elementary_part +
+                logarithmic_residue * natural_logarithm(generator));
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - expression, 100000));
+            if(error == integer(0)){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+            }else{
+                result.status = risch_status::verification_failed;
+                result.diagnostic =
+                    "primitive logarithmic residue failed verification";
+            }
+            return true;
+        }
+        result.status = risch_status::proven_nonelementary;
+        result.elementary_part = std::move(elementary_part);
+        result.remainder = simplify(expression -
+            differentiate(result.elementary_part, variable));
+        result.diagnostic =
+            "primitive pole has a nonconstant logarithmic residue";
+        return true;
+    };
+    if(classify_pure_primitive_pole()) return result;
+    auto classify_polynomial_hyperexponential = [&]() -> bool{
+        exact_expr exponential_factor;
+        exact_expr cofactor = integer(1);
+        if(expression.operation() == exact_opcode::exponential){
+            exponential_factor = expression;
+        }else if(expression.operation() == exact_opcode::multiply){
+            std::vector<exact_expr> other_factors;
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr factor = expression.operand(i);
+                if(factor.operation() == exact_opcode::exponential){
+                    if(exponential_factor.valid()) return false;
+                    exponential_factor = factor;
+                }else other_factors.push_back(factor);
+            }
+            if(!exponential_factor.valid()) return false;
+            cofactor = other_factors.empty() ? integer(1)
+                                             : multiply(other_factors);
+        }else return false;
+        integration_poly p, q, g;
+        if(!integration_parse_rational(cofactor, variable, p, q) ||
+           !integration_normalize_rational(p, q) ||
+           !integration_parse_poly(exponential_factor.operand(0), variable, g))
+            return false;
+        integration_poly logarithmic_derivative = integration_derivative_poly(g);
+        if(integration_zero_poly(logarithmic_derivative)) return false;
+        integration_rational_rde_result rde = integration_rde_rational(
+            p, q, logarithmic_derivative);
+        if(rde.status == integration_rde_status::solved){
+            exact_expr candidate = integration_poly_expr(*this, rde.numerator,
+                                                         variable) *
+                                   exponential_factor /
+                                   integration_poly_expr(*this, rde.denominator,
+                                                         variable);
+            if(try_verified_elementary()) return true;
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - expression, 100000));
+            if(error != integer(0)){
+                result.status = risch_status::verification_failed;
+                result.diagnostic = "polynomial RDE solution failed verification";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        if(rde.status == integration_rde_status::verification_failed){
+            result.status = risch_status::verification_failed;
+            result.diagnostic = "polynomial RDE identity failed verification";
+            return true;
+        }
+        result.status = risch_status::proven_nonelementary;
+        result.elementary_part = integer(0);
+        result.remainder = expression;
+        result.diagnostic =
+            "polynomial hyperexponential RDE has no rational solution";
+        return true;
+    };
+    if(classify_polynomial_hyperexponential()) return result;
+
+    const size_t invalid_degree = SIZE_MAX;
+    std::unordered_map<uint32_t, size_t> degrees;
+    auto degree_of = [&](auto &&self, const exact_expr &part) -> size_t{
+        auto found = degrees.find(part.id());
+        if(found != degrees.end()) return found->second;
+        size_t degree = invalid_degree;
+        if(part == variable) degree = 1;
+        else if(part.is_value()){
+            if(!part.value().is_approximate()) degree = 0;
+        }else if(part.operation() == exact_opcode::add ||
+                 part.operation() == exact_opcode::multiply){
+            bool multiply_terms = part.operation() == exact_opcode::multiply;
+            degree = 0;
+            for(size_t i = 0; i < part.operand_count(); ++i){
+                size_t child = self(self, part.operand(i));
+                if(child == invalid_degree){ degree = invalid_degree; break; }
+                degree = multiply_terms ? degree + child
+                                        : std::max(degree, child);
+                if(degree > degree_budget) break;
+            }
+        }else if(part.operation() == exact_opcode::power){
+            size_t exponent = 0;
+            if(integration_exponent(part.operand(1), exponent) && exponent > 64)
+                degree = degree_budget + 1;
+            else if(integration_exponent(part.operand(1), exponent)){
+                size_t base_degree = self(self, part.operand(0));
+                if(base_degree != invalid_degree){
+                    degree = base_degree > degree_budget ||
+                        (base_degree && exponent >
+                         degree_budget / base_degree)
+                        ? degree_budget + 1 : base_degree * exponent;
+                }
+            }
+        }
+        degrees.emplace(part.id(), degree);
+        return degree;
+    };
+    size_t degree = degree_of(degree_of, expression);
+    if(degree == invalid_degree){
+        using degree_pair = std::pair<size_t, size_t>;
+        const degree_pair invalid{SIZE_MAX, SIZE_MAX};
+        std::unordered_map<uint32_t, degree_pair> bounds;
+        auto add_bound = [&](size_t a, size_t b){
+            return a > degree_budget || b > degree_budget ||
+                   a > degree_budget - b ? degree_budget + 1 : a + b;
+        };
+        auto rational_degree = [&](auto &&self,
+                                   const exact_expr &part) -> degree_pair{
+            auto cached = bounds.find(part.id());
+            if(cached != bounds.end()) return cached->second;
+            degree_pair value = invalid;
+            if(part == variable) value = {1, 0};
+            else if(part.is_value()){
+                if(!part.value().is_approximate()) value = {0, 0};
+            }else if(part.operation() == exact_opcode::add ||
+                     part.operation() == exact_opcode::multiply){
+                bool multiply_terms = part.operation() == exact_opcode::multiply;
+                value = {0, 0};
+                bool first_child = true;
+                for(size_t i = 0; i < part.operand_count(); ++i){
+                    degree_pair child = self(self, part.operand(i));
+                    if(child == invalid){ value = invalid; break; }
+                    if(multiply_terms){
+                        value.first = add_bound(value.first, child.first);
+                        value.second = add_bound(value.second, child.second);
+                    }else if(first_child){
+                        value = child;
+                    }else{
+                        size_t left = add_bound(value.first, child.second);
+                        size_t right = add_bound(child.first, value.second);
+                        value.first = std::max(left, right);
+                        value.second = add_bound(value.second, child.second);
+                    }
+                    first_child = false;
+                    if(value.first > degree_budget ||
+                       value.second > degree_budget) break;
+                }
+            }else if(part.operation() == exact_opcode::power){
+                int64_t exponent = 0;
+                if(integration_signed_exponent(part.operand(1), exponent)){
+                    if(exponent < -32 || exponent > 32)
+                        value = {degree_budget + 1, 0};
+                    else{
+                        degree_pair base = self(self, part.operand(0));
+                        if(base != invalid){
+                            value = {0, 0};
+                            size_t count = (size_t)(exponent < 0 ? -exponent
+                                                                   : exponent);
+                            for(size_t i = 0; i < count; ++i){
+                                value.first = add_bound(value.first,
+                                    exponent < 0 ? base.second : base.first);
+                                value.second = add_bound(value.second,
+                                    exponent < 0 ? base.first : base.second);
+                            }
+                        }
+                    }
+                }
+            }
+            bounds.emplace(part.id(), value);
+            return value;
+        };
+        degree_pair shape = rational_degree(rational_degree, expression);
+        if(shape == invalid){
+            if(try_verified_elementary()) return result;
+            result.diagnostic = "unsupported transcendental or algebraic extension";
+            return result;
+        }
+        if(shape.first > degree_budget || shape.second > degree_budget){
+            result.status = risch_status::resource_limit;
+            result.diagnostic = "rational degree budget exceeded";
+            return result;
+        }
+        integration_poly numerator, denominator;
+        if(!integration_parse_rational(expression, variable,
+                                       numerator, denominator) ||
+           !integration_normalize_rational(numerator, denominator))
+            return result;
+        integration_poly polynomial_part, proper_numerator;
+        if(!integration_divmod_poly(numerator, denominator,
+                                    polynomial_part, proper_numerator))
+            return result;
+        integration_poly polynomial_primitive(polynomial_part.size() + 1,
+                                               numeric_value(0));
+        for(size_t i = 0; i < polynomial_part.size(); ++i)
+            polynomial_primitive[i + 1] = polynomial_part[i] /
+                                           numeric_value(i + 1);
+        exact_expr partial = integration_poly_expr(*this,
+                                                   polynomial_primitive, variable);
+        integration_poly rational_numerator{numeric_value(0)};
+        integration_poly rational_denominator{numeric_value(1)};
+        integration_poly reduced_numerator{numeric_value(0)};
+        integration_poly reduced_denominator{numeric_value(1)};
+        if(!integration_zero_poly(proper_numerator)){
+            if(!integration_hermite_reduce(proper_numerator, denominator,
+                    rational_numerator, rational_denominator,
+                    reduced_numerator, reduced_denominator)){
+                result.status = denominator.size() > 25
+                    ? risch_status::resource_limit : risch_status::unsupported;
+                result.diagnostic = "Hermite reduction did not finish";
+                return result;
+            }
+            if(!integration_zero_poly(rational_numerator))
+                partial = partial + integration_poly_expr(
+                    *this, rational_numerator, variable) /
+                    integration_poly_expr(*this, rational_denominator, variable);
+        }
+        exact_expr residual = integration_zero_poly(reduced_numerator)
+            ? integer(0)
+            : integration_poly_expr(*this, reduced_numerator, variable) /
+              integration_poly_expr(*this, reduced_denominator, variable);
+        auto verified = [&](const exact_expr &candidate,
+                            const exact_expr &remaining){
+            integration_poly left_numerator, left_denominator;
+            if(!integration_parse_rational(
+                   differentiate(candidate, variable) + remaining,
+                   variable, left_numerator, left_denominator) ||
+               !integration_normalize_rational(left_numerator, left_denominator))
+                return false;
+            return left_numerator == numerator && left_denominator == denominator;
+        };
+        if(!verified(partial, residual)){
+            result.status = risch_status::verification_failed;
+            result.diagnostic = "Hermite reconstruction does not match input";
+            return result;
+        }
+        if(residual != integer(0)){
+            integration_poly residual_derivative = integration_derivative_poly(
+                reduced_denominator);
+            numeric_value log_coefficient = reduced_numerator.back() /
+                                            residual_derivative.back();
+            integration_poly scaled_derivative = residual_derivative;
+            for(auto &coefficient : scaled_derivative)
+                coefficient = coefficient * log_coefficient;
+            exact_expr logarithmic = scaled_derivative == reduced_numerator
+                ? value(log_coefficient) * natural_logarithm(
+                    integration_poly_expr(*this, reduced_denominator, variable))
+                : integration_rational_antiderivative(*this, residual, variable);
+            if(logarithmic.valid() &&
+               verified(partial + logarithmic, integer(0))){
+                partial = partial + logarithmic;
+                residual = integer(0);
+            }
+        }
+        result.status = residual == integer(0) ? risch_status::elementary
+                                                : risch_status::unsupported;
+        result.elementary_part = std::move(partial);
+        result.remainder = std::move(residual);
+        result.diagnostic = result.status == risch_status::elementary
+            ? "" : "squarefree logarithmic part not yet verified";
+        return result;
+    }
+    if(degree > degree_budget){
+        result.status = risch_status::resource_limit;
+        result.diagnostic = "polynomial degree budget exceeded";
+        return result;
+    }
+
+    integration_poly coefficients;
+    if(!integration_parse_poly(expression, variable, coefficients))
+        return result;
+    integration_poly primitive(coefficients.size() + 1, numeric_value(0));
+    for(size_t i = 0; i < coefficients.size(); ++i)
+        primitive[i + 1] = coefficients[i] / numeric_value(i + 1);
+    exact_expr candidate = integration_poly_expr(*this, primitive, variable);
+
+    integration_poly derivative;
+    if(!integration_parse_poly(differentiate(candidate, variable),
+                               variable, derivative)){
+        result.status = risch_status::verification_failed;
+        result.diagnostic = "could not verify polynomial derivative";
+        return result;
+    }
+    integration_trim(coefficients);
+    integration_trim(derivative);
+    if(coefficients != derivative){
+        result.status = risch_status::verification_failed;
+        result.diagnostic = "polynomial derivative does not match input";
+        return result;
+    }
+    result.status = risch_status::elementary;
+    result.elementary_part = std::move(candidate);
+    result.remainder = integer(0);
+    result.diagnostic.clear();
+    return result;
 }
 
 exact_expr exact_context::dsolve(const exact_expr &equation,
@@ -6732,6 +7742,203 @@ class exact_factor_simplifier{
         return UINT32_MAX;
     }
 
+    uint32_t factor_multivariate_kronecker(uint32_t expression){
+        multivariate_polynomial input;
+        if(!parse_multivariate(expression, input) || input.size() > 128)
+            return UINT32_MAX;
+
+        std::vector<uint32_t> variables;
+        for(const auto &term : input)
+            for(const auto &power : term.first){
+                if(std::find(variables.begin(), variables.end(), power.first) ==
+                   variables.end()) variables.push_back(power.first);
+            }
+        std::sort(variables.begin(), variables.end(), [&](uint32_t a, uint32_t b){
+            return storage_.symbols[storage_.node(a).payload] <
+                   storage_.symbols[storage_.node(b).payload];
+        });
+        if(variables.size() < 2 || variables.size() > 8) return UINT32_MAX;
+        // Factor over Q by passing a primitive integer polynomial to the image
+        // backend. Keep the rational unit outside the reconstructed factors.
+        precn_t numerator_gcd, denominator_lcm(1);
+        for(const auto &term : input){
+            if(term.second.is_approximate()) return UINT32_MAX;
+            precq_t coefficient = term.second.rational();
+            numerator_gcd = ::gcd(numerator_gcd, coefficient.numerator());
+            const precn_t &denominator = coefficient.denominator();
+            denominator_lcm = (denominator_lcm /
+                ::gcd(denominator_lcm, denominator)) * denominator;
+        }
+        if(numerator_gcd.rsiz == 0) return UINT32_MAX;
+        numeric_value content(precq_t(numerator_gcd, denominator_lcm));
+        if(input.rbegin()->second.is_negative()) content = -content;
+        if(!content.is_one())
+            for(auto &term : input) term.second = term.second / content;
+        auto by_name = [&](uint32_t a, uint32_t b){
+            return storage_.symbols[storage_.node(a).payload] <
+                   storage_.symbols[storage_.node(b).payload];
+        };
+        auto encoded_degree = [&](const std::vector<uint32_t> &order){
+            size_t weight = 1, maximum = 0;
+            std::vector<size_t> exponents(input.size(), 0);
+            for(uint32_t variable : order){
+                size_t degree = 0, index = 0;
+                for(const auto &term : input){
+                    auto found = term.first.find(variable);
+                    size_t power = found == term.first.end() ? 0 : found->second;
+                    if(power > 24 || weight > 24) return (size_t)25;
+                    exponents[index] += weight * power;
+                    maximum = std::max(maximum, exponents[index++]);
+                    degree = std::max(degree, power);
+                }
+                if(maximum > 24) return (size_t)25;
+                weight *= degree + 1;
+            }
+            return maximum;
+        };
+        // Variable order changes both the degree and the leading coefficient of
+        // the image. A failed image is not evidence that the input is irreducible.
+        std::vector<std::vector<uint32_t>> orders;
+        do{
+            orders.push_back(variables);
+        }while(orders.size() < 24 &&
+               std::next_permutation(variables.begin(), variables.end(), by_name));
+        std::stable_sort(orders.begin(), orders.end(), [&](const auto &a, const auto &b){
+            return encoded_degree(a) < encoded_degree(b);
+        });
+        for(const auto &order : orders){
+            if(encoded_degree(order) > 24) continue;
+            uint32_t result = factor_multivariate_kronecker_order(input, order);
+            if(result != UINT32_MAX)
+                return storage_.make_multiply({storage_.intern_value(content), result});
+        }
+        return UINT32_MAX;
+    }
+
+    uint32_t factor_multivariate_kronecker_order(
+        const multivariate_polynomial &input, const std::vector<uint32_t> &variables){
+        std::vector<size_t> degrees(variables.size(), 0);
+        std::vector<size_t> weights(variables.size(), 1);
+        for(size_t i = 0; i < variables.size(); ++i){
+            for(const auto &term : input){
+                auto found = term.first.find(variables[i]);
+                if(found != term.first.end())
+                    degrees[i] = std::max(degrees[i], found->second);
+            }
+            if(degrees[i] > 24) return UINT32_MAX;
+            if(i){
+                if(weights[i - 1] > 24 / (degrees[i - 1] + 1))
+                    return UINT32_MAX;
+                weights[i] = weights[i - 1] * (degrees[i - 1] + 1);
+            }
+        }
+
+        polynomial encoded;
+        for(const auto &term : input){
+            size_t exponent = 0;
+            for(size_t i = 0; i < variables.size(); ++i){
+                auto found = term.first.find(variables[i]);
+                if(found != term.first.end()) exponent += weights[i] * found->second;
+            }
+            if(exponent > 24) return UINT32_MAX;
+            auto found = encoded.find(exponent);
+            if(found == encoded.end()) encoded.emplace(exponent, term.second);
+            else found->second = found->second + term.second;
+        }
+        uint32_t encoded_expression = polynomial_expression(encoded, variables[0]);
+        uint32_t factored = simplify(encoded_expression);
+
+        std::vector<uint32_t> encoded_factors;
+        auto collect = [&](auto &&self, uint32_t value) -> void{
+            if(encoded_factors.size() > 12) return;
+            const exact_node &node = storage_.node(value);
+            if(node.op == exact_opcode::multiply){
+                const uint32_t *args = storage_.children(node);
+                for(size_t i = 0; i < node.operand_count; ++i)
+                    self(self, args[i]);
+                return;
+            }
+            if(node.op == exact_opcode::value) return;
+            if(node.op == exact_opcode::power){
+                const uint32_t *args = storage_.children(node);
+                const exact_node &exponent = storage_.node(args[1]);
+                int64_t count = 0;
+                if(exponent.op == exact_opcode::value &&
+                   integer_i64(storage_.values[exponent.payload], count) &&
+                   count > 0 && count <= 24){
+                    for(int64_t i = 0; i < count; ++i) self(self, args[0]);
+                    return;
+                }
+            }
+            encoded_factors.push_back(value);
+        };
+        collect(collect, factored);
+
+        if(encoded_factors.size() < 2 || encoded_factors.size() > 12)
+            return UINT32_MAX;
+        std::vector<polynomial> factors;
+        for(uint32_t encoded_factor : encoded_factors){
+            uint32_t encoded_variable = UINT32_MAX;
+            polynomial univariate;
+            if(!parse_polynomial(encoded_factor, encoded_variable, univariate) ||
+               encoded_variable != variables[0] || univariate.rbegin()->first == 0)
+                return UINT32_MAX;
+            factors.push_back(std::move(univariate));
+        }
+        // A true factor may split further after substitution. Recombine before
+        // decoding; exact division rejects artifacts caused by exponent carries.
+        size_t subsets = (size_t)1 << factors.size();
+        for(size_t mask = 1; mask + 1 < subsets; ++mask){
+            polynomial univariate{{0, numeric_value(1)}};
+            for(size_t i = 0; i < factors.size(); ++i){
+                if(!(mask & ((size_t)1 << i))) continue;
+                polynomial product;
+                for(const auto &a : univariate)
+                    for(const auto &b : factors[i]){
+                        size_t degree = a.first + b.first;
+                        auto found = product.find(degree);
+                        numeric_value coefficient = a.second * b.second;
+                        if(found == product.end()) product.emplace(degree, coefficient);
+                        else found->second = found->second + coefficient;
+                    }
+                for(auto it = product.begin(); it != product.end();){
+                    if(it->second.is_zero()) it = product.erase(it);
+                    else ++it;
+                }
+                univariate.swap(product);
+            }
+            multivariate_polynomial candidate;
+            bool decodable = true;
+            for(const auto &term : univariate){
+                size_t exponent = term.first;
+                multivariate_monomial monomial;
+                for(size_t i = 0; i < variables.size(); ++i){
+                    size_t degree = exponent % (degrees[i] + 1);
+                    exponent /= degrees[i] + 1;
+                    if(degree) monomial[variables[i]] = degree;
+                }
+                if(exponent){ decodable = false; break; }
+                add_coefficient(candidate, std::move(monomial), term.second);
+            }
+            if(!decodable || candidate.empty()) continue;
+
+            multivariate_polynomial quotient;
+            if(!divide_multivariate_polynomials(input, candidate, quotient))
+                continue;
+            bool quotient_has_variable = false;
+            for(const auto &term : quotient)
+                if(!term.first.empty()){
+                    quotient_has_variable = true;
+                    break;
+                }
+            if(!quotient_has_variable) continue;
+            return storage_.make_multiply({
+                simplify(multivariate_expression(candidate)),
+                simplify(multivariate_expression(quotient))});
+        }
+        return UINT32_MAX;
+    }
+
     uint32_t factor_add(std::vector<uint32_t> terms){
         if(terms.size() < 2) return storage_.make_add(std::move(terms));
         uint32_t trigonometric = trigonometric_power_identity(terms);
@@ -6800,6 +8007,8 @@ class exact_factor_simplifier{
             if(bilinear_factor != UINT32_MAX) return bilinear_factor;
             uint32_t quadratic_factor = factor_multivariate_quadratic(expression);
             if(quadratic_factor != UINT32_MAX) return quadratic_factor;
+            uint32_t kronecker_factor = factor_multivariate_kronecker(expression);
+            if(kronecker_factor != UINT32_MAX) return kronecker_factor;
             auto refactor_product = [&](uint32_t candidate){
                 exact_node product = storage_.node(candidate);
                 if(product.op != exact_opcode::multiply) return candidate;

@@ -162,6 +162,28 @@ public:
     friend class exact_complex;
 };
 
+enum class risch_status{
+    elementary,
+    proven_nonelementary,
+    unsupported,
+    undecidable_constant,
+    resource_limit,
+    verification_failed
+};
+
+struct risch_options{
+    size_t maximum_nodes = 4096;
+    size_t maximum_degree = 64;
+};
+
+struct risch_result{
+    risch_status status;
+    exact_expr elementary_part;
+    exact_expr remainder;
+    std::vector<exact_expr> conditions;
+    std::string diagnostic;
+};
+
 class exact_complex{
     exact_expr real_;
     exact_expr imag_;
@@ -259,6 +281,9 @@ public:
                              const exact_expr &variable);
     exact_expr integrate(const exact_expr &expression,
                          const exact_expr &variable);
+    risch_result integrate_elementary(
+        const exact_expr &expression, const exact_expr &variable,
+        const risch_options &options = {});
     exact_expr dsolve(const exact_expr &equation,
                       const exact_expr &dependent,
                       const exact_expr &independent);

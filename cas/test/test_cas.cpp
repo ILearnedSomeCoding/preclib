@@ -169,6 +169,170 @@ int main(){
 
     exact_expr x = context.symbol("x");
     exact_expr y = context.symbol("y");
+    exact_expr strict_polynomial =
+        context.power(x, context.integer(7)) +
+        x / context.integer(3) + context.integer(5);
+    risch_result strict_integral =
+        context.integrate_elementary(strict_polynomial, x);
+    assert(strict_integral.status == risch_status::elementary);
+    assert(strict_integral.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+               strict_integral.elementary_part, x) - strict_polynomial) ==
+           context.integer(0));
+    assert(context.integrate_elementary(context.exponential(x), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(x * context.exponential(x), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.integer(2) * x * context.exponential(
+                   context.power(x, context.integer(2))), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               x * context.exponential(x) /
+                   context.power(x + context.integer(1), context.integer(2)),
+               x).status == risch_status::elementary);
+    exact_expr generated_g = context.power(x, context.integer(3)) /
+                             context.integer(3) + x;
+    exact_expr generated_y = (x + context.integer(2)) /
+        context.power(x + context.integer(1), context.integer(2));
+    exact_expr generated_b = context.simplify(
+        context.differentiate(generated_y, x) +
+        context.differentiate(generated_g, x) * generated_y);
+    assert(context.integrate_elementary(
+               generated_b * context.exponential(generated_g), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(context.natural_logarithm(x), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.power(context.natural_logarithm(x), context.integer(5)),
+               x).status == risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.power(context.natural_logarithm(x), context.integer(2)) /
+                   x, x).status == risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.power(x, context.integer(3)) *
+                   (context.power(context.natural_logarithm(x),
+                                  context.integer(2)) +
+                    context.integer(2) * context.natural_logarithm(x) +
+                    context.integer(3)), x).status == risch_status::elementary);
+    exact_expr rational_log_primitive =
+        context.power(context.natural_logarithm(x), context.integer(2)) /
+        (x + context.integer(1));
+    exact_expr rational_log_integrand = context.simplify(
+        context.differentiate(rational_log_primitive, x));
+    risch_result rational_log_result = context.integrate_elementary(
+        rational_log_integrand, x);
+    if(rational_log_result.status != risch_status::elementary)
+        std::fprintf(stderr, "rational log: %s; f=%s; part=%s; rem=%s\n",
+            rational_log_result.diagnostic.c_str(),
+            rational_log_integrand.to_string().c_str(),
+            rational_log_result.elementary_part.to_string().c_str(),
+            rational_log_result.remainder.to_string().c_str());
+    assert(rational_log_result.status == risch_status::elementary);
+    risch_result nested_log_integral = context.integrate_elementary(
+        context.integer(1) / (x * context.natural_logarithm(x)), x);
+    if(nested_log_integral.status != risch_status::elementary)
+        std::fprintf(stderr, "nested log: %s; part=%s; remainder=%s\n",
+            nested_log_integral.diagnostic.c_str(),
+            nested_log_integral.elementary_part.to_string().c_str(),
+            nested_log_integral.remainder.to_string().c_str());
+    assert(nested_log_integral.status == risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.integer(1) / context.natural_logarithm(x), x).status ==
+           risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+               context.integer(1) /
+                   (context.power(x, context.integer(2)) *
+                    context.natural_logarithm(x)), x).status ==
+           risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+               context.integer(1) /
+                   (x * context.power(context.natural_logarithm(x),
+                                      context.integer(2))), x).status ==
+           risch_status::elementary);
+    risch_result second_order_log_pole = context.integrate_elementary(
+        context.integer(1) /
+            context.power(context.natural_logarithm(x), context.integer(2)), x);
+    assert(second_order_log_pole.status ==
+           risch_status::proven_nonelementary);
+    assert(second_order_log_pole.elementary_part != context.integer(0));
+    exact_expr log_log_x = context.natural_logarithm(
+        context.natural_logarithm(x));
+    assert(context.integrate_elementary(
+               context.power(log_log_x, context.integer(3)) /
+                   (x * context.natural_logarithm(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.exponential(x) / x, x).status ==
+           risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+               context.exponential(context.power(x, context.integer(2))),
+               x).status == risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+               context.exponential(-context.power(x, context.integer(2))),
+               x).status == risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+               context.integer(1) /
+                   context.square_root(context.integer(1) -
+                       context.power(x, context.integer(2))), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.exponential(x) *
+                   context.exponential(context.exponential(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.exponential(x) *
+                   (context.natural_logarithm(x) +
+                    context.integer(1) / x), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.integer(1) /
+                   (context.integer(1) + context.exponential(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.power(context.sine(x), context.integer(2)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(approximate_node_a * x, x).status ==
+           risch_status::unsupported);
+    risch_options tiny_risch_budget;
+    tiny_risch_budget.maximum_degree = 4;
+    assert(context.integrate_elementary(strict_polynomial, x,
+                                        tiny_risch_budget).status ==
+           risch_status::resource_limit);
+    risch_result strict_logarithmic_integral = context.integrate_elementary(
+        context.integer(1) / x, x);
+    assert(strict_logarithmic_integral.status == risch_status::elementary);
+    assert(strict_logarithmic_integral.remainder == context.integer(0));
+    exact_expr strict_repeated_pole = context.integer(1) /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result repeated_pole_integral =
+        context.integrate_elementary(strict_repeated_pole, x);
+    assert(repeated_pole_integral.status == risch_status::elementary);
+    assert(repeated_pole_integral.remainder == context.integer(0));
+    risch_result cancelled_rational = context.integrate_elementary(
+        (context.power(x, context.integer(2)) - context.integer(1)) /
+        (x - context.integer(1)), x);
+    assert(cancelled_rational.status == risch_status::elementary);
+    risch_result hermite_partial = context.integrate_elementary(
+        strict_repeated_pole + context.integer(1) /
+            (x + context.integer(1)), x);
+    assert(hermite_partial.status == risch_status::elementary);
+    assert(hermite_partial.elementary_part != context.integer(0));
+    assert(hermite_partial.remainder == context.integer(0));
+    exact_expr fifth = context.power(x, context.integer(5)) + x +
+                       context.integer(1);
+    risch_result high_degree_hermite = context.integrate_elementary(
+        context.integer(1) / context.power(fifth, context.integer(2)), x);
+    assert(high_degree_hermite.status == risch_status::unsupported);
+    assert(high_degree_hermite.elementary_part != context.integer(0));
+    assert(high_degree_hermite.remainder != context.integer(0));
+    exact_expr mixed_poles = context.integer(1) /
+        (context.power(x + context.integer(1), context.integer(2)) *
+         (context.power(x, context.integer(2)) + context.integer(1)));
+    risch_result mixed_hermite = context.integrate_elementary(
+        context.differentiate(mixed_poles, x), x);
+    assert(mixed_hermite.status == risch_status::elementary);
+    assert(mixed_hermite.remainder == context.integer(0));
     exact_expr polynomial_xy = context.power(x, context.integer(2)) +
         context.integer(2) * x * y + context.power(y, context.integer(2));
     assert(context.substitute(polynomial_xy, x, y) ==
@@ -255,6 +419,55 @@ int main(){
     exact_expr quadratic_factored = context.factor(quadratic_product);
     assert(quadratic_factored.operation() == exact_opcode::multiply);
     assert(context.expand(quadratic_factored) == quadratic_product);
+    exact_expr kronecker_a = y + context.power(x, context.integer(2)) +
+        context.integer(5);
+    exact_expr kronecker_b = y + context.integer(2) * x + context.integer(7);
+    exact_expr kronecker_product = context.expand(kronecker_a * kronecker_b);
+    exact_expr kronecker_factored = context.factor(kronecker_product);
+    assert(kronecker_factored.operation() == exact_opcode::multiply);
+    assert(context.expand(kronecker_factored) == kronecker_product);
+    exact_expr regroup_a = y + context.integer(5) * x + context.integer(6);
+    exact_expr regroup_b = y + context.integer(7) * x + context.integer(8);
+    exact_expr regroup_input = context.expand(regroup_a * regroup_b);
+    exact_expr regroup_result = context.factor(regroup_input);
+    assert(regroup_result == regroup_a * regroup_b);
+    assert(context.expand(regroup_result) == regroup_input);
+    exact_expr three_var_a = content_z + x * y + context.integer(5);
+    exact_expr three_var_b = content_z + x * y + context.integer(7);
+    exact_expr three_var_input = context.expand(three_var_a * three_var_b);
+    exact_expr three_var_result = context.factor(three_var_input);
+    assert(three_var_result == three_var_a * three_var_b);
+    assert(context.expand(three_var_result) == three_var_input);
+    exact_expr swapped_a = x + context.integer(5) * y + context.integer(6);
+    exact_expr swapped_b = x + context.integer(7) * y + context.integer(8);
+    exact_expr swapped_input = context.expand(swapped_a * swapped_b);
+    exact_expr swapped_result = context.factor(swapped_input);
+    assert(swapped_result == swapped_a * swapped_b);
+    assert(context.expand(swapped_result) == swapped_input);
+    exact_expr reordered_a = x + y * content_z + context.integer(5);
+    exact_expr reordered_b = x + y * content_z + context.integer(7);
+    exact_expr reordered_input = context.expand(reordered_a * reordered_b);
+    exact_expr reordered_result = context.factor(reordered_input);
+    assert(reordered_result == reordered_a * reordered_b);
+    assert(context.expand(reordered_result) == reordered_input);
+    exact_expr rational_input = context.expand(reordered_input / context.integer(6));
+    exact_expr rational_result = context.factor(rational_input);
+    assert(rational_result == reordered_a * reordered_b / context.integer(6));
+    assert(context.expand(rational_result) == rational_input);
+    exact_expr negative_input = context.expand(-reordered_input);
+    exact_expr negative_result = context.factor(negative_input);
+    assert(negative_result == -(reordered_a * reordered_b));
+    assert(context.expand(negative_result) == negative_input);
+    exact_expr spurious_image = y - context.power(x, context.integer(2));
+    assert(context.factor(spurious_image) == spurious_image);
+    {
+        exact_context reordered;
+        exact_expr ry = reordered.symbol("y");
+        exact_expr rx = reordered.symbol("x");
+        exact_expr ra = ry + reordered.integer(5) * rx + reordered.integer(6);
+        exact_expr rb = ry + reordered.integer(7) * rx + reordered.integer(8);
+        assert(reordered.factor(reordered.expand(ra * rb)) == ra * rb);
+    }
     assert(context.gcd(context.integer(48), context.integer(-18)) ==
            context.integer(6));
     assert(context.factor_integer(context.integer(360)).to_string() ==
