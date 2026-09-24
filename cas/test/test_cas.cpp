@@ -309,6 +309,16 @@ int main(){
                     context.integer(2) * context.exponential(x)), x).status ==
            risch_status::elementary);
     assert(context.integrate_elementary(
+               context.integer(1) /
+                   (context.integer(1) + context.sine(x) +
+                    context.cosine(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
+               context.integer(1) /
+                   (context.integer(1) + context.hyperbolic_sine(x) +
+                    context.hyperbolic_cosine(x)), x).status ==
+           risch_status::elementary);
+    assert(context.integrate_elementary(
                context.exponential(x) /
                    (context.integer(1) +
                     context.integer(2) * context.exponential(x)), x).status ==

@@ -5255,6 +5255,117 @@ risch_result exact_context::integrate_elementary(
                                              subexpressions[j]))) return true;
         return false;
     };
+    auto classify_rational_trigonometric_field = [&]() -> bool{
+        bool has_circular = false;
+        bool has_hyperbolic = false;
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            exact_opcode op = part.operation();
+            if(part.operand_count() == 1 && part.operand(0) == variable){
+                if(op == exact_opcode::sine || op == exact_opcode::cosine ||
+                   op == exact_opcode::tangent){
+                    has_circular = true;
+                    generators.push_back(part);
+                }else if(op == exact_opcode::hyperbolic_sine ||
+                         op == exact_opcode::hyperbolic_cosine ||
+                         op == exact_opcode::hyperbolic_tangent){
+                    has_hyperbolic = true;
+                    generators.push_back(part);
+                }
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(generators.empty() || (has_circular && has_hyperbolic)) return false;
+        exact_expr parameter;
+        for(size_t suffix = 0;; ++suffix){
+            parameter = symbol("_risch_trig_t_" + std::to_string(suffix));
+            if(parameter != variable &&
+               !integration_depends_on(expression, parameter)) break;
+        }
+        exact_expr one = integer(1);
+        exact_expr t2 = power(parameter, integer(2));
+        exact_expr sine_value, cosine_value, tangent_value, dx_dt;
+        if(has_circular){
+            sine_value = integer(2) * parameter / (one + t2);
+            cosine_value = (one - t2) / (one + t2);
+            tangent_value = integer(2) * parameter / (one - t2);
+            dx_dt = integer(2) / (one + t2);
+        }else{
+            sine_value = integer(2) * parameter / (one - t2);
+            cosine_value = (one + t2) / (one - t2);
+            tangent_value = integer(2) * parameter / (one + t2);
+            dx_dt = integer(2) / (one - t2);
+        }
+        exact_expr transformed = expression;
+        for(const exact_expr &generator : generators){
+            exact_opcode op = generator.operation();
+            exact_expr replacement;
+            if(op == exact_opcode::sine ||
+               op == exact_opcode::hyperbolic_sine)
+                replacement = sine_value;
+            else if(op == exact_opcode::cosine ||
+                    op == exact_opcode::hyperbolic_cosine)
+                replacement = cosine_value;
+            else replacement = tangent_value;
+            transformed = substitute(transformed, generator, replacement);
+        }
+        exact_expr transformed_integrand = simplify(transformed * dx_dt);
+        integration_poly numerator, denominator;
+        if(!integration_parse_rational(transformed_integrand, parameter,
+                                       numerator, denominator) ||
+           !integration_normalize_rational(numerator, denominator))
+            return false;
+        exact_expr rational_integrand = integration_poly_expr(
+            *this, numerator, parameter) /
+            integration_poly_expr(*this, denominator, parameter);
+        exact_expr parameter_primitive = integration_rational_antiderivative(
+            *this, rational_integrand, parameter);
+        if(!parameter_primitive.valid() ||
+           parameter_primitive.operation() == exact_opcode::integral)
+            return false;
+        exact_expr verification_primitive = parameter_primitive;
+        std::vector<exact_expr> absolute_logs;
+        std::unordered_set<uint32_t> log_seen;
+        auto collect_absolute_logs = [&](auto &&self,
+                                         const exact_expr &part) -> void{
+            if(!log_seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               part.operand(0).operation() == exact_opcode::absolute_value)
+                absolute_logs.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect_absolute_logs(collect_absolute_logs, parameter_primitive);
+        for(const exact_expr &logarithm : absolute_logs)
+            verification_primitive = substitute(verification_primitive,
+                logarithm, natural_logarithm(logarithm.operand(0).operand(0)));
+        exact_expr parameter_error = simplify(expand(
+            differentiate(verification_primitive, parameter) -
+                rational_integrand, 100000));
+        if(parameter_error != integer(0)){
+            integration_poly error_numerator, error_denominator;
+            if(!integration_parse_rational(parameter_error, parameter,
+                                           error_numerator, error_denominator) ||
+               !integration_normalize_rational(error_numerator,
+                                               error_denominator) ||
+               !integration_zero_poly(error_numerator))
+                return false;
+        }
+        exact_expr half_argument = variable / integer(2);
+        exact_expr back_substitution = has_circular
+            ? tangent(half_argument) : hyperbolic_tangent(half_argument);
+        result.status = risch_status::elementary;
+        result.elementary_part = substitute(parameter_primitive, parameter,
+                                            back_substitution);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_rational_trigonometric_field()) return result;
     auto classify_pure_primitive_pole = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
