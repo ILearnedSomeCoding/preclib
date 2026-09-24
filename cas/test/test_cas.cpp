@@ -313,6 +313,13 @@ int main(){
                    (context.integer(1) + context.sine(x) +
                     context.cosine(x)), x).status ==
            risch_status::elementary);
+    exact_expr triple_angle = context.integer(3) * x;
+    exact_expr triple_angle_primitive = context.integer(1) /
+        (context.integer(1) + context.sine(triple_angle));
+    assert(context.integrate_elementary(
+               context.simplify(context.differentiate(
+                   triple_angle_primitive, x)), x).status ==
+           risch_status::elementary);
     assert(context.integrate_elementary(
                context.integer(1) /
                    (context.integer(1) + context.hyperbolic_sine(x) +

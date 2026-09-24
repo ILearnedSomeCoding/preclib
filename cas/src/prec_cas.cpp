@@ -5258,21 +5258,35 @@ risch_result exact_context::integrate_elementary(
     auto classify_rational_trigonometric_field = [&]() -> bool{
         bool has_circular = false;
         bool has_hyperbolic = false;
-        std::vector<exact_expr> generators;
+        std::vector<std::pair<exact_expr, int64_t>> generators;
         std::unordered_set<uint32_t> seen;
+        auto integer_frequency = [&](const exact_expr &argument,
+                                     int64_t &frequency) -> bool{
+            if(argument == variable){
+                frequency = 1;
+                return true;
+            }
+            integration_poly linear;
+            return integration_parse_poly(argument, variable, linear) &&
+                linear.size() == 2 && linear[0].is_zero() &&
+                integer_i64(linear[1], frequency) && frequency >= -32 &&
+                frequency <= 32;
+        };
         auto collect = [&](auto &&self, const exact_expr &part) -> void{
             if(!seen.insert(part.id()).second) return;
             exact_opcode op = part.operation();
-            if(part.operand_count() == 1 && part.operand(0) == variable){
+            int64_t frequency = 0;
+            if(part.operand_count() == 1 &&
+               integer_frequency(part.operand(0), frequency)){
                 if(op == exact_opcode::sine || op == exact_opcode::cosine ||
                    op == exact_opcode::tangent){
                     has_circular = true;
-                    generators.push_back(part);
+                    generators.emplace_back(part, frequency);
                 }else if(op == exact_opcode::hyperbolic_sine ||
                          op == exact_opcode::hyperbolic_cosine ||
                          op == exact_opcode::hyperbolic_tangent){
                     has_hyperbolic = true;
-                    generators.push_back(part);
+                    generators.emplace_back(part, frequency);
                 }
             }
             for(size_t i = 0; i < part.operand_count(); ++i)
@@ -5288,22 +5302,74 @@ risch_result exact_context::integrate_elementary(
         }
         exact_expr one = integer(1);
         exact_expr t2 = power(parameter, integer(2));
-        exact_expr sine_value, cosine_value, tangent_value, dx_dt;
+        exact_expr dx_dt;
         if(has_circular){
-            sine_value = integer(2) * parameter / (one + t2);
-            cosine_value = (one - t2) / (one + t2);
-            tangent_value = integer(2) * parameter / (one - t2);
             dx_dt = integer(2) / (one + t2);
         }else{
-            sine_value = integer(2) * parameter / (one - t2);
-            cosine_value = (one + t2) / (one - t2);
-            tangent_value = integer(2) * parameter / (one + t2);
             dx_dt = integer(2) / (one - t2);
         }
+        auto shift_t = [](const integration_poly &polynomial){
+            integration_poly shifted(polynomial.size() + 1, numeric_value(0));
+            for(size_t i = 0; i < polynomial.size(); ++i)
+                shifted[i + 1] = polynomial[i];
+            integration_trim(shifted);
+            return shifted;
+        };
+        auto trig_values = [&](int64_t frequency, exact_expr &sine_value,
+                               exact_expr &cosine_value,
+                               exact_expr &tangent_value) -> bool{
+            int64_t signed_n = frequency;
+            size_t n = (size_t)(signed_n < 0 ? -signed_n : signed_n);
+            if(n > 32) return false;
+            integration_poly sine_numerator, cosine_numerator, denominator;
+            if(has_circular){
+                integration_poly real{numeric_value(1)};
+                integration_poly imaginary{numeric_value(0)};
+                for(size_t k = 0; k < 2 * n; ++k){
+                    integration_poly next_real = integration_sub(
+                        real, shift_t(imaginary));
+                    integration_poly next_imaginary = integration_add(
+                        imaginary, shift_t(real));
+                    real = std::move(next_real);
+                    imaginary = std::move(next_imaginary);
+                }
+                cosine_numerator = std::move(real);
+                sine_numerator = std::move(imaginary);
+                denominator = integration_pow_poly(
+                    {numeric_value(1), numeric_value(0), numeric_value(1)}, n);
+            }else{
+                integration_poly plus = integration_pow_poly(
+                    {numeric_value(1), numeric_value(1)}, 2 * n);
+                integration_poly minus = integration_pow_poly(
+                    {numeric_value(1), numeric_value(-1)}, 2 * n);
+                sine_numerator = integration_sub(plus, minus);
+                cosine_numerator = integration_add(plus, minus);
+                denominator = integration_pow_poly(
+                    {numeric_value(1), numeric_value(0), numeric_value(-1)}, n);
+                for(numeric_value &coefficient : denominator)
+                    coefficient = coefficient * numeric_value(2);
+            }
+            if(signed_n < 0)
+                for(numeric_value &coefficient : sine_numerator)
+                    coefficient = -coefficient;
+            exact_expr denominator_expression = integration_poly_expr(
+                *this, denominator, parameter);
+            sine_value = integration_poly_expr(*this, sine_numerator,
+                                                parameter) /
+                         denominator_expression;
+            cosine_value = integration_poly_expr(*this, cosine_numerator,
+                                                  parameter) /
+                           denominator_expression;
+            tangent_value = sine_value / cosine_value;
+            return true;
+        };
         exact_expr transformed = expression;
-        for(const exact_expr &generator : generators){
+        for(const auto &entry : generators){
+            const exact_expr &generator = entry.first;
             exact_opcode op = generator.operation();
-            exact_expr replacement;
+            exact_expr sine_value, cosine_value, tangent_value, replacement;
+            if(!trig_values(entry.second, sine_value, cosine_value,
+                            tangent_value)) return false;
             if(op == exact_opcode::sine ||
                op == exact_opcode::hyperbolic_sine)
                 replacement = sine_value;
