@@ -3330,8 +3330,6 @@ static bool integration_hermite_reduce(
         reduced_numerator = numerator;
         return true;
     }
-    if(denominator.size() > 25) return false;
-
     integration_poly g_derivative = integration_derivative_poly(
         rational_denominator);
     integration_poly g_squared = integration_mul(rational_denominator,
@@ -6203,9 +6201,9 @@ risch_result exact_context::integrate_elementary(
             if(!integration_hermite_reduce(proper_numerator, denominator,
                     rational_numerator, rational_denominator,
                     reduced_numerator, reduced_denominator)){
-                result.status = denominator.size() > 25
-                    ? risch_status::resource_limit : risch_status::unsupported;
-                result.diagnostic = "Hermite reduction did not finish";
+                result.status = risch_status::verification_failed;
+                result.diagnostic =
+                    "Hermite reduction failed exact reconstruction";
                 return result;
             }
             if(!integration_zero_poly(rational_numerator))

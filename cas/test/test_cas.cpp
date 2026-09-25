@@ -454,6 +454,19 @@ int main(){
     assert(high_degree_hermite.status == risch_status::elementary);
     assert(high_degree_hermite.elementary_part != context.integer(0));
     assert(high_degree_hermite.remainder == context.integer(0));
+    exact_expr high_degree_repeated_base =
+        context.power(x, context.integer(13)) + x + context.integer(1);
+    exact_expr high_degree_repeated_integrand = context.integer(1) /
+        context.power(high_degree_repeated_base, context.integer(2));
+    risch_result high_degree_repeated = context.integrate_elementary(
+        high_degree_repeated_integrand, x);
+    if(high_degree_repeated.status != risch_status::elementary)
+        std::fprintf(stderr, "high degree Hermite: %s; part=%s; rem=%s\n",
+            high_degree_repeated.diagnostic.c_str(),
+            high_degree_repeated.elementary_part.to_string().c_str(),
+            high_degree_repeated.remainder.to_string().c_str());
+    assert(high_degree_repeated.status == risch_status::elementary);
+    assert(high_degree_repeated.remainder == context.integer(0));
     assert(context.integrate(fifth_simple_fraction, x).operation() ==
            exact_opcode::log_root_sum);
     {
