@@ -267,6 +267,24 @@ int main(){
         x / (log_x + context.integer(1)));
     assert(log_rational_result.elementary_part ==
            expected_log_rational_primitive);
+    exact_expr affine_log_argument = context.integer(2) * x +
+                                     context.integer(3);
+    exact_expr affine_log = context.natural_logarithm(affine_log_argument);
+    exact_expr affine_log_integrand = context.integer(2) * affine_log /
+        context.power(affine_log + context.integer(1), context.integer(2));
+    risch_result affine_log_result = context.integrate_elementary(
+        affine_log_integrand, x);
+    if(affine_log_result.status != risch_status::elementary)
+        std::fprintf(stderr, "affine log RDE: %s; f=%s; part=%s; rem=%s\n",
+            affine_log_result.diagnostic.c_str(),
+            affine_log_integrand.to_string().c_str(),
+            affine_log_result.elementary_part.to_string().c_str(),
+            affine_log_result.remainder.to_string().c_str());
+    assert(affine_log_result.status == risch_status::elementary);
+    exact_expr expected_affine_log_primitive = context.simplify(
+        affine_log_argument / (affine_log + context.integer(1)));
+    assert(affine_log_result.elementary_part ==
+           expected_affine_log_primitive);
     assert(context.integrate_elementary(
         context.integer(1) / (log_x + context.integer(1)), x).status ==
         risch_status::proven_nonelementary);

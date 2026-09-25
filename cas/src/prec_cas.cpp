@@ -5434,13 +5434,22 @@ risch_result exact_context::integrate_elementary(
     if(classify_rational_trigonometric_field()) return result;
     auto classify_logarithmic_rational_hyperexponential = [&]() -> bool{
         exact_expr logarithm;
+        exact_expr logarithm_argument;
+        numeric_value logarithm_slope(0);
         std::unordered_set<uint32_t> seen;
         auto find_logarithm = [&](auto &&self, const exact_expr &part) -> void{
             if(logarithm.valid() || !seen.insert(part.id()).second) return;
-            if(part.operation() == exact_opcode::natural_logarithm &&
-               part.operand(0) == variable){
-                logarithm = part;
-                return;
+            if(part.operation() == exact_opcode::natural_logarithm){
+                integration_poly argument_polynomial;
+                if(integration_parse_poly(part.operand(0), variable,
+                                          argument_polynomial) &&
+                   argument_polynomial.size() == 2 &&
+                   !argument_polynomial[1].is_zero()){
+                    logarithm = part;
+                    logarithm_argument = part.operand(0);
+                    logarithm_slope = argument_polynomial[1];
+                    return;
+                }
             }
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self, part.operand(i));
@@ -5468,28 +5477,31 @@ risch_result exact_context::integrate_elementary(
         for(const exact_expr &summand : summands){
             std::vector<exact_expr> factors;
             integration_factor_list(summand, factors);
-            int64_t x_power = 0;
+            int64_t generator_power = 0;
             std::vector<exact_expr> coefficient_factors;
             bool valid_power = true;
             for(const exact_expr &factor : factors){
-                int64_t power_of_x = 0;
-                bool is_power = factor == variable;
-                if(is_power) power_of_x = 1;
+                int64_t power_of_generator = 0;
+                bool is_power = factor == logarithm_argument;
+                if(is_power) power_of_generator = 1;
                 else if(factor.operation() == exact_opcode::power &&
-                        factor.operand(0) == variable)
+                        factor.operand(0) == logarithm_argument)
                     is_power = integration_signed_exponent(
-                        factor.operand(1), power_of_x);
+                        factor.operand(1), power_of_generator);
                 if(is_power){
-                    if((power_of_x > 0 && x_power > INT64_MAX - power_of_x) ||
-                       (power_of_x < 0 && x_power < INT64_MIN - power_of_x)){
+                    if((power_of_generator > 0 &&
+                        generator_power > INT64_MAX - power_of_generator) ||
+                       (power_of_generator < 0 &&
+                        generator_power < INT64_MIN - power_of_generator)){
                         valid_power = false;
                         break;
                     }
-                    x_power += power_of_x;
+                    generator_power += power_of_generator;
                 }else coefficient_factors.push_back(factor);
             }
-            if(!valid_power || x_power < -32 || x_power > 32 ||
-               (size_t)(x_power < 0 ? -x_power : x_power) > degree_budget)
+            if(!valid_power || generator_power < -32 || generator_power > 32 ||
+               (size_t)(generator_power < 0 ? -generator_power :
+                                               generator_power) > degree_budget)
                 return false;
             exact_expr cofactor = coefficient_factors.empty()
                 ? integer(1) : multiply(coefficient_factors);
@@ -5499,12 +5511,16 @@ risch_result exact_context::integrate_elementary(
                 return false;
             if(integration_zero_poly(p)) continue;
 
-            int64_t exponential_rate = x_power + 1;
-            exact_expr term_x_power = x_power == 0 ? integer(1) :
-                power(variable, integer(x_power));
-            exact_expr original_term = simplify(term_x_power * cofactor);
+            int64_t exponential_rate = generator_power + 1;
+            exact_expr term_generator_power = generator_power == 0 ? integer(1) :
+                power(logarithm_argument, integer(generator_power));
+            exact_expr original_term = simplify(term_generator_power * cofactor);
+            integration_poly scaled_p = p;
+            for(numeric_value &coefficient : scaled_p)
+                coefficient = coefficient / logarithm_slope;
             exact_expr rational_in_parameter = integration_poly_expr(
-                *this, p, parameter) / integration_poly_expr(*this, q, parameter);
+                *this, scaled_p, parameter) /
+                integration_poly_expr(*this, q, parameter);
             if(exponential_rate == 0){
                 exact_expr primitive_in_log = integration_rational_antiderivative(
                     *this, rational_in_parameter, parameter);
@@ -5526,13 +5542,13 @@ risch_result exact_context::integrate_elementary(
             }
 
             integration_rational_rde_result rde = integration_rde_rational(
-                p, q, integration_poly{numeric_value(exponential_rate)});
+                scaled_p, q, integration_poly{numeric_value(exponential_rate)});
             if(rde.status == integration_rde_status::solved){
                 exact_expr rational_solution = integration_poly_expr(
                     *this, rde.numerator, parameter) /
                     integration_poly_expr(*this, rde.denominator, parameter);
                 exact_expr primitive = simplify(rational_solution *
-                    power(variable, integer(exponential_rate)));
+                    power(logarithm_argument, integer(exponential_rate)));
                 primitive = substitute(primitive, parameter, logarithm);
                 elementary_part = simplify(elementary_part + primitive);
             }else if(rde.status ==

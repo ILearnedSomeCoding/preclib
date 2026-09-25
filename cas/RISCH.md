@@ -63,14 +63,15 @@ primitive 层已实现子域 `x^m P(log(x))`（`m∈Z`、`P∈Q[t]`）。令
 `proven_nonelementary`；高阶情形同时保留已经验证的初等部分。该结论目前仅用于
 分母为单个 `t` 幂且分子属于 `Q(x)` 的情形，尚未推广到 `Q(x)(t)` 的一般
 平方自由分母与多个 primitive 生成元。
-现已扩展到单生成元有理域 `Q(log(x))` 乘 Laurent 幂 `x^m`：按每个加法项
-提取 `m`，置 `t=log(x)` 后得到 `exp((m+1)t)*R(t)`。`m=-1` 时在独立形式变量
+现已扩展到单生成元有理域 `Q(log(g(x)))` 乘 Laurent 幂 `g(x)^m`，其中 `g` 是
+斜率非零的有理系数仿射多项式：按每个加法项提取 `m`，置 `t=log(g(x))`，
+以 `dt= g'/g dx` 换元，得到 `exp((m+1)t)*R(t)/g'`。`m=-1` 时在独立形式变量
 `t` 中执行有理函数积分并精确验证导数；其他整数 `m` 通过有理 RDE
-`y'+(m+1)y=R(t)` 求解并核对多项式恒等式。仅当完整 RDE 无有理解时，才在该
-受限微分域中报告 `proven_nonelementary`。例如 `log(x)/(log(x)+1)^2` 可积，
-而 `1/(log(x)+1)` 无初等原函数。此实现假设 `x>0` 以采用实值 `log(x)`，
-只接受有限个整数幂 Laurent 项及有理系数 `R(log(x))`；不覆盖多个对数生成元、
-含 `log(log(x))` 的有理系数或非整数幂。
+`y'+(m+1)y=R(t)/g'` 求解并核对多项式恒等式。仅当完整 RDE 无有理解时，才在该
+受限微分域中报告 `proven_nonelementary`。例如 `log(x)/(log(x)+1)^2` 及
+`2*log(2*x+3)/(log(2*x+3)+1)^2` 可积，而 `1/(log(x)+1)` 无初等原函数。
+实值语义要求 `g(x)>0`；只接受有限个整数幂 Laurent 项及有理系数
+`R(log(g(x)))`，不覆盖多个对数生成元、含 `log(log(x))` 的有理系数或非整数幂。
 超过节点或次数预算返回 `resource_limit`；
 除上面列出的多项式超指数、指数 Laurent 项和 primitive 极点范围外，尚不产生
 `proven_nonelementary` 结论；
