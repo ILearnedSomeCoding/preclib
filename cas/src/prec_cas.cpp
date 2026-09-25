@@ -2668,7 +2668,8 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
 namespace{
 
 using integration_poly = std::vector<numeric_value>;
-static constexpr size_t integration_hermite_degree_limit = 64;
+static constexpr size_t integration_public_hermite_degree_limit = 64;
+static constexpr size_t integration_public_hermite_matrix_limit = 65536;
 
 static void integration_trim(integration_poly &a){
     while(a.size() > 1 && a.back().is_zero()) a.pop_back();
@@ -2702,9 +2703,18 @@ static bool integration_exponent(const exact_expr &value, size_t &result){
     return true;
 }
 
+static integration_poly integration_pow_poly(integration_poly base,
+                                             size_t exponent);
+
 static bool integration_parse_poly(const exact_expr &expression,
                                    const exact_expr &variable,
-                                   integration_poly &result){
+                                   integration_poly &result,
+                                   size_t maximum_exponent = 64,
+                                   size_t maximum_degree = SIZE_MAX){
+    auto within_budget = [&](const integration_poly &polynomial){
+        return maximum_degree == SIZE_MAX ||
+               polynomial.size() <= maximum_degree + 1;
+    };
     if(expression == variable){
         result = {numeric_value(0), numeric_value(1)};
         return true;
@@ -2717,9 +2727,11 @@ static bool integration_parse_poly(const exact_expr &expression,
         result = {numeric_value(0)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly term;
-            if(!integration_parse_poly(expression.operand(i), variable, term))
+            if(!integration_parse_poly(expression.operand(i), variable, term,
+                                       maximum_exponent, maximum_degree))
                 return false;
             result = integration_add(result, term);
+            if(!within_budget(result)) return false;
         }
         return true;
     }
@@ -2727,26 +2739,27 @@ static bool integration_parse_poly(const exact_expr &expression,
         result = {numeric_value(1)};
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_poly factor;
-            if(!integration_parse_poly(expression.operand(i), variable, factor))
+            if(!integration_parse_poly(expression.operand(i), variable, factor,
+                                       maximum_exponent, maximum_degree))
                 return false;
             result = integration_mul(result, factor);
+            if(!within_budget(result)) return false;
         }
         return true;
     }
     if(expression.operation() == exact_opcode::power){
         size_t exponent = 0;
-        if(!integration_exponent(expression.operand(1), exponent) || exponent > 64)
+        if(!integration_exponent(expression.operand(1), exponent) ||
+           exponent > maximum_exponent)
             return false;
         integration_poly base;
-        if(!integration_parse_poly(expression.operand(0), variable, base))
+        if(!integration_parse_poly(expression.operand(0), variable, base,
+                                   maximum_exponent, maximum_degree))
             return false;
-        result = {numeric_value(1)};
-        while(exponent){
-            if(exponent & 1) result = integration_mul(result, base);
-            exponent >>= 1;
-            if(exponent) base = integration_mul(base, base);
-        }
-        return true;
+        if(maximum_degree != SIZE_MAX && base.size() > 1 &&
+           exponent > maximum_degree / (base.size() - 1)) return false;
+        result = integration_pow_poly(std::move(base), exponent);
+        return within_budget(result);
     }
     return false;
 }
@@ -2842,7 +2855,8 @@ static bool integration_parse_rational(const exact_expr &expression,
         return maximum_degree == SIZE_MAX ||
                polynomial.size() <= maximum_degree + 1;
     };
-    if(integration_parse_poly(expression, variable, numerator)){
+    if(integration_parse_poly(expression, variable, numerator,
+                              maximum_exponent, maximum_degree)){
         denominator = {numeric_value(1)};
         return within_budget(numerator);
     }
@@ -3144,7 +3158,9 @@ static bool integration_hermite_reduce(
     integration_poly &rational_numerator,
     integration_poly &rational_denominator,
     integration_poly &reduced_numerator,
-    integration_poly &reduced_denominator);
+    integration_poly &reduced_denominator,
+    size_t maximum_matrix_entries = SIZE_MAX,
+    bool *resource_limited = nullptr);
 static bool integration_normalize_rational(integration_poly &numerator,
                                            integration_poly &denominator);
 
@@ -3155,8 +3171,8 @@ static exact_expr integration_rational_antiderivative(
     if(!integration_parse_rational(expression, variable,
                                    numerator, denominator) &&
        !integration_parse_rational(expression, variable, numerator, denominator,
-                                   integration_hermite_degree_limit,
-                                   integration_hermite_degree_limit))
+                                   integration_public_hermite_degree_limit,
+                                   integration_public_hermite_degree_limit))
         return exact_expr();
     integration_poly quotient, remainder;
     if(!integration_divmod_poly(numerator, denominator,
@@ -3186,12 +3202,13 @@ static exact_expr integration_rational_antiderivative(
             integration_poly_expr(context, remainder, variable),
             denominator_expression, variable);
     if(!proper.valid() && denominator.size() - 1 <=
-                              integration_hermite_degree_limit){
+                              integration_public_hermite_degree_limit){
         integration_poly rational_numerator, rational_denominator;
         integration_poly reduced_numerator, reduced_denominator;
         if(integration_hermite_reduce(remainder, denominator,
                 rational_numerator, rational_denominator,
-                reduced_numerator, reduced_denominator)){
+                reduced_numerator, reduced_denominator,
+                integration_public_hermite_matrix_limit)){
             exact_expr rational_part = context.integer(0);
             if(!(rational_numerator.size() == 1 &&
                  rational_numerator[0].is_zero()))
@@ -3389,7 +3406,9 @@ static bool integration_hermite_reduce(
     integration_poly &rational_numerator,
     integration_poly &rational_denominator,
     integration_poly &reduced_numerator,
-    integration_poly &reduced_denominator){
+    integration_poly &reduced_denominator,
+    size_t maximum_matrix_entries, bool *resource_limited){
+    if(resource_limited) *resource_limited = false;
     if(denominator.size() < 2 ||
        numerator.size() >= denominator.size()) return false;
     integration_poly derivative = integration_derivative_poly(denominator);
@@ -3407,14 +3426,24 @@ static bool integration_hermite_reduce(
         reduced_numerator = numerator;
         return true;
     }
+    if(g_degree > (SIZE_MAX - r_degree) / 2){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    const size_t columns = g_degree + r_degree;
+    const size_t rows = 2 * g_degree + r_degree;
+    if(columns == SIZE_MAX || rows == 0 ||
+       columns + 1 > maximum_matrix_entries ||
+       rows > maximum_matrix_entries / (columns + 1)){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
     integration_poly g_derivative = integration_derivative_poly(
         rational_denominator);
     integration_poly g_squared = integration_mul(rational_denominator,
                                                  rational_denominator);
     integration_poly right = integration_mul(numerator,
                                              rational_denominator);
-    const size_t columns = g_degree + r_degree;
-    const size_t rows = g_squared.size() + reduced_denominator.size() - 2;
     std::vector<std::vector<numeric_value>> matrix(
         rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
     for(size_t row = 0; row < right.size(); ++row)
@@ -5180,8 +5209,13 @@ risch_result exact_context::integrate_elementary(
         result.diagnostic = "node budget exceeded";
         return result;
     }
-    const size_t degree_budget = std::min<size_t>(
-        options.maximum_degree, integration_hermite_degree_limit);
+    size_t degree_budget = std::min(options.maximum_degree,
+                                    options.maximum_nodes);
+    degree_budget = std::min(degree_budget, (size_t)INT64_MAX);
+    const size_t over_budget_degree = degree_budget + 1;
+    const size_t verification_degree_budget =
+        degree_budget <= options.maximum_nodes / 4
+            ? degree_budget * 4 : options.maximum_nodes;
     auto try_verified_elementary = [&]() -> bool{
         auto verify_candidate = [&](exact_expr candidate) -> bool{
         if(!candidate.valid() ||
@@ -5288,7 +5322,8 @@ risch_result exact_context::integrate_elementary(
                     integration_poly coefficient_numerator,
                                      coefficient_denominator;
                     if(!integration_parse_rational(coefficient, variable,
-                            coefficient_numerator, coefficient_denominator) ||
+                            coefficient_numerator, coefficient_denominator,
+                            degree_budget, verification_degree_budget) ||
                        !integration_normalize_rational(coefficient_numerator,
                                                        coefficient_denominator) ||
                        !integration_zero_poly(coefficient_numerator)){
@@ -5313,7 +5348,8 @@ risch_result exact_context::integrate_elementary(
             exact_expr rational_error = substitute(error, generators[0], temporary);
             integration_poly error_numerator, error_denominator;
             if(!integration_parse_rational(rational_error, temporary,
-                                           error_numerator, error_denominator) ||
+                    error_numerator, error_denominator, degree_budget,
+                    verification_degree_budget) ||
                !integration_normalize_rational(error_numerator,
                                                error_denominator) ||
                !integration_zero_poly(error_numerator)) return false;
@@ -6145,6 +6181,10 @@ risch_result exact_context::integrate_elementary(
 
     const size_t invalid_degree = SIZE_MAX;
     std::unordered_map<uint32_t, size_t> degrees;
+    auto add_degree = [&](size_t a, size_t b){
+        return a > degree_budget || b > degree_budget - a
+            ? over_budget_degree : a + b;
+    };
     auto degree_of = [&](auto &&self, const exact_expr &part) -> size_t{
         auto found = degrees.find(part.id());
         if(found != degrees.end()) return found->second;
@@ -6159,21 +6199,25 @@ risch_result exact_context::integrate_elementary(
             for(size_t i = 0; i < part.operand_count(); ++i){
                 size_t child = self(self, part.operand(i));
                 if(child == invalid_degree){ degree = invalid_degree; break; }
-                degree = multiply_terms ? degree + child
+                degree = multiply_terms ? add_degree(degree, child)
                                         : std::max(degree, child);
                 if(degree > degree_budget) break;
             }
         }else if(part.operation() == exact_opcode::power){
-            size_t exponent = 0;
-            if(integration_exponent(part.operand(1), exponent) && exponent > 64)
-                degree = degree_budget + 1;
-            else if(integration_exponent(part.operand(1), exponent)){
-                size_t base_degree = self(self, part.operand(0));
-                if(base_degree != invalid_degree){
-                    degree = base_degree > degree_budget ||
-                        (base_degree && exponent >
-                         degree_budget / base_degree)
-                        ? degree_budget + 1 : base_degree * exponent;
+            int64_t signed_exponent = 0;
+            if(integration_signed_exponent(part.operand(1), signed_exponent) &&
+               signed_exponent >= 0){
+                size_t exponent = (size_t)signed_exponent;
+                if(exponent > degree_budget){
+                    degree = over_budget_degree;
+                }else{
+                    size_t base_degree = self(self, part.operand(0));
+                    if(base_degree != invalid_degree){
+                        degree = base_degree > degree_budget ||
+                            (base_degree && exponent >
+                             degree_budget / base_degree)
+                            ? over_budget_degree : base_degree * exponent;
+                    }
                 }
             }
         }
@@ -6187,7 +6231,7 @@ risch_result exact_context::integrate_elementary(
         std::unordered_map<uint32_t, degree_pair> bounds;
         auto add_bound = [&](size_t a, size_t b){
             return a > degree_budget || b > degree_budget ||
-                   a > degree_budget - b ? degree_budget + 1 : a + b;
+                   a > degree_budget - b ? over_budget_degree : a + b;
         };
         auto rational_degree = [&](auto &&self,
                                    const exact_expr &part) -> degree_pair{
@@ -6225,19 +6269,22 @@ risch_result exact_context::integrate_elementary(
                 if(integration_signed_exponent(part.operand(1), exponent)){
                     if(exponent < -(int64_t)degree_budget ||
                        exponent > (int64_t)degree_budget)
-                        value = {degree_budget + 1, 0};
+                        value = {over_budget_degree, 0};
                     else{
                         degree_pair base = self(self, part.operand(0));
                         if(base != invalid){
-                            value = {0, 0};
                             size_t count = (size_t)(exponent < 0 ? -exponent
                                                                    : exponent);
-                            for(size_t i = 0; i < count; ++i){
-                                value.first = add_bound(value.first,
-                                    exponent < 0 ? base.second : base.first);
-                                value.second = add_bound(value.second,
-                                    exponent < 0 ? base.first : base.second);
-                            }
+                            auto multiply_bound = [&](size_t term){
+                                return term > degree_budget ||
+                                       (term && count > degree_budget / term)
+                                    ? over_budget_degree : term * count;
+                            };
+                            value = exponent < 0
+                                ? degree_pair{multiply_bound(base.second),
+                                              multiply_bound(base.first)}
+                                : degree_pair{multiply_bound(base.first),
+                                              multiply_bound(base.second)};
                         }
                     }
                 }
@@ -6278,12 +6325,18 @@ risch_result exact_context::integrate_elementary(
         integration_poly reduced_numerator{numeric_value(0)};
         integration_poly reduced_denominator{numeric_value(1)};
         if(!integration_zero_poly(proper_numerator)){
+            bool matrix_budget_exceeded = false;
             if(!integration_hermite_reduce(proper_numerator, denominator,
                     rational_numerator, rational_denominator,
-                    reduced_numerator, reduced_denominator)){
-                result.status = risch_status::verification_failed;
-                result.diagnostic =
-                    "Hermite reduction failed exact reconstruction";
+                    reduced_numerator, reduced_denominator,
+                    options.maximum_matrix_entries,
+                    &matrix_budget_exceeded)){
+                result.status = matrix_budget_exceeded
+                    ? risch_status::resource_limit
+                    : risch_status::verification_failed;
+                result.diagnostic = matrix_budget_exceeded
+                    ? "Hermite matrix entry budget exceeded"
+                    : "Hermite reduction failed exact reconstruction";
                 return result;
             }
             if(!integration_zero_poly(rational_numerator))
@@ -6300,10 +6353,13 @@ risch_result exact_context::integrate_elementary(
             integration_poly left_numerator, left_denominator;
             if(!integration_parse_rational(
                    differentiate(candidate, variable) + remaining,
-                   variable, left_numerator, left_denominator) ||
+                   variable, left_numerator, left_denominator, degree_budget,
+                   verification_degree_budget) ||
                !integration_normalize_rational(left_numerator, left_denominator))
                 return false;
-            return left_numerator == numerator && left_denominator == denominator;
+            bool matches = left_numerator == numerator &&
+                           left_denominator == denominator;
+            return matches;
         };
         if(!verified(partial, residual)){
             result.status = risch_status::verification_failed;

@@ -432,6 +432,18 @@ int main(){
     subdegree_risch_budget.maximum_degree = 32;
     assert(context.integrate_elementary(fortieth_order_pole, x,
            subdegree_risch_budget).status == risch_status::resource_limit);
+    exact_expr eightieth_order_pole = context.integer(1) /
+        context.power(x + context.integer(1), context.integer(80));
+    risch_options extended_risch_budget;
+    extended_risch_budget.maximum_degree = 96;
+    risch_result eightieth_order_integral = context.integrate_elementary(
+        eightieth_order_pole, x, extended_risch_budget);
+    assert(eightieth_order_integral.status == risch_status::elementary);
+    assert(eightieth_order_integral.remainder == context.integer(0));
+    risch_options tiny_hermite_matrix_budget = extended_risch_budget;
+    tiny_hermite_matrix_budget.maximum_matrix_entries = 100;
+    assert(context.integrate_elementary(eightieth_order_pole, x,
+           tiny_hermite_matrix_budget).status == risch_status::resource_limit);
     risch_result cancelled_rational = context.integrate_elementary(
         (context.power(x, context.integer(2)) - context.integer(1)) /
         (x - context.integer(1)), x);

@@ -175,6 +175,7 @@ enum class risch_status{
 struct risch_options{
     size_t maximum_nodes = 4096;
     size_t maximum_degree = 64;
+    size_t maximum_matrix_entries = 65536;
 };
 
 struct risch_result{
