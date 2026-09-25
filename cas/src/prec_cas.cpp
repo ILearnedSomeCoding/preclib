@@ -5699,7 +5699,8 @@ risch_result exact_context::integrate_elementary(
     auto classify_logarithmic_rational_hyperexponential = [&]() -> bool{
         exact_expr logarithm;
         exact_expr logarithm_argument;
-        numeric_value logarithm_slope(0);
+        exact_expr logarithm_derivative;
+        size_t logarithm_argument_size = 0;
         std::unordered_set<uint32_t> seen;
         auto find_logarithm = [&](auto &&self, const exact_expr &part) -> void{
             if(logarithm.valid() || !seen.insert(part.id()).second) return;
@@ -5707,11 +5708,15 @@ risch_result exact_context::integrate_elementary(
                 integration_poly argument_polynomial;
                 if(integration_parse_poly(part.operand(0), variable,
                                           argument_polynomial) &&
-                   argument_polynomial.size() == 2 &&
-                   !argument_polynomial[1].is_zero()){
+                   argument_polynomial.size() >= 2){
+                    integration_poly derivative = integration_derivative_poly(
+                        argument_polynomial);
+                    if(integration_zero_poly(derivative)) return;
                     logarithm = part;
                     logarithm_argument = part.operand(0);
-                    logarithm_slope = argument_polynomial[1];
+                    logarithm_argument_size = argument_polynomial.size();
+                    logarithm_derivative = integration_poly_expr(
+                        *this, derivative, variable);
                     return;
                 }
             }
@@ -5771,8 +5776,12 @@ risch_result exact_context::integrate_elementary(
                 return false;
             exact_expr cofactor = coefficient_factors.empty()
                 ? integer(1) : multiply(coefficient_factors);
+            exact_expr transformed_cofactor = simplify(
+                substitute(cofactor, logarithm, parameter) /
+                logarithm_derivative);
             integration_poly p, q;
-            if(!integration_parse_rational(cofactor, logarithm, p, q) ||
+            if(!integration_parse_rational(transformed_cofactor, parameter,
+                                           p, q) ||
                !integration_normalize_rational(p, q))
                 return false;
             if(integration_zero_poly(p)) continue;
@@ -5781,11 +5790,8 @@ risch_result exact_context::integrate_elementary(
             exact_expr term_generator_power = generator_power == 0 ? integer(1) :
                 power(logarithm_argument, integer(generator_power));
             exact_expr original_term = simplify(term_generator_power * cofactor);
-            integration_poly scaled_p = p;
-            for(numeric_value &coefficient : scaled_p)
-                coefficient = coefficient / logarithm_slope;
             exact_expr rational_in_parameter = integration_poly_expr(
-                *this, scaled_p, parameter) /
+                *this, p, parameter) /
                 integration_poly_expr(*this, q, parameter);
             if(exponential_rate == 0){
                 exact_expr primitive_in_log = integration_rational_antiderivative(
@@ -5808,7 +5814,7 @@ risch_result exact_context::integrate_elementary(
             }
 
             integration_rational_rde_result rde = integration_rde_rational(
-                scaled_p, q, integration_poly{numeric_value(exponential_rate)});
+                p, q, integration_poly{numeric_value(exponential_rate)});
             if(rde.status == integration_rde_status::solved){
                 exact_expr rational_solution = integration_poly_expr(
                     *this, rde.numerator, parameter) /
@@ -5827,6 +5833,37 @@ risch_result exact_context::integrate_elementary(
                 result.remainder = std::move(remainder);
                 result.diagnostic =
                     "logarithmic hyperexponential RDE verification failed";
+                return true;
+            }
+        }
+        if(logarithm_argument_size > 2){
+            exact_expr reconstruction_error = simplify(expand(
+                differentiate(elementary_part, variable) + remainder -
+                expression, 100000));
+            bool reconstructed = reconstruction_error == integer(0);
+            integration_expr_poly coefficients;
+            if(!reconstructed && integration_parse_expr_poly(
+                   *this, reconstruction_error, logarithm, coefficients)){
+                reconstructed = true;
+                for(const exact_expr &coefficient : coefficients){
+                    integration_poly error_numerator, error_denominator;
+                    if(!integration_parse_rational(coefficient, variable,
+                            error_numerator, error_denominator, degree_budget,
+                            verification_degree_budget) ||
+                       !integration_normalize_rational(error_numerator,
+                                                       error_denominator) ||
+                       !integration_zero_poly(error_numerator)){
+                        reconstructed = false;
+                        break;
+                    }
+                }
+            }
+            if(!reconstructed){
+                result.status = risch_status::verification_failed;
+                result.elementary_part = std::move(elementary_part);
+                result.remainder = std::move(remainder);
+                result.diagnostic =
+                    "polynomial logarithmic RDE failed reconstruction";
                 return true;
             }
         }

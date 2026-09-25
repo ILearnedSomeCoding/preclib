@@ -363,6 +363,15 @@ int main(){
     assert(context.simplify(context.differentiate(
                nonlinear_log_result.elementary_part, x) -
            nonlinear_log_integrand) == context.integer(0));
+    exact_expr nonlinear_log_laurent_integrand =
+        context.integer(2) * x * nonlinear_log;
+    risch_result nonlinear_log_laurent_result = context.integrate_elementary(
+        nonlinear_log_laurent_integrand, x);
+    assert(nonlinear_log_laurent_result.status == risch_status::elementary);
+    exact_expr expected_nonlinear_log_laurent = context.expand(
+        nonlinear_log_argument * (nonlinear_log - context.integer(1)));
+    assert(nonlinear_log_laurent_result.elementary_part ==
+           expected_nonlinear_log_laurent);
     exact_expr high_affine_log_integrand =
         context.power(affine_log_argument, context.integer(33)) * affine_log;
     risch_result high_affine_log_result = context.integrate_elementary(
