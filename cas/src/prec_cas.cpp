@@ -5437,53 +5437,61 @@ risch_result exact_context::integrate_elementary(
             arguments.push_back(std::move(argument));
         }
 
-        for(size_t base_index = 0; base_index < generators.size();
-            ++base_index){
-            const integration_poly &base = arguments[base_index];
-            size_t pivot = 0;
-            while(pivot < base.size() && base[pivot].is_zero()) ++pivot;
-            if(pivot == base.size()) continue;
-            std::vector<int64_t> powers(generators.size());
-            bool related = true;
-            bool changed = false;
-            for(size_t i = 0; i < arguments.size() && related; ++i){
-                const integration_poly &argument = arguments[i];
-                size_t count = std::max(base.size(), argument.size());
-                numeric_value ratio(0);
-                if(pivot >= argument.size()){
-                    related = false;
-                    break;
-                }
-                ratio = argument[pivot] / base[pivot];
-                if(!ratio.is_integer() || !integer_i64(ratio, powers[i])){
-                    related = false;
-                    break;
-                }
-                for(size_t coefficient = 0; coefficient < count; ++coefficient){
-                    numeric_value lhs = coefficient < argument.size()
-                        ? argument[coefficient] : numeric_value(0);
-                    numeric_value rhs = coefficient < base.size()
-                        ? base[coefficient] * ratio : numeric_value(0);
-                    if(lhs != rhs){ related = false; break; }
-                }
-                changed = changed || powers[i] != 1;
-            }
-            if(!related || !changed) continue;
+        const integration_poly &reference = arguments.front();
+        size_t pivot = 0;
+        while(pivot < reference.size() && reference[pivot].is_zero()) ++pivot;
+        if(pivot == reference.size()) return false;
 
-            exact_expr base_generator = generators[base_index];
-            exact_expr normalized = expression;
-            for(size_t i = 0; i < generators.size(); ++i){
-                if(powers[i] == 1) continue;
-                exact_expr replacement = power(base_generator,
-                                               integer(powers[i]));
-                normalized = substitute(normalized, generators[i],
-                                        replacement);
+        std::vector<numeric_value> ratios;
+        ratios.reserve(arguments.size());
+        precz_t common_denominator(1);
+        for(const integration_poly &argument : arguments){
+            if(pivot >= argument.size()) return false;
+            numeric_value ratio = argument[pivot] / reference[pivot];
+            size_t count = std::max(reference.size(), argument.size());
+            for(size_t coefficient = 0; coefficient < count; ++coefficient){
+                numeric_value lhs = coefficient < argument.size()
+                    ? argument[coefficient] : numeric_value(0);
+                numeric_value rhs = coefficient < reference.size()
+                    ? reference[coefficient] * ratio : numeric_value(0);
+                if(lhs != rhs) return false;
             }
-            if(normalized == expression) continue;
-            result = integrate_elementary(normalized, variable, options);
-            return true;
+            precq_t exact_ratio = ratio.rational();
+            precz_t denominator(exact_ratio.denominator());
+            common_denominator = (common_denominator /
+                ::gcd(common_denominator, denominator)) * denominator;
+            int64_t bounded_denominator = 0;
+            if(!integer_i64(numeric_value(common_denominator),
+                            bounded_denominator))
+                return false;
+            ratios.push_back(std::move(ratio));
         }
-        return false;
+
+        std::vector<int64_t> powers;
+        powers.reserve(ratios.size());
+        for(const numeric_value &ratio : ratios){
+            numeric_value integral_power = ratio *
+                numeric_value(common_denominator);
+            int64_t power_value = 0;
+            if(!integer_i64(integral_power, power_value)) return false;
+            powers.push_back(power_value);
+        }
+
+        integration_poly base_argument = reference;
+        numeric_value scale(common_denominator);
+        for(numeric_value &coefficient : base_argument)
+            coefficient = coefficient / scale;
+        exact_expr base_generator = exponential(integration_poly_expr(
+            *this, base_argument, variable));
+        exact_expr normalized = expression;
+        for(size_t i = 0; i < generators.size(); ++i){
+            exact_expr replacement = powers[i] == 1 ? base_generator
+                : power(base_generator, integer(powers[i]));
+            normalized = substitute(normalized, generators[i], replacement);
+        }
+        if(normalized == expression) return false;
+        result = integrate_elementary(normalized, variable, options);
+        return true;
     };
     if(normalize_integer_related_exponentials()) return result;
     auto classify_additive_risch_terms = [&]() -> bool{

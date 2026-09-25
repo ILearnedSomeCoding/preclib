@@ -235,6 +235,23 @@ int main(){
     assert(context.simplify(context.differentiate(
                integer_related_exponential_result.elementary_part, x) -
            normalized_exponential_sum) == context.integer(0));
+    exact_expr rationally_related_exponential_sum = context.integer(2) *
+        context.exponential(context.integer(2) * x) + context.integer(3) *
+        context.exponential(context.integer(3) * x);
+    risch_result rationally_related_exponential_result =
+        context.integrate_elementary(rationally_related_exponential_sum, x);
+    assert(rationally_related_exponential_result.status ==
+           risch_status::elementary);
+    exact_expr normalized_rational_exponential_sum = context.integer(2) *
+        context.power(context.exponential(x), context.integer(2)) +
+        context.integer(3) *
+        context.power(context.exponential(x), context.integer(3));
+    assert(context.simplify(context.differentiate(
+               rationally_related_exponential_result.elementary_part, x) -
+           normalized_rational_exponential_sum) == context.integer(0));
+    assert(context.integrate_elementary(
+               context.exponential(x) + exp_x_squared, x).status !=
+           risch_status::elementary);
     assert(context.integrate_elementary(
                x * context.exponential(x) /
                    context.power(x + context.integer(1), context.integer(2)),
