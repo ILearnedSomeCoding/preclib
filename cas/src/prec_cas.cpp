@@ -5930,22 +5930,54 @@ risch_result exact_context::integrate_elementary(
         for(const exact_expr &generator : generators){
             integration_poly inner, numerator, denominator;
             if(!integration_parse_poly(generator.operand(0), variable, inner) ||
-               inner.size() != 2 || inner[1].is_zero() ||
-               !integration_parse_rational(expression, generator,
-                                           numerator, denominator) ||
-               !integration_normalize_rational(numerator, denominator))
+               inner.size() < 2)
                 continue;
-            integration_poly t{numeric_value(0), numeric_value(1)};
-            integration_poly transformed_denominator =
-                integration_mul(denominator, t);
-            for(numeric_value &coefficient : transformed_denominator)
-                coefficient = coefficient * inner[1];
-            exact_expr transformed = integration_poly_expr(
-                *this, numerator, generator) /
-                integration_poly_expr(*this, transformed_denominator,
-                                      generator);
-            exact_expr candidate = integration_rational_antiderivative(
-                *this, transformed, generator);
+            exact_expr candidate;
+            if(inner.size() == 2){
+                if(!integration_parse_rational(expression, generator,
+                                               numerator, denominator) ||
+                   !integration_normalize_rational(numerator, denominator))
+                    continue;
+                integration_poly t{numeric_value(0), numeric_value(1)};
+                integration_poly transformed_denominator =
+                    integration_mul(denominator, t);
+                for(numeric_value &coefficient : transformed_denominator)
+                    coefficient = coefficient * inner[1];
+                exact_expr transformed = integration_poly_expr(
+                    *this, numerator, generator) /
+                    integration_poly_expr(*this, transformed_denominator,
+                                          generator);
+                candidate = integration_rational_antiderivative(
+                    *this, transformed, generator);
+            }else{
+                // For nonlinear g, substitution t=exp(g) is useful when
+                // the integrand visibly supplies the missing factor g'(x).
+                integration_poly derivative =
+                    integration_derivative_poly(inner);
+                exact_expr derivative_expression = integration_poly_expr(
+                    *this, derivative, variable);
+                exact_expr parameter;
+                for(size_t suffix = 0;; ++suffix){
+                    parameter = symbol("_risch_exp_t" +
+                                      std::to_string(suffix));
+                    if(!integration_depends_on(expression, parameter)) break;
+                }
+                exact_expr transformed_input = substitute(
+                    expression, generator, parameter) / derivative_expression;
+                if(!integration_parse_rational(transformed_input, parameter,
+                                               numerator, denominator) ||
+                   !integration_normalize_rational(numerator, denominator))
+                    continue;
+                exact_expr transformed = integration_poly_expr(
+                    *this, numerator, parameter) /
+                    integration_poly_expr(*this, denominator, parameter);
+                exact_expr parameter_candidate =
+                    integration_rational_antiderivative(
+                        *this, transformed, parameter);
+                if(!parameter_candidate.valid()) continue;
+                candidate = substitute(parameter_candidate, parameter,
+                                       generator);
+            }
             if(!candidate.valid()) continue;
             exact_expr error = simplify(expand(
                 differentiate(candidate, variable) - expression, 100000));

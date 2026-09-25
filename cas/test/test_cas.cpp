@@ -187,6 +187,23 @@ int main(){
                context.integer(2) * x * context.exponential(
                    context.power(x, context.integer(2))), x).status ==
            risch_status::elementary);
+    exact_expr exp_x_squared = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr nonlinear_exp_rational = context.integer(2) * x *
+        exp_x_squared / (context.integer(1) + exp_x_squared);
+    risch_result nonlinear_exp_rational_result =
+        context.integrate_elementary(nonlinear_exp_rational, x);
+    assert(nonlinear_exp_rational_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+               nonlinear_exp_rational_result.elementary_part, x) -
+           nonlinear_exp_rational) == context.integer(0));
+    exact_expr cubic_exp = context.exponential(
+        context.power(x, context.integer(3)));
+    exact_expr cubic_exp_rational = context.integer(3) *
+        context.power(x, context.integer(2)) * cubic_exp /
+        (context.integer(1) + cubic_exp);
+    assert(context.integrate_elementary(cubic_exp_rational, x).status ==
+           risch_status::elementary);
     assert(context.integrate_elementary(
                x * context.exponential(x) /
                    context.power(x + context.integer(1), context.integer(2)),
