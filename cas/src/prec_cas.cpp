@@ -291,6 +291,7 @@ const char *exact_opcode_name(exact_opcode operation){
     case exact_opcode::derivative: return "D";
     case exact_opcode::integral: return "integrate";
     case exact_opcode::rule: return "rule";
+    case exact_opcode::log_root_sum: return "LogRootSum";
     }
     return "unknown";
 }
@@ -2041,6 +2042,12 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
         const uint32_t *args = children(current);
         result = std::string(exact_opcode_name(current.op)) + "(" +
                  print(args[0]) + ", " + print(args[1]) + ")";
+    }else if(current.op == exact_opcode::log_root_sum){
+        if(current.operand_count != 3)
+            throw std::logic_error("LogRootSum node must have three operands");
+        const uint32_t *args = children(current);
+        result = "LogRootSum(" + print(args[0]) + ", " + print(args[1]) +
+                 ", " + print(args[2]) + ")";
     }else{
         const uint32_t *args = children(current);
         result = "sum(" + print(args[3]) + ", " + print(args[0]) + "=" +
@@ -2634,6 +2641,10 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
             else
                 result = exact_expr(storage_, storage_->intern_compound(
                     exact_opcode::derivative, {id, variable.root_}));
+        }else if(node.op == exact_opcode::log_root_sum && args.size() == 3){
+            exact_expr numerator(storage_, args[0]);
+            exact_expr denominator(storage_, args[1]);
+            result = numerator / denominator * derivative(args[2]);
         }else if(node.op == exact_opcode::partial_gamma &&
                  !depends(depends, args[0])){
             exact_expr a(storage_, args[0]), x(storage_, args[1]);
@@ -3127,6 +3138,12 @@ static exact_expr integration_rational_antiderivative(
         context, remainder, denominator_expression, variable);
     if(!proper.valid()) proper = integration_algebraic_logarithmic_rational(
         context, remainder, denominator, variable);
+    if(!proper.valid() &&
+       integration_gcd_poly(denominator,
+           integration_derivative_poly(denominator)).size() == 1)
+        proper = context.log_root_sum(
+            integration_poly_expr(context, remainder, variable),
+            denominator_expression, variable);
     if(!proper.valid()) return exact_expr();
     return polynomial_part + proper;
 }
@@ -4361,6 +4378,36 @@ static exact_expr integration_polynomial_function_by_parts(
 }
 
 } // namespace
+
+exact_expr exact_context::log_root_sum(const exact_expr &numerator,
+                                       const exact_expr &denominator,
+                                       const exact_expr &variable){
+    if(!numerator.valid() || !denominator.valid() || !variable.valid() ||
+       numerator.storage_ != storage_ || denominator.storage_ != storage_ ||
+       variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "LogRootSum requires expressions and a symbol in one context");
+    integration_poly p, q;
+    if(!integration_parse_poly(numerator, variable, p) ||
+       !integration_parse_poly(denominator, variable, q))
+        throw std::invalid_argument(
+            "LogRootSum requires exact rational polynomial operands");
+    if(integration_zero_poly(p)) return integer(0);
+    if(!integration_normalize_rational(p, q) || q.size() < 2 ||
+       p.size() >= q.size())
+        throw std::invalid_argument(
+            "LogRootSum requires a proper rational function");
+    if(integration_gcd_poly(q, integration_derivative_poly(q)).size() != 1)
+        throw std::invalid_argument(
+            "LogRootSum denominator must be square-free");
+    exact_expr normalized_numerator = integration_poly_expr(*this, p, variable);
+    exact_expr normalized_denominator = integration_poly_expr(*this, q, variable);
+    uint32_t root = storage_->intern_compound(exact_opcode::log_root_sum,
+        {normalized_numerator.root_, normalized_denominator.root_,
+         variable.root_});
+    return exact_expr(storage_, root);
+}
 
 exact_expr exact_context::integrate(const exact_expr &expression,
                                     const exact_expr &variable){
@@ -9124,7 +9171,8 @@ public:
             result = storage_.make_function(source.op, children[0]);
         else if(source.op == exact_opcode::partial_gamma ||
                 source.op == exact_opcode::derivative ||
-                source.op == exact_opcode::integral)
+                source.op == exact_opcode::integral ||
+                source.op == exact_opcode::log_root_sum)
             result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
@@ -9243,7 +9291,8 @@ public:
             result = storage_.make_function(source.op, expand(children[0]));
         }else if(source.op == exact_opcode::partial_gamma ||
                  source.op == exact_opcode::derivative ||
-                 source.op == exact_opcode::integral){
+                 source.op == exact_opcode::integral ||
+                 source.op == exact_opcode::log_root_sum){
             for(uint32_t &child : children) child = expand(child);
             result = storage_.intern_compound(source.op, children);
         }else if(source.op == exact_opcode::bounded_sum){
@@ -9454,7 +9503,8 @@ public:
                              : function(source.op, children[0]);
         else if(source.op == exact_opcode::partial_gamma ||
                 source.op == exact_opcode::derivative ||
-                source.op == exact_opcode::integral)
+                source.op == exact_opcode::integral ||
+                source.op == exact_opcode::log_root_sum)
             result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
@@ -9535,7 +9585,8 @@ public:
                 result = storage_.make_function(source.op, children[0]);
             else if(source.op == exact_opcode::partial_gamma ||
                     source.op == exact_opcode::derivative ||
-                    source.op == exact_opcode::integral)
+                    source.op == exact_opcode::integral ||
+                    source.op == exact_opcode::log_root_sum)
                 result = storage_.intern_compound(source.op, children);
             else if(source.op == exact_opcode::expression_list ||
                     source.op == exact_opcode::rule)

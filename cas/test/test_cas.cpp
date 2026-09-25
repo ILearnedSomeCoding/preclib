@@ -430,13 +430,59 @@ int main(){
     assert(hermite_partial.status == risch_status::elementary);
     assert(hermite_partial.elementary_part != context.integer(0));
     assert(hermite_partial.remainder == context.integer(0));
-    exact_expr fifth = context.power(x, context.integer(5)) + x +
+    exact_expr fifth = context.power(x, context.integer(5)) - x +
                        context.integer(1);
+    exact_expr fifth_simple_fraction = context.integer(1) / fifth;
+    risch_result high_degree_squarefree = context.integrate_elementary(
+        fifth_simple_fraction, x);
+    assert(high_degree_squarefree.status == risch_status::elementary);
+    assert(high_degree_squarefree.elementary_part.operation() ==
+           exact_opcode::log_root_sum);
+    assert(context.differentiate(high_degree_squarefree.elementary_part, x) ==
+           fifth_simple_fraction);
+    assert(high_degree_squarefree.elementary_part.to_string().find(
+               "LogRootSum(") == 0);
+    exact_expr substituted_root_sum = context.substitute(
+        high_degree_squarefree.elementary_part, x, y);
+    assert(substituted_root_sum.operation() == exact_opcode::log_root_sum);
+    exact_expr substituted_fifth = context.power(y, context.integer(5)) - y +
+                                   context.integer(1);
+    assert(context.differentiate(substituted_root_sum, y) ==
+           context.integer(1) / substituted_fifth);
     risch_result high_degree_hermite = context.integrate_elementary(
         context.integer(1) / context.power(fifth, context.integer(2)), x);
-    assert(high_degree_hermite.status == risch_status::unsupported);
+    assert(high_degree_hermite.status == risch_status::elementary);
     assert(high_degree_hermite.elementary_part != context.integer(0));
-    assert(high_degree_hermite.remainder != context.integer(0));
+    assert(high_degree_hermite.remainder == context.integer(0));
+    assert(context.integrate(fifth_simple_fraction, x).operation() ==
+           exact_opcode::log_root_sum);
+    {
+        exact_context root_sum_context;
+        exact_expr root_sum_x = root_sum_context.symbol("x");
+        exact_expr root_sum_denominator =
+            root_sum_context.power(root_sum_x, root_sum_context.integer(5)) -
+            root_sum_x +
+            root_sum_context.integer(1);
+        exact_expr root_sum = root_sum_context.log_root_sum(
+            root_sum_context.integer(1), root_sum_denominator, root_sum_x);
+        exact_expr compact_root_sum = root_sum_context.compact(root_sum);
+        exact_expr compact_x = root_sum_context.symbol("x");
+        exact_expr compact_denominator =
+            root_sum_context.power(compact_x, root_sum_context.integer(5)) -
+            compact_x + root_sum_context.integer(1);
+        assert(compact_root_sum.operation() == exact_opcode::log_root_sum);
+        assert(root_sum_context.differentiate(compact_root_sum, compact_x) ==
+               root_sum_context.integer(1) / compact_denominator);
+        bool rejected_repeated_root_sum = false;
+        try{
+            root_sum_context.log_root_sum(root_sum_context.integer(1),
+                root_sum_context.power(compact_x + root_sum_context.integer(1),
+                                       root_sum_context.integer(2)), compact_x);
+        }catch(const std::invalid_argument &){
+            rejected_repeated_root_sum = true;
+        }
+        assert(rejected_repeated_root_sum);
+    }
     exact_expr mixed_poles = context.integer(1) /
         (context.power(x + context.integer(1), context.integer(2)) *
          (context.power(x, context.integer(2)) + context.integer(1)));

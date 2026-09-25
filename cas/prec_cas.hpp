@@ -48,7 +48,8 @@ enum class exact_opcode : uint8_t{
     partial_gamma = 33,
     derivative = 34,
     integral = 35,
-    rule = 36
+    rule = 36,
+    log_root_sum = 37
 };
 
 const char *exact_opcode_name(exact_opcode operation);
@@ -239,6 +240,11 @@ public:
     exact_expr integer(T value){ return this->value(numeric_value(value)); }
     exact_expr rational(const precq_t &value);
     exact_expr symbol(const std::string &name);
+    // Exact local antiderivative for proper P(x)/W(x), with square-free W.
+    // Numeric evaluation of the algebraic root sum is intentionally separate.
+    exact_expr log_root_sum(const exact_expr &numerator,
+                            const exact_expr &denominator,
+                            const exact_expr &variable);
     exact_expr pi();
     exact_expr e();
     exact_expr i();
