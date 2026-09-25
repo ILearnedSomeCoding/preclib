@@ -2835,10 +2835,16 @@ static integration_poly integration_pow_poly(integration_poly base,
 static bool integration_parse_rational(const exact_expr &expression,
                                        const exact_expr &variable,
                                        integration_poly &numerator,
-                                       integration_poly &denominator){
+                                       integration_poly &denominator,
+                                       size_t maximum_exponent = 32,
+                                       size_t maximum_degree = SIZE_MAX){
+    auto within_budget = [&](const integration_poly &polynomial){
+        return maximum_degree == SIZE_MAX ||
+               polynomial.size() <= maximum_degree + 1;
+    };
     if(integration_parse_poly(expression, variable, numerator)){
         denominator = {numeric_value(1)};
-        return true;
+        return within_budget(numerator);
     }
     if(expression.operation() == exact_opcode::multiply){
         numerator = {numeric_value(1)};
@@ -2847,9 +2853,13 @@ static bool integration_parse_rational(const exact_expr &expression,
             integration_poly child_numerator, child_denominator;
             if(!integration_parse_rational(expression.operand(i), variable,
                                            child_numerator,
-                                           child_denominator)) return false;
+                                           child_denominator,
+                                           maximum_exponent, maximum_degree))
+                return false;
             numerator = integration_mul(numerator, child_numerator);
             denominator = integration_mul(denominator, child_denominator);
+            if(!within_budget(numerator) || !within_budget(denominator))
+                return false;
         }
         return true;
     }
@@ -2860,11 +2870,15 @@ static bool integration_parse_rational(const exact_expr &expression,
             integration_poly child_numerator, child_denominator;
             if(!integration_parse_rational(expression.operand(i), variable,
                                            child_numerator,
-                                           child_denominator)) return false;
+                                           child_denominator,
+                                           maximum_exponent, maximum_degree))
+                return false;
             numerator = integration_add(
                 integration_mul(numerator, child_denominator),
                 integration_mul(child_numerator, denominator));
             denominator = integration_mul(denominator, child_denominator);
+            if(!within_budget(numerator) || !within_budget(denominator))
+                return false;
         }
         return true;
     }
@@ -2872,21 +2886,34 @@ static bool integration_parse_rational(const exact_expr &expression,
         int64_t exponent = 0;
         integration_poly base_numerator, base_denominator;
         if(!integration_signed_exponent(expression.operand(1), exponent) ||
-           exponent < -32 || exponent > 32 ||
+           exponent < -(int64_t)maximum_exponent ||
+           exponent > (int64_t)maximum_exponent ||
            !integration_parse_rational(expression.operand(0), variable,
-                                       base_numerator, base_denominator))
+                                       base_numerator, base_denominator,
+                                       maximum_exponent, maximum_degree))
+            return false;
+        const size_t count = (size_t)(exponent < 0 ? -exponent : exponent);
+        const integration_poly &power_numerator = exponent < 0
+            ? base_denominator : base_numerator;
+        const integration_poly &power_denominator = exponent < 0
+            ? base_numerator : base_denominator;
+        if(maximum_degree != SIZE_MAX &&
+           ((power_numerator.size() > 1 &&
+             count > maximum_degree / (power_numerator.size() - 1)) ||
+            (power_denominator.size() > 1 &&
+             count > maximum_degree / (power_denominator.size() - 1))))
             return false;
         if(exponent == 0){
             numerator = {numeric_value(1)};
             denominator = {numeric_value(1)};
         }else if(exponent > 0){
-            numerator = integration_pow_poly(base_numerator, (size_t)exponent);
-            denominator = integration_pow_poly(base_denominator, (size_t)exponent);
+            numerator = integration_pow_poly(base_numerator, count);
+            denominator = integration_pow_poly(base_denominator, count);
         }else{
-            numerator = integration_pow_poly(base_denominator, (size_t)-exponent);
-            denominator = integration_pow_poly(base_numerator, (size_t)-exponent);
+            numerator = integration_pow_poly(base_denominator, count);
+            denominator = integration_pow_poly(base_numerator, count);
         }
-        return true;
+        return within_budget(numerator) && within_budget(denominator);
     }
     return false;
 }
@@ -3126,7 +3153,11 @@ static exact_expr integration_rational_antiderivative(
     const exact_expr &variable){
     integration_poly numerator, denominator;
     if(!integration_parse_rational(expression, variable,
-                                   numerator, denominator)) return exact_expr();
+                                   numerator, denominator) &&
+       !integration_parse_rational(expression, variable, numerator, denominator,
+                                   integration_hermite_degree_limit,
+                                   integration_hermite_degree_limit))
+        return exact_expr();
     integration_poly quotient, remainder;
     if(!integration_divmod_poly(numerator, denominator,
                                quotient, remainder)) return exact_expr();
@@ -6192,7 +6223,8 @@ risch_result exact_context::integrate_elementary(
             }else if(part.operation() == exact_opcode::power){
                 int64_t exponent = 0;
                 if(integration_signed_exponent(part.operand(1), exponent)){
-                    if(exponent < -32 || exponent > 32)
+                    if(exponent < -(int64_t)degree_budget ||
+                       exponent > (int64_t)degree_budget)
                         value = {degree_budget + 1, 0};
                     else{
                         degree_pair base = self(self, part.operand(0));
@@ -6226,7 +6258,8 @@ risch_result exact_context::integrate_elementary(
         }
         integration_poly numerator, denominator;
         if(!integration_parse_rational(expression, variable,
-                                       numerator, denominator) ||
+                                       numerator, denominator, degree_budget,
+                                       degree_budget) ||
            !integration_normalize_rational(numerator, denominator))
             return result;
         integration_poly polynomial_part, proper_numerator;

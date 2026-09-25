@@ -420,6 +420,18 @@ int main(){
         context.integrate_elementary(strict_repeated_pole, x);
     assert(repeated_pole_integral.status == risch_status::elementary);
     assert(repeated_pole_integral.remainder == context.integer(0));
+    exact_expr fortieth_order_pole = context.integer(1) /
+        context.power(x + context.integer(1), context.integer(40));
+    risch_result fortieth_order_integral = context.integrate_elementary(
+        fortieth_order_pole, x);
+    assert(fortieth_order_integral.status == risch_status::elementary);
+    assert(fortieth_order_integral.remainder == context.integer(0));
+    assert(context.integrate(fortieth_order_pole, x).operation() !=
+           exact_opcode::integral);
+    risch_options subdegree_risch_budget;
+    subdegree_risch_budget.maximum_degree = 32;
+    assert(context.integrate_elementary(fortieth_order_pole, x,
+           subdegree_risch_budget).status == risch_status::resource_limit);
     risch_result cancelled_rational = context.integrate_elementary(
         (context.power(x, context.integer(2)) - context.integer(1)) /
         (x - context.integer(1)), x);
