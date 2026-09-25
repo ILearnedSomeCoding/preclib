@@ -302,6 +302,19 @@ int main(){
         affine_log_argument / (affine_log + context.integer(1)));
     assert(affine_log_result.elementary_part ==
            expected_affine_log_primitive);
+    exact_expr nonlinear_log_argument =
+        context.power(x, context.integer(2)) + context.integer(1);
+    exact_expr nonlinear_log = context.natural_logarithm(
+        nonlinear_log_argument);
+    exact_expr nonlinear_log_integrand =
+        context.integer(2) * x / nonlinear_log_argument /
+        (context.integer(1) + nonlinear_log);
+    risch_result nonlinear_log_result = context.integrate_elementary(
+        nonlinear_log_integrand, x);
+    assert(nonlinear_log_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+               nonlinear_log_result.elementary_part, x) -
+           nonlinear_log_integrand) == context.integer(0));
     exact_expr high_affine_log_integrand =
         context.power(affine_log_argument, context.integer(33)) * affine_log;
     risch_result high_affine_log_result = context.integrate_elementary(

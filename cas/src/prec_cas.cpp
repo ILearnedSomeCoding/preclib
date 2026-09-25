@@ -5818,6 +5818,77 @@ risch_result exact_context::integrate_elementary(
     };
     if(classify_pure_primitive_pole()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;
+    auto classify_logarithmic_derivative_substitution = [&]() -> bool{
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               integration_depends_on(part.operand(0), variable))
+                generators.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &generator : generators){
+            integration_poly argument, derivative;
+            if(!integration_parse_poly(generator.operand(0), variable,
+                                       argument) || argument.size() < 2)
+                continue;
+            derivative = integration_derivative_poly(argument);
+            if(integration_zero_poly(derivative)) continue;
+            exact_expr derivative_expression = integration_poly_expr(
+                *this, derivative, variable);
+            exact_expr parameter;
+            for(size_t suffix = 0;; ++suffix){
+                parameter = symbol("_risch_log_sub_t" +
+                                   std::to_string(suffix));
+                if(!integration_depends_on(expression, parameter)) break;
+            }
+
+            // Divide by D(log(g)) = g'/g; the remainder must belong to Q(t).
+            exact_expr transformed_input = simplify(
+                substitute(expression, generator, parameter) *
+                generator.operand(0) / derivative_expression);
+            integration_poly numerator, denominator;
+            if(!integration_parse_rational(transformed_input, parameter,
+                                           numerator, denominator) ||
+               !integration_normalize_rational(numerator, denominator))
+                continue;
+            exact_expr rational_integrand = integration_poly_expr(
+                *this, numerator, parameter) /
+                integration_poly_expr(*this, denominator, parameter);
+            exact_expr parameter_primitive = integration_rational_antiderivative(
+                *this, rational_integrand, parameter);
+            if(!parameter_primitive.valid() ||
+               parameter_primitive.operation() == exact_opcode::integral)
+                continue;
+
+            exact_expr parameter_error = simplify(expand(
+                differentiate(parameter_primitive, parameter) -
+                rational_integrand, 100000));
+            integration_poly error_numerator, error_denominator;
+            if(!integration_parse_rational(parameter_error, parameter,
+                    error_numerator, error_denominator) ||
+               !integration_normalize_rational(error_numerator,
+                                               error_denominator) ||
+               !integration_zero_poly(error_numerator))
+                continue;
+
+            exact_expr candidate = substitute(parameter_primitive, parameter,
+                                              generator);
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - expression, 100000));
+            if(error != integer(0)) continue;
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        return false;
+    };
+    if(classify_logarithmic_derivative_substitution()) return result;
     auto classify_monic_quadratic_function_field = [&]() -> bool{
         std::vector<exact_expr> roots;
         std::unordered_set<uint32_t> seen;
