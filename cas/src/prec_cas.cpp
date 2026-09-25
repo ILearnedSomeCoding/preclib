@@ -5499,9 +5499,11 @@ risch_result exact_context::integrate_elementary(
                     generator_power += power_of_generator;
                 }else coefficient_factors.push_back(factor);
             }
-            if(!valid_power || generator_power < -32 || generator_power > 32 ||
-               (size_t)(generator_power < 0 ? -generator_power :
-                                               generator_power) > degree_budget)
+            uint64_t generator_magnitude = generator_power < 0
+                ? (uint64_t)(-(generator_power + 1)) + 1
+                : (uint64_t)generator_power;
+            if(!valid_power || generator_magnitude > degree_budget ||
+               generator_power == INT64_MAX)
                 return false;
             exact_expr cofactor = coefficient_factors.empty()
                 ? integer(1) : multiply(coefficient_factors);

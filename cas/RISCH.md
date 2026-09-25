@@ -71,7 +71,8 @@ primitive 层已实现子域 `x^m P(log(x))`（`m∈Z`、`P∈Q[t]`）。令
 受限微分域中报告 `proven_nonelementary`。例如 `log(x)/(log(x)+1)^2` 及
 `2*log(2*x+3)/(log(2*x+3)+1)^2` 可积，而 `1/(log(x)+1)` 无初等原函数。
 实值语义要求 `g(x)>0`；只接受有限个整数幂 Laurent 项及有理系数
-`R(log(g(x)))`，不覆盖多个对数生成元、含 `log(log(x))` 的有理系数或非整数幂。
+`R(log(g(x)))`，整数幂受 `maximum_degree` 资源预算限制，不再使用固定的小指数阈值。
+不覆盖多个对数生成元、含 `log(log(x))` 的有理系数或非整数幂。
 超过节点或次数预算返回 `resource_limit`；
 除上面列出的多项式超指数、指数 Laurent 项和 primitive 极点范围外，尚不产生
 `proven_nonelementary` 结论；

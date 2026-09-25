@@ -285,6 +285,22 @@ int main(){
         affine_log_argument / (affine_log + context.integer(1)));
     assert(affine_log_result.elementary_part ==
            expected_affine_log_primitive);
+    exact_expr high_affine_log_integrand =
+        context.power(affine_log_argument, context.integer(33)) * affine_log;
+    risch_result high_affine_log_result = context.integrate_elementary(
+        high_affine_log_integrand, x);
+    if(high_affine_log_result.status != risch_status::elementary)
+        std::fprintf(stderr, "high affine log RDE: %s; f=%s; part=%s; rem=%s\n",
+            high_affine_log_result.diagnostic.c_str(),
+            high_affine_log_integrand.to_string().c_str(),
+            high_affine_log_result.elementary_part.to_string().c_str(),
+            high_affine_log_result.remainder.to_string().c_str());
+    assert(high_affine_log_result.status == risch_status::elementary);
+    exact_expr negative_high_affine_log_integrand =
+        context.power(affine_log_argument, context.integer(-33)) * affine_log;
+    assert(context.integrate_elementary(
+        negative_high_affine_log_integrand, x).status ==
+        risch_status::elementary);
     assert(context.integrate_elementary(
         context.integer(1) / (log_x + context.integer(1)), x).status ==
         risch_status::proven_nonelementary);
