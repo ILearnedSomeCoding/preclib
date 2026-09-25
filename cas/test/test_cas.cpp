@@ -204,6 +204,15 @@ int main(){
         (context.integer(1) + cubic_exp);
     assert(context.integrate_elementary(cubic_exp_rational, x).status ==
            risch_status::elementary);
+    exact_expr separable_exponential_sum = context.exponential(x) +
+        context.integer(2) * x * exp_x_squared;
+    risch_result separable_exponential_sum_result =
+        context.integrate_elementary(separable_exponential_sum, x);
+    assert(separable_exponential_sum_result.status ==
+           risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+               separable_exponential_sum_result.elementary_part, x) -
+           separable_exponential_sum) == context.integer(0));
     assert(context.integrate_elementary(
                x * context.exponential(x) /
                    context.power(x + context.integer(1), context.integer(2)),

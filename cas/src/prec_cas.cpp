@@ -5414,6 +5414,31 @@ risch_result exact_context::integrate_elementary(
                                              subexpressions[j]))) return true;
         return false;
     };
+    auto classify_additive_risch_terms = [&]() -> bool{
+        if(expression.operation() != exact_opcode::add ||
+           expression.operand_count() < 2)
+            return false;
+        exact_expr candidate = integer(0);
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            risch_result term = integrate_elementary(expression.operand(i),
+                                                      variable, options);
+            if(term.status != risch_status::elementary ||
+               term.remainder != integer(0))
+                return false;
+            candidate = candidate + term.elementary_part;
+            if(candidate.reachable_node_count() > options.maximum_nodes)
+                return false;
+        }
+        exact_expr error = simplify(expand(
+            differentiate(candidate, variable) - expression, 100000));
+        if(error != integer(0)) return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_additive_risch_terms()) return result;
     auto classify_rational_trigonometric_field = [&]() -> bool{
         bool has_circular = false;
         bool has_hyperbolic = false;
