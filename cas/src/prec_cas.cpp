@@ -6253,14 +6253,18 @@ risch_result exact_context::integrate_elementary(
             exponential_factor = expression;
         }else if(expression.operation() == exact_opcode::multiply){
             std::vector<exact_expr> other_factors;
+            std::vector<exact_expr> exponential_arguments;
             for(size_t i = 0; i < expression.operand_count(); ++i){
                 exact_expr factor = expression.operand(i);
                 if(factor.operation() == exact_opcode::exponential){
-                    if(exponential_factor.valid()) return false;
-                    exponential_factor = factor;
+                    exponential_arguments.push_back(factor.operand(0));
                 }else other_factors.push_back(factor);
             }
-            if(!exponential_factor.valid()) return false;
+            if(exponential_arguments.empty()) return false;
+            exact_expr combined_argument = integer(0);
+            for(const exact_expr &argument : exponential_arguments)
+                combined_argument = combined_argument + argument;
+            exponential_factor = exponential(combined_argument);
             cofactor = other_factors.empty() ? integer(1)
                                              : multiply(other_factors);
         }else return false;

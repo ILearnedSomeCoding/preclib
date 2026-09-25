@@ -213,6 +213,15 @@ int main(){
     assert(context.simplify(context.differentiate(
                separable_exponential_sum_result.elementary_part, x) -
            separable_exponential_sum) == context.integer(0));
+    exact_expr product_exponential_integrand =
+        (context.integer(1) + context.integer(2) * x) *
+        context.exponential(x) * exp_x_squared;
+    risch_result product_exponential_result = context.integrate_elementary(
+        product_exponential_integrand, x);
+    assert(product_exponential_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+               product_exponential_result.elementary_part, x) -
+           product_exponential_integrand) == context.integer(0));
     assert(context.integrate_elementary(
                x * context.exponential(x) /
                    context.power(x + context.integer(1), context.integer(2)),
