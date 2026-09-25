@@ -251,6 +251,25 @@ int main(){
             nested_log_integral.elementary_part.to_string().c_str(),
             nested_log_integral.remainder.to_string().c_str());
     assert(nested_log_integral.status == risch_status::elementary);
+    exact_expr log_x = context.natural_logarithm(x);
+    exact_expr log_rational_integrand = log_x /
+        context.power(log_x + context.integer(1), context.integer(2));
+    risch_result log_rational_result = context.integrate_elementary(
+        log_rational_integrand, x);
+    if(log_rational_result.status != risch_status::elementary)
+        std::fprintf(stderr, "log rational RDE: %s; f=%s; part=%s; rem=%s\n",
+            log_rational_result.diagnostic.c_str(),
+            log_rational_integrand.to_string().c_str(),
+            log_rational_result.elementary_part.to_string().c_str(),
+            log_rational_result.remainder.to_string().c_str());
+    assert(log_rational_result.status == risch_status::elementary);
+    exact_expr expected_log_rational_primitive = context.simplify(
+        x / (log_x + context.integer(1)));
+    assert(log_rational_result.elementary_part ==
+           expected_log_rational_primitive);
+    assert(context.integrate_elementary(
+        context.integer(1) / (log_x + context.integer(1)), x).status ==
+        risch_status::proven_nonelementary);
     assert(context.integrate_elementary(
                context.integer(1) / context.natural_logarithm(x), x).status ==
            risch_status::proven_nonelementary);

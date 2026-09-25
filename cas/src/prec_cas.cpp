@@ -5432,6 +5432,132 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_rational_trigonometric_field()) return result;
+    auto classify_logarithmic_rational_hyperexponential = [&]() -> bool{
+        exact_expr logarithm;
+        std::unordered_set<uint32_t> seen;
+        auto find_logarithm = [&](auto &&self, const exact_expr &part) -> void{
+            if(logarithm.valid() || !seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               part.operand(0) == variable){
+                logarithm = part;
+                return;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        find_logarithm(find_logarithm, expression);
+        if(!logarithm.valid()) return false;
+        exact_expr parameter;
+        for(size_t suffix = 0;; ++suffix){
+            parameter = symbol("_risch_log_t_" + std::to_string(suffix));
+            if(parameter != variable && parameter != logarithm &&
+               !integration_depends_on(expression, parameter)) break;
+        }
+
+        std::vector<exact_expr> summands;
+        auto collect_summands = [&](auto &&self, const exact_expr &part) -> void{
+            if(part.operation() == exact_opcode::add){
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            }else summands.push_back(part);
+        };
+        collect_summands(collect_summands, expression);
+        exact_expr elementary_part = integer(0);
+        exact_expr remainder = integer(0);
+        bool has_nonelementary = false;
+        for(const exact_expr &summand : summands){
+            std::vector<exact_expr> factors;
+            integration_factor_list(summand, factors);
+            int64_t x_power = 0;
+            std::vector<exact_expr> coefficient_factors;
+            bool valid_power = true;
+            for(const exact_expr &factor : factors){
+                int64_t power_of_x = 0;
+                bool is_power = factor == variable;
+                if(is_power) power_of_x = 1;
+                else if(factor.operation() == exact_opcode::power &&
+                        factor.operand(0) == variable)
+                    is_power = integration_signed_exponent(
+                        factor.operand(1), power_of_x);
+                if(is_power){
+                    if((power_of_x > 0 && x_power > INT64_MAX - power_of_x) ||
+                       (power_of_x < 0 && x_power < INT64_MIN - power_of_x)){
+                        valid_power = false;
+                        break;
+                    }
+                    x_power += power_of_x;
+                }else coefficient_factors.push_back(factor);
+            }
+            if(!valid_power || x_power < -32 || x_power > 32 ||
+               (size_t)(x_power < 0 ? -x_power : x_power) > degree_budget)
+                return false;
+            exact_expr cofactor = coefficient_factors.empty()
+                ? integer(1) : multiply(coefficient_factors);
+            integration_poly p, q;
+            if(!integration_parse_rational(cofactor, logarithm, p, q) ||
+               !integration_normalize_rational(p, q))
+                return false;
+            if(integration_zero_poly(p)) continue;
+
+            int64_t exponential_rate = x_power + 1;
+            exact_expr term_x_power = x_power == 0 ? integer(1) :
+                power(variable, integer(x_power));
+            exact_expr original_term = simplify(term_x_power * cofactor);
+            exact_expr rational_in_parameter = integration_poly_expr(
+                *this, p, parameter) / integration_poly_expr(*this, q, parameter);
+            if(exponential_rate == 0){
+                exact_expr primitive_in_log = integration_rational_antiderivative(
+                    *this, rational_in_parameter, parameter);
+                if(!primitive_in_log.valid() ||
+                   primitive_in_log.operation() == exact_opcode::integral)
+                    return false;
+                exact_expr parameter_error = simplify(expand(
+                    differentiate(primitive_in_log, parameter) -
+                    rational_in_parameter, 100000));
+                integration_poly error_numerator, error_denominator;
+                if(!integration_parse_rational(parameter_error, parameter,
+                        error_numerator, error_denominator) ||
+                   !integration_normalize_rational(error_numerator,
+                                                   error_denominator) ||
+                   !integration_zero_poly(error_numerator)) return false;
+                elementary_part = simplify(elementary_part +
+                    substitute(primitive_in_log, parameter, logarithm));
+                continue;
+            }
+
+            integration_rational_rde_result rde = integration_rde_rational(
+                p, q, integration_poly{numeric_value(exponential_rate)});
+            if(rde.status == integration_rde_status::solved){
+                exact_expr rational_solution = integration_poly_expr(
+                    *this, rde.numerator, parameter) /
+                    integration_poly_expr(*this, rde.denominator, parameter);
+                exact_expr primitive = simplify(rational_solution *
+                    power(variable, integer(exponential_rate)));
+                primitive = substitute(primitive, parameter, logarithm);
+                elementary_part = simplify(elementary_part + primitive);
+            }else if(rde.status ==
+                     integration_rde_status::no_polynomial_solution){
+                has_nonelementary = true;
+                remainder = simplify(remainder + original_term);
+            }else{
+                result.status = risch_status::verification_failed;
+                result.elementary_part = std::move(elementary_part);
+                result.remainder = std::move(remainder);
+                result.diagnostic =
+                    "logarithmic hyperexponential RDE verification failed";
+                return true;
+            }
+        }
+        result.status = has_nonelementary
+            ? risch_status::proven_nonelementary : risch_status::elementary;
+        result.elementary_part = std::move(elementary_part);
+        result.remainder = std::move(remainder);
+        result.diagnostic.clear();
+        if(has_nonelementary)
+            result.diagnostic =
+                "logarithmic hyperexponential RDE has no rational solution";
+        return true;
+    };
     auto classify_pure_primitive_pole = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
@@ -5514,6 +5640,7 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_pure_primitive_pole()) return result;
+    if(classify_logarithmic_rational_hyperexponential()) return result;
     auto classify_monic_quadratic_function_field = [&]() -> bool{
         std::vector<exact_expr> roots;
         std::unordered_set<uint32_t> seen;
