@@ -2668,6 +2668,7 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
 namespace{
 
 using integration_poly = std::vector<numeric_value>;
+static constexpr size_t integration_hermite_degree_limit = 64;
 
 static void integration_trim(integration_poly &a){
     while(a.size() > 1 && a.back().is_zero()) a.pop_back();
@@ -3111,6 +3112,15 @@ static exact_expr integration_algebraic_logarithmic_rational(
     return terms.empty() ? context.integer(0) : context.add(terms);
 }
 
+static bool integration_hermite_reduce(
+    const integration_poly &numerator, const integration_poly &denominator,
+    integration_poly &rational_numerator,
+    integration_poly &rational_denominator,
+    integration_poly &reduced_numerator,
+    integration_poly &reduced_denominator);
+static bool integration_normalize_rational(integration_poly &numerator,
+                                           integration_poly &denominator);
+
 static exact_expr integration_rational_antiderivative(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable){
@@ -3144,6 +3154,42 @@ static exact_expr integration_rational_antiderivative(
         proper = context.log_root_sum(
             integration_poly_expr(context, remainder, variable),
             denominator_expression, variable);
+    if(!proper.valid() && denominator.size() - 1 <=
+                              integration_hermite_degree_limit){
+        integration_poly rational_numerator, rational_denominator;
+        integration_poly reduced_numerator, reduced_denominator;
+        if(integration_hermite_reduce(remainder, denominator,
+                rational_numerator, rational_denominator,
+                reduced_numerator, reduced_denominator)){
+            exact_expr rational_part = context.integer(0);
+            if(!(rational_numerator.size() == 1 &&
+                 rational_numerator[0].is_zero()))
+                rational_part = integration_poly_expr(
+                    context, rational_numerator, variable) /
+                    integration_poly_expr(
+                        context, rational_denominator, variable);
+            exact_expr logarithmic_part = context.integer(0);
+            if(!(reduced_numerator.size() == 1 &&
+                 reduced_numerator[0].is_zero()))
+                logarithmic_part = context.log_root_sum(
+                    integration_poly_expr(context, reduced_numerator, variable),
+                    integration_poly_expr(context, reduced_denominator, variable),
+                    variable);
+            exact_expr candidate = polynomial_part + rational_part +
+                                   logarithmic_part;
+            integration_poly check_numerator, check_denominator;
+            integration_poly target_numerator = numerator;
+            integration_poly target_denominator = denominator;
+            if(integration_parse_rational(
+                   context.differentiate(candidate, variable), variable,
+                   check_numerator, check_denominator) &&
+               integration_normalize_rational(check_numerator, check_denominator) &&
+               integration_normalize_rational(target_numerator, target_denominator) &&
+               check_numerator == target_numerator &&
+               check_denominator == target_denominator)
+                return candidate;
+        }
+    }
     if(!proper.valid()) return exact_expr();
     return polynomial_part + proper;
 }
@@ -5103,7 +5149,8 @@ risch_result exact_context::integrate_elementary(
         result.diagnostic = "node budget exceeded";
         return result;
     }
-    const size_t degree_budget = std::min<size_t>(options.maximum_degree, 64);
+    const size_t degree_budget = std::min<size_t>(
+        options.maximum_degree, integration_hermite_degree_limit);
     auto try_verified_elementary = [&]() -> bool{
         auto verify_candidate = [&](exact_expr candidate) -> bool{
         if(!candidate.valid() ||

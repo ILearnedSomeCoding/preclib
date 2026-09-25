@@ -467,6 +467,11 @@ int main(){
             high_degree_repeated.remainder.to_string().c_str());
     assert(high_degree_repeated.status == risch_status::elementary);
     assert(high_degree_repeated.remainder == context.integer(0));
+    exact_expr public_high_degree_repeated = context.integrate(
+        high_degree_repeated_integrand, x);
+    assert(public_high_degree_repeated.operation() != exact_opcode::integral);
+    assert(public_high_degree_repeated.to_string().find("LogRootSum(") !=
+           std::string::npos);
     assert(context.integrate(fifth_simple_fraction, x).operation() ==
            exact_opcode::log_root_sum);
     {

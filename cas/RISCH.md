@@ -13,6 +13,9 @@
 高次重复极点通过精确 Hermite 线性系统归约；系统规模受严格入口的有理次数预算
 限制。测试已覆盖 13 次分母的平方。预算内若精确重构不成立会返回
 `verification_failed`；超出输入次数/节点预算则返回 `resource_limit`。
+普通 `integrate()` 也会尝试同一 Hermite 归约：在最高 64 次的有界路径内，
+生成有理导数项与平方自由 `LogRootSum`，并对候选求导、规范化后与输入有理式
+进行精确比较；验证不通过则保留原来的未求值积分，不会返回未经验证的候选。
 对现有积分器构造的超越或简单代数候选，严格入口只接受由精确数、代数运算、
 指数、对数、三角/双曲函数及其反函数组成的初等 DAG，并要求精确证明
 `D(F)-f=0`。R0 有理函数路径另接受经多项式检查的 `LogRootSum` 节点，其导数按
@@ -107,7 +110,7 @@ Risch 积分需要同时回答两个问题：能否构造初等原函数；如�
 | `cas/src/prec_cas.cpp`：`exact_context::differentiate` | DAG 求导，包含指数、对数、三角及部分特殊函数 | 用于外层结果检查；域内另有精确导子 |
 | `integration_poly`、`integration_parse_rational` | 数值系数多项式及有理式转换 | 抽取精确系数路径，禁止近似值进入证明后端 |
 | `integration_divmod_poly`、`integration_gcd_poly` | 一元多项式除法及 GCD | 泛化系数域并补充扩展 GCD、平方自由分解 |
-| `integration_rational_antiderivative`、`integration_squarefree_rational` | 现有有理函数积分分派与低次分母处理 | 留作兼容路径，逐步替换为统一 Hermite/留数后端 |
+| `integration_rational_antiderivative`、`integration_squarefree_rational` | 有理函数分派、低次处理及有界且精确验证的 Hermite/LogRootSum 回退 | 补充完整留数表示与更细粒度工作预算 |
 | `integration_algebraic_logarithmic_rational` | 三、四次等已有范围内的代数根对数表达式 | 保留低次美化；不能作为任意次数的表示层 |
 | `integration_expr_poly`、`integration_hyperexponential_polynomial` | 表达式系数上的部分超指数待定系数求解 | 迁移为 RDE 的快速分支 |
 | `integration_hyperexponential_rational` | 部分有理超指数归约 | 复用可验证结果，补充完备的分母界与次数界 |
