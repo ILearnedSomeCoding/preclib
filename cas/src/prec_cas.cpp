@@ -5414,6 +5414,78 @@ risch_result exact_context::integrate_elementary(
                                              subexpressions[j]))) return true;
         return false;
     };
+    auto normalize_integer_related_exponentials = [&]() -> bool{
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable))
+                generators.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(generators.size() < 2) return false;
+        std::vector<integration_poly> arguments;
+        arguments.reserve(generators.size());
+        for(const exact_expr &generator : generators){
+            integration_poly argument;
+            if(!integration_parse_poly(generator.operand(0), variable,
+                                       argument))
+                return false;
+            arguments.push_back(std::move(argument));
+        }
+
+        for(size_t base_index = 0; base_index < generators.size();
+            ++base_index){
+            const integration_poly &base = arguments[base_index];
+            size_t pivot = 0;
+            while(pivot < base.size() && base[pivot].is_zero()) ++pivot;
+            if(pivot == base.size()) continue;
+            std::vector<int64_t> powers(generators.size());
+            bool related = true;
+            bool changed = false;
+            for(size_t i = 0; i < arguments.size() && related; ++i){
+                const integration_poly &argument = arguments[i];
+                size_t count = std::max(base.size(), argument.size());
+                numeric_value ratio(0);
+                if(pivot >= argument.size()){
+                    related = false;
+                    break;
+                }
+                ratio = argument[pivot] / base[pivot];
+                if(!ratio.is_integer() || !integer_i64(ratio, powers[i])){
+                    related = false;
+                    break;
+                }
+                for(size_t coefficient = 0; coefficient < count; ++coefficient){
+                    numeric_value lhs = coefficient < argument.size()
+                        ? argument[coefficient] : numeric_value(0);
+                    numeric_value rhs = coefficient < base.size()
+                        ? base[coefficient] * ratio : numeric_value(0);
+                    if(lhs != rhs){ related = false; break; }
+                }
+                changed = changed || powers[i] != 1;
+            }
+            if(!related || !changed) continue;
+
+            exact_expr base_generator = generators[base_index];
+            exact_expr normalized = expression;
+            for(size_t i = 0; i < generators.size(); ++i){
+                if(powers[i] == 1) continue;
+                exact_expr replacement = power(base_generator,
+                                               integer(powers[i]));
+                normalized = substitute(normalized, generators[i],
+                                        replacement);
+            }
+            if(normalized == expression) continue;
+            result = integrate_elementary(normalized, variable, options);
+            return true;
+        }
+        return false;
+    };
+    if(normalize_integer_related_exponentials()) return result;
     auto classify_additive_risch_terms = [&]() -> bool{
         if(expression.operation() != exact_opcode::add ||
            expression.operand_count() < 2)
