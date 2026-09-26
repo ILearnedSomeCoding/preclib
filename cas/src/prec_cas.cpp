@@ -3874,7 +3874,7 @@ static exact_expr integration_exact_primitive_polynomial(
 }
 
 // Joint coefficient matching retains constants that couple adjacent powers
-// of t. This is a verified polynomial-in-x ansatz, not a rational no-solution
+// of t. This is a verified rational-coefficient ansatz, not a no-solution
 // test; failure must fall through to the other primitive algorithms.
 static exact_expr integration_joint_primitive_polynomial(
     exact_context &context, const integration_expr_poly &input,
@@ -3903,18 +3903,35 @@ static exact_expr integration_joint_primitive_polynomial(
         numerators.push_back(std::move(n));
         denominators.push_back(std::move(d));
     }
+    integration_poly h = integration_gcd_poly(common,
+        integration_derivative_poly(common));
+    // At a pole, differentiating y raises its order by one. Repeated poles
+    // in the common input denominator therefore supply the candidate h.
+    // All coefficients share h so their free constants remain coupled.
+    degree_y += h.size() - 1;
     if(degree_y > options.maximum_degree ||
        input.size() > options.maximum_degree) return exact_expr();
     size_t levels = input.size() + 1, stride = degree_y + 1;
     integration_poly quotient;
     if(!integration_divide_poly(common, ad, quotient)) return exact_expr();
-    integration_poly a = integration_mul(an, quotient);
+    integration_poly a = integration_mul(integration_mul(an, quotient), h);
+    integration_poly derivative_weight = integration_mul(common, h);
+    integration_poly diagonal = integration_mul(common,
+        integration_derivative_poly(h));
+    for(auto &v : diagonal) v = numeric_value(0) - v;
+    integration_poly h_squared = integration_mul(h, h);
+    if(derivative_weight.size() - 1 > options.maximum_degree ||
+       a.size() - 1 > options.maximum_degree ||
+       h_squared.size() - 1 > options.maximum_degree) return exact_expr();
     std::vector<integration_poly> right(levels, {numeric_value(0)});
-    size_t rows_per_level = std::max(common.size(), a.size()) + degree_y;
+    size_t rows_per_level = std::max({derivative_weight.size(), a.size(),
+                                    diagonal.size()}) + degree_y;
     for(size_t j = 0; j < input.size(); ++j){
         if(!integration_divide_poly(common, denominators[j], quotient))
             return exact_expr();
-        right[j] = integration_mul(numerators[j], quotient);
+        right[j] = integration_mul(integration_mul(numerators[j], quotient),
+                                   h_squared);
+        if(right[j].size() - 1 > options.maximum_degree) return exact_expr();
         rows_per_level = std::max(rows_per_level, right[j].size());
     }
     size_t budget = options.maximum_matrix_entries;
@@ -3931,9 +3948,12 @@ static exact_expr integration_joint_primitive_polynomial(
             matrix[offset + i][columns] = right[level][i];
         for(size_t k = 0; k < stride; ++k){
             size_t column = level * stride + k;
-            if(k) for(size_t i = 0; i < common.size(); ++i)
+            if(k) for(size_t i = 0; i < derivative_weight.size(); ++i)
                 matrix[offset + i + k - 1][column] =
-                    common[i] * numeric_value(k);
+                    derivative_weight[i] * numeric_value(k);
+            for(size_t i = 0; i < diagonal.size(); ++i)
+                matrix[offset + i + k][column] =
+                    matrix[offset + i + k][column] + diagonal[i];
             if(level) for(size_t i = 0; i < a.size(); ++i)
                 matrix[offset - rows_per_level + i + k][column] =
                     a[i] * numeric_value(level);
@@ -3949,11 +3969,13 @@ static exact_expr integration_joint_primitive_polynomial(
         coefficients[j].assign(solution.begin() + j * stride,
                                 solution.begin() + (j + 1) * stride);
         integration_trim(coefficients[j]);
-        expressions[j] = integration_poly_expr(context, coefficients[j], variable);
+        expressions[j] = integration_poly_expr(context, coefficients[j], variable) /
+            integration_poly_expr(context, h, variable);
     }
     for(size_t j = 0; j < levels; ++j){
-        integration_poly lhs = integration_mul(common,
-            integration_derivative_poly(coefficients[j]));
+        integration_poly lhs = integration_add(integration_mul(derivative_weight,
+            integration_derivative_poly(coefficients[j])),
+            integration_mul(diagonal, coefficients[j]));
         if(j + 1 < levels){
             integration_poly term = integration_mul(a, coefficients[j + 1]);
             for(auto &v : term) v = v * numeric_value(j + 1);

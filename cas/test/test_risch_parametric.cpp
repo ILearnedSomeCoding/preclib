@@ -73,5 +73,33 @@ int main(){
                 t, x, tiny).valid());
         }
     }
+    for(const auto &denominator : {x + context.integer(2),
+            context.power(x, context.integer(2)) + context.integer(2)}){
+        exact_expr t = context.natural_logarithm(x / (x + context.integer(1)));
+        for(int multiplicity : {1, 2, 3}){
+            exact_expr original = context.power(x + t, context.integer(3)) /
+                context.power(denominator, context.integer(multiplicity));
+            exact_expr f = context.simplify(context.expand(
+                context.differentiate(original, x), 100000));
+            integration_expr_poly input;
+            assert(integration_parse_expr_poly(context, f, t, input));
+            exact_expr candidate = integration_joint_primitive_polynomial(
+                context, input, t, x, risch_options());
+            assert(candidate.valid());
+            integration_expr_poly difference;
+            assert(integration_parse_expr_poly(context, context.expand(
+                candidate - original, 100000), t, difference));
+            for(size_t i = 0; i < difference.size(); ++i){
+                integration_poly n, d;
+                assert(integration_parse_rational(difference[i], x, n, d));
+                assert(integration_normalize_rational(n, d));
+                if(i) assert(integration_zero_poly(n));
+                else assert(integration_zero_poly(integration_sub(
+                    integration_mul(integration_derivative_poly(n), d),
+                    integration_mul(n, integration_derivative_poly(d)))));
+            }
+            assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+        }
+    }
     puts("parametric RDE and coupled primitive ok");
 }
