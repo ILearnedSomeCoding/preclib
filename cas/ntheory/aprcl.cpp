@@ -2,6 +2,7 @@
 #include"factor_integer.hpp"
 
 #include<algorithm>
+#include<set>
 #include<utility>
 #include<vector>
 
@@ -116,7 +117,7 @@ public:
         a.resize(degree);
         return a;
     }
-    polynomial multiply(const polynomial &a, const polynomial &b) const{
+    polynomial multiply_direct(const polynomial &a, const polynomial &b) const{
         polynomial r(order);
         if(&a == &b){
             for(uint32_t i = 0; i < degree; ++i){
@@ -138,6 +139,38 @@ public:
                     r[k] = r[k] + a[i] * b[j];
                 }
             }
+        }
+        return reduce(std::move(r));
+    }
+    polynomial multiply(const polynomial &a, const polynomial &b) const{
+        if(n_.rsiz < 4 || degree < 8) return multiply_direct(a, b);
+        size_t guard = 0;
+        for(uint32_t d = degree - 1; d; d >>= 1) ++guard;
+        // Each convolution coefficient is < degree*2^(2*bits(n)). A whole-
+        // limb radix above this bound prevents carries between coefficients.
+        size_t stride = (2 * bits(n_) + guard + 63) / 64;
+        auto pack = [&](const polynomial &v){
+            precn_t r = precn_t::with_capacity(stride * degree);
+            r.rsiz = stride * degree;
+            std::memset(r.a, 0, r.rsiz * sizeof(uint64_t));
+            for(uint32_t i = 0; i < degree; ++i)
+                if(v[i].rsiz) std::memcpy(r.a + i * stride, v[i].a,
+                                          v[i].rsiz * sizeof(uint64_t));
+            while(r.rsiz && !r.a[r.rsiz - 1]) --r.rsiz;
+            return r;
+        };
+        precn_t packed_a = pack(a);
+        precn_t product = &a == &b ? packed_a * packed_a : packed_a * pack(b);
+        polynomial r(order);
+        for(uint32_t i = 0; i < 2 * degree - 1; ++i){
+            size_t offset = i * stride;
+            if(offset >= product.rsiz) break;
+            size_t length = std::min(stride, product.rsiz - offset);
+            precn_t coefficient = precn_t::with_capacity(length);
+            coefficient.rsiz = length;
+            std::memcpy(coefficient.a, product.a + offset, length * sizeof(uint64_t));
+            while(coefficient.rsiz && !coefficient.a[coefficient.rsiz - 1]) --coefficient.rsiz;
+            r[i % order] = r[i % order] + coefficient;
         }
         return reduce(std::move(r));
     }
@@ -308,12 +341,32 @@ struct proof_plan{
 };
 
 static proof_plan make_plan(const precn_t &n, const cas_aprcl_options &options){
-    for(uint32_t t : {2u, 6u, 12u, 24u, 36u, 60u, 120u, 180u, 360u,
-                      720u, 1260u, 2520u, 5040u, 10080u, 15120u, 27720u,
-                      55440u, 110880u, 166320u, 221760u, 332640u, 720720u}){
+    std::set<uint32_t> candidates{2u, 6u, 12u, 24u, 36u, 60u, 120u, 180u, 360u,
+        720u, 1260u, 2520u, 5040u, 10080u, 15120u, 27720u, 55440u,
+        110880u, 166320u, 221760u, 332640u, 720720u};
+    // Extend the divisor-rich 720720 family, keeping the character orders
+    // bounded. Checked multiplication keeps the public uint32_t t valid.
+    if(options.maximum_t > 720720){
+        for(auto i = candidates.find(720720); i != candidates.end(); ++i){
+            uint32_t t = *i;
+            for(uint32_t p : {2u, 3u, 5u, 7u, 11u, 13u, 17u, 19u}){
+                if(t > options.maximum_t / p) continue;
+                if(prime_power(t, p) > options.maximum_prime_power / p) continue;
+                candidates.insert(t * p);
+            }
+        }
+    }
+    // A surplus of 64 modulus bits makes almost every final residue larger
+    // than sqrt(n), avoiding millions of divisions of n by candidates.
+    precn_t proof_bound = bits(n) > 512 ? n << 128 : n;
+    proof_plan fallback;
+    size_t attempted = 0;
+    for(uint32_t t : candidates){
         if(t > options.maximum_t) continue;
+        report("APR-CL selecting parameters", ++attempted, 0);
         std::vector<uint32_t> qs;
         auto add = [&](uint32_t d){
+            if(d == UINT32_MAX) return;
             uint32_t q = d + 1;
             if(q == 2 || !small_prime(q)) return;
             for(uint32_t p : prime_factors(d))
@@ -328,18 +381,22 @@ static proof_plan make_plan(const precn_t &n, const cas_aprcl_options &options){
         std::sort(qs.begin(), qs.end());
         precn_t s(1);
         for(uint32_t q : qs) s = mul_u32(s, q);
-        if(s * s <= n) continue;
+        precn_t square = s * s;
+        if(square <= proof_bound){
+            if(!fallback.t && square > n) fallback = {t, s, qs};
+            continue;
+        }
         // Prefer the inexpensive small q-primes when surplus factors can go.
         for(size_t i = qs.size(); i-- > 0;){
             precn_t reduced = div_u64(s, qs[i]);
-            if(reduced * reduced > n){
+            if(reduced * reduced > proof_bound){
                 s = std::move(reduced);
                 qs.erase(qs.begin() + i);
             }
         }
         return {t, std::move(s), std::move(qs)};
     }
-    return {};
+    return fallback;
 }
 
 } // namespace
@@ -373,7 +430,7 @@ cas_aprcl_result cas_aprcl(const precn_t &n, const cas_aprcl_options &options){
     if(options.probable_prime_filter && !cas_probable_prime(n))
         return finish(cas_primality_status::composite, "Miller-Rabin witness");
     proof_plan plan = make_plan(n, options);
-    if(!plan.t) return finish(cas_primality_status::unknown, "APR-CL parameter table exhausted");
+    if(!plan.t) return finish(cas_primality_status::unknown, "APR-CL parameter budget exhausted");
     result.t = plan.t;
     auto ps = prime_factors(plan.t);
     for(uint32_t p : ps){
@@ -442,12 +499,16 @@ cas_aprcl_result cas_aprcl(const precn_t &n, const cas_aprcl_options &options){
     // The Jacobi and p-adic conditions restrict every prime divisor to a power
     // of n modulo s. Since s > sqrt(n), checking the orbit proves primality.
     precn_t base = n % plan.s, candidate(1);
+    precn_t root = precn_sqrt(n);
+    precn_t next_root = root + 1;
+    if(root * root > n || next_root * next_root <= n)
+        return finish(cas_primality_status::unknown, "integer square-root certification failed");
     report("APR-CL final divisors", 0, plan.t);
     for(uint32_t i = 1; i <= plan.t; ++i){
         candidate = (candidate * base) % plan.s;
         ++result.final_divisors;
         if(one(candidate)) return finish(cas_primality_status::prime, "Jacobi sum proof completed");
-        if(candidate.rsiz && candidate * candidate <= n && !(n % candidate).rsiz){
+        if(candidate.rsiz && candidate <= root && !(n % candidate).rsiz){
             result.factor = candidate;
             return finish(cas_primality_status::composite, "final trial divisor found");
         }

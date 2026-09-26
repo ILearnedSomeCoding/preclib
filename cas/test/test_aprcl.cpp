@@ -49,6 +49,18 @@ static void test_ring(){
             }
         }
     }
+    for(unsigned width : {255u, 256u, 257u, 511u, 3330u}){
+        precn_t modulus = (precn_t(1) << width) - 19;
+        for(auto pair : {std::make_pair(2u, 16u), std::make_pair(3u, 27u),
+                         std::make_pair(5u, 25u), std::make_pair(13u, 13u)}){
+            cyclotomic_ring current(modulus, pair.first, pair.second);
+            polynomial a(current.degree, modulus - 1), b(current.degree);
+            for(uint32_t i = 0; i < current.degree; ++i)
+                b[i] = i % 3 == 0 ? precn_t() : modulus - (i + 1);
+            assert(current.multiply(a, a) == current.multiply_direct(a, a));
+            assert(current.multiply(a, b) == current.multiply_direct(a, b));
+        }
+    }
 }
 
 static void test_exhaustive(){
@@ -118,6 +130,23 @@ static void test_large(){
     options.maximum_prime_power = 1;
     options.trial_division_bound = 0;
     assert(cas_aprcl(precn_t(1009), options).status == cas_primality_status::unknown);
+    precn_t thousand(1);
+    for(unsigned i = 0; i < 999; ++i) thousand = mul_u32(thousand, 10);
+    thousand = thousand + 7;
+    auto plan = make_plan(thousand, cas_aprcl_options());
+    assert(plan.t > 720720 && plan.t <= cas_aprcl_options().maximum_t);
+    assert(plan.s * plan.s > thousand);
+    for(uint32_t q : plan.primes){
+        assert(small_prime(q) && plan.t % (q - 1) == 0);
+        for(uint32_t p : prime_factors(q - 1))
+            assert(prime_power(q - 1, p) <= cas_aprcl_options().maximum_prime_power);
+    }
+    options = cas_aprcl_options();
+    options.maximum_t = 720720;
+    precn_t edge = (precn_t(1) << 1500) - 1;
+    auto fallback = make_plan(edge, options);
+    assert(fallback.t && fallback.s * fallback.s > edge);
+    assert(fallback.s * fallback.s <= (edge << 128));
 }
 
 int main(int argc, char **argv){
@@ -132,6 +161,21 @@ int main(int argc, char **argv){
         auto result = cas_aprcl(n);
         std::cout << "100-digit: " << result.reason << " t=" << result.t
                   << " Jacobi=" << result.jacobi_tests << '\n';
+        assert(result.status == cas_primality_status::prime);
+    }
+    if(argc > 1 && std::string(argv[1]) == "--thousand"){
+        precn_t n(1);
+        for(unsigned i = 0; i < 999; ++i) n = mul_u32(n, 10);
+        n = n + 7;
+        cas_factor_progress_scope progress([](const char *stage, size_t done, size_t total){
+            if(total && (done == total ||
+                         (total <= 1000 ? done % 50 == 0 : done % 262144 == 0)))
+                std::cout << stage << " " << done << '/' << total << std::endl;
+        });
+        auto result = cas_aprcl(n);
+        std::cout << "1000-digit: " << result.reason << " t=" << result.t
+                  << " Jacobi=" << result.jacobi_tests
+                  << " orbit=" << result.final_divisors << '\n';
         assert(result.status == cas_primality_status::prime);
     }
     std::cout << "aprcl ok\ntime "

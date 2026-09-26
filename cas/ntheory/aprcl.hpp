@@ -7,7 +7,7 @@
 enum class cas_primality_status{ composite, prime, unknown };
 
 struct cas_aprcl_options{
-    uint32_t maximum_t = 720720;
+    uint32_t maximum_t = 73513440;
     uint32_t maximum_prime_power = 64;
     uint32_t trial_division_bound = 1000;
     uint32_t additional_prime_limit = 100000;
