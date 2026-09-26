@@ -3873,6 +3873,99 @@ static exact_expr integration_exact_primitive_polynomial(
     return exact_expr();
 }
 
+// Joint coefficient matching retains constants that couple adjacent powers
+// of t. This is a verified polynomial-in-x ansatz, not a rational no-solution
+// test; failure must fall through to the other primitive algorithms.
+static exact_expr integration_joint_primitive_polynomial(
+    exact_context &context, const integration_expr_poly &input,
+    const exact_expr &generator, const exact_expr &variable,
+    const risch_options &options){
+    integration_poly an, ad;
+    if(!integration_parse_rational(context.differentiate(generator, variable),
+            variable, an, ad, options.maximum_degree, options.maximum_degree) ||
+       !integration_normalize_rational(an, ad) || integration_zero_poly(an))
+        return exact_expr();
+    std::vector<integration_poly> numerators, denominators;
+    integration_poly common = ad;
+    size_t degree_y = 0;
+    for(const auto &coefficient : input){
+        integration_poly n, d;
+        if(!integration_parse_rational(coefficient, variable, n, d,
+                options.maximum_degree, options.maximum_degree) ||
+           !integration_normalize_rational(n, d)) return exact_expr();
+        if(!integration_zero_poly(n) && n.size() >= d.size())
+            degree_y = std::max(degree_y, n.size() - d.size() + 1);
+        integration_poly divisor = integration_gcd_poly(common, d), quotient;
+        if(!integration_divide_poly(d, divisor, quotient) ||
+           common.size() - 1 + quotient.size() - 1 > options.maximum_degree)
+            return exact_expr();
+        common = integration_mul(common, quotient);
+        numerators.push_back(std::move(n));
+        denominators.push_back(std::move(d));
+    }
+    if(degree_y > options.maximum_degree ||
+       input.size() > options.maximum_degree) return exact_expr();
+    size_t levels = input.size() + 1, stride = degree_y + 1;
+    integration_poly quotient;
+    if(!integration_divide_poly(common, ad, quotient)) return exact_expr();
+    integration_poly a = integration_mul(an, quotient);
+    std::vector<integration_poly> right(levels, {numeric_value(0)});
+    size_t rows_per_level = std::max(common.size(), a.size()) + degree_y;
+    for(size_t j = 0; j < input.size(); ++j){
+        if(!integration_divide_poly(common, denominators[j], quotient))
+            return exact_expr();
+        right[j] = integration_mul(numerators[j], quotient);
+        rows_per_level = std::max(rows_per_level, right[j].size());
+    }
+    size_t budget = options.maximum_matrix_entries;
+    if(levels > budget / stride) return exact_expr();
+    size_t columns = levels * stride;
+    if(columns >= budget || rows_per_level > budget / levels ||
+       rows_per_level * levels > budget / (columns + 1)) return exact_expr();
+    size_t rows = levels * rows_per_level;
+    std::vector<std::vector<numeric_value>> matrix(rows,
+        std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t level = 0; level < levels; ++level){
+        size_t offset = level * rows_per_level;
+        for(size_t i = 0; i < right[level].size(); ++i)
+            matrix[offset + i][columns] = right[level][i];
+        for(size_t k = 0; k < stride; ++k){
+            size_t column = level * stride + k;
+            if(k) for(size_t i = 0; i < common.size(); ++i)
+                matrix[offset + i + k - 1][column] =
+                    common[i] * numeric_value(k);
+            if(level) for(size_t i = 0; i < a.size(); ++i)
+                matrix[offset - rows_per_level + i + k][column] =
+                    a[i] * numeric_value(level);
+        }
+    }
+    std::vector<numeric_value> solution;
+    std::vector<std::vector<numeric_value>> kernel;
+    if(!integration_solve_linear(matrix, columns, solution, &kernel))
+        return exact_expr();
+    std::vector<integration_poly> coefficients(levels);
+    integration_expr_poly expressions(levels, context.integer(0));
+    for(size_t j = 0; j < levels; ++j){
+        coefficients[j].assign(solution.begin() + j * stride,
+                                solution.begin() + (j + 1) * stride);
+        integration_trim(coefficients[j]);
+        expressions[j] = integration_poly_expr(context, coefficients[j], variable);
+    }
+    for(size_t j = 0; j < levels; ++j){
+        integration_poly lhs = integration_mul(common,
+            integration_derivative_poly(coefficients[j]));
+        if(j + 1 < levels){
+            integration_poly term = integration_mul(a, coefficients[j + 1]);
+            for(auto &v : term) v = v * numeric_value(j + 1);
+            lhs = integration_add(lhs, term);
+        }
+        integration_trim(lhs);
+        integration_trim(right[j]);
+        if(lhs != right[j]) return exact_expr();
+    }
+    return integration_expr_poly_expr(context, expressions, generator);
+}
+
 // Integrate a polynomial in a primitive generator by solving its coefficient
 // equations from highest degree to lowest. Coefficients are integrated in the
 // lower differential field, then the full candidate is checked exactly.
@@ -3902,6 +3995,9 @@ static exact_expr integration_recursive_primitive_polynomial(
             continue;
         exact_expr generator_derivative = context.differentiate(generator,
                                                                 variable);
+        exact_expr joint = integration_joint_primitive_polynomial(
+            context, polynomial, generator, variable, options);
+        if(joint.valid()) return joint;
         integration_expr_poly primitive(polynomial.size(), context.integer(0));
         bool solved = true;
         for(size_t degree = polynomial.size(); degree-- > 0;){

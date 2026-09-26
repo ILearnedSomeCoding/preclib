@@ -47,5 +47,31 @@ int main(){
         assert(integration_parametric_rde_polynomial(a, {b}, basis) == status::solved);
         assert(basis.size() == 1 && basis[0].solution == y);
     }
-    puts("parametric RDE ok");
+    exact_context context;
+    exact_expr x = context.symbol("x");
+    for(const auto &argument : {x + context.integer(1),
+            context.power(x, context.integer(2)) + context.integer(1),
+            x / (x + context.integer(1))}){
+        exact_expr t = context.natural_logarithm(argument);
+        for(int degree : {2, 3}){
+            exact_expr original = context.power(x + t, context.integer(degree));
+            exact_expr f = context.simplify(context.expand(
+                context.differentiate(original, x), 100000));
+            integration_expr_poly coefficients;
+            assert(integration_parse_expr_poly(context, f, t, coefficients));
+            exact_expr candidate = integration_joint_primitive_polynomial(
+                context, coefficients, t, x, risch_options());
+            assert(candidate.valid());
+            // The polynomial primitive is unique modulo a constant.
+            exact_expr difference = context.simplify(context.expand(
+                candidate - original, 100000));
+            assert(!integration_depends_on(difference, x));
+            assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+            risch_options tiny;
+            tiny.maximum_matrix_entries = 1;
+            assert(!integration_joint_primitive_polynomial(context, coefficients,
+                t, x, tiny).valid());
+        }
+    }
+    puts("parametric RDE and coupled primitive ok");
 }
