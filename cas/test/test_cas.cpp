@@ -363,6 +363,25 @@ int main(){
     assert(context.simplify(context.differentiate(
                nonlinear_log_result.elementary_part, x) -
            nonlinear_log_integrand) == context.integer(0));
+    exact_expr rational_log_argument = x / (x + context.integer(1));
+    exact_expr rational_log = context.natural_logarithm(
+        rational_log_argument);
+    exact_expr rational_log_chain = context.differentiate(
+        rational_log_argument, x) / rational_log_argument;
+    exact_expr rational_log_chain_integrand = rational_log_chain /
+        (context.integer(1) + rational_log);
+    risch_result rational_log_chain_result = context.integrate_elementary(
+        rational_log_chain_integrand, x);
+    assert(rational_log_chain_result.status == risch_status::elementary);
+    assert(rational_log_chain_result.elementary_part ==
+        context.natural_logarithm(context.integer(1) + rational_log));
+    exact_expr rational_log_laurent_integrand = context.differentiate(
+        rational_log_argument, x) * rational_log;
+    risch_result rational_log_laurent_result = context.integrate_elementary(
+        rational_log_laurent_integrand, x);
+    assert(rational_log_laurent_result.status == risch_status::elementary);
+    assert(rational_log_laurent_result.elementary_part == context.simplify(
+        rational_log_argument * (rational_log - context.integer(1))));
     exact_expr nonlinear_log_laurent_integrand =
         context.integer(2) * x * nonlinear_log;
     risch_result nonlinear_log_laurent_result = context.integrate_elementary(

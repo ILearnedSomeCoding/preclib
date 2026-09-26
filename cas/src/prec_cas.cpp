@@ -5700,23 +5700,31 @@ risch_result exact_context::integrate_elementary(
         exact_expr logarithm;
         exact_expr logarithm_argument;
         exact_expr logarithm_derivative;
-        size_t logarithm_argument_size = 0;
+        bool verify_logarithmic_reconstruction = false;
         std::unordered_set<uint32_t> seen;
         auto find_logarithm = [&](auto &&self, const exact_expr &part) -> void{
             if(logarithm.valid() || !seen.insert(part.id()).second) return;
             if(part.operation() == exact_opcode::natural_logarithm){
-                integration_poly argument_polynomial;
-                if(integration_parse_poly(part.operand(0), variable,
-                                          argument_polynomial) &&
-                   argument_polynomial.size() >= 2){
-                    integration_poly derivative = integration_derivative_poly(
-                        argument_polynomial);
-                    if(integration_zero_poly(derivative)) return;
+                integration_poly argument_numerator, argument_denominator;
+                if(integration_parse_rational(part.operand(0), variable,
+                        argument_numerator, argument_denominator) &&
+                   integration_normalize_rational(argument_numerator,
+                                                   argument_denominator)){
+                    exact_expr derivative = simplify(
+                        differentiate(part.operand(0), variable));
+                    integration_poly derivative_numerator,
+                                     derivative_denominator;
+                    if(!integration_parse_rational(derivative, variable,
+                            derivative_numerator, derivative_denominator) ||
+                       !integration_normalize_rational(derivative_numerator,
+                                                       derivative_denominator) ||
+                       integration_zero_poly(derivative_numerator)) return;
                     logarithm = part;
                     logarithm_argument = part.operand(0);
-                    logarithm_argument_size = argument_polynomial.size();
-                    logarithm_derivative = integration_poly_expr(
-                        *this, derivative, variable);
+                    verify_logarithmic_reconstruction =
+                        argument_denominator.size() != 1 ||
+                        argument_numerator.size() > 2;
+                    logarithm_derivative = std::move(derivative);
                     return;
                 }
             }
@@ -5836,7 +5844,7 @@ risch_result exact_context::integrate_elementary(
                 return true;
             }
         }
-        if(logarithm_argument_size > 2){
+        if(verify_logarithmic_reconstruction){
             exact_expr reconstruction_error = simplify(expand(
                 differentiate(elementary_part, variable) + remainder -
                 expression, 100000));
@@ -5863,7 +5871,7 @@ risch_result exact_context::integrate_elementary(
                 result.elementary_part = std::move(elementary_part);
                 result.remainder = std::move(remainder);
                 result.diagnostic =
-                    "polynomial logarithmic RDE failed reconstruction";
+                    "logarithmic RDE failed reconstruction";
                 return true;
             }
         }
@@ -5973,14 +5981,23 @@ risch_result exact_context::integrate_elementary(
         };
         collect(collect, expression);
         for(const exact_expr &generator : generators){
-            integration_poly argument, derivative;
-            if(!integration_parse_poly(generator.operand(0), variable,
-                                       argument) || argument.size() < 2)
+            integration_poly argument_numerator, argument_denominator;
+            if(!integration_parse_rational(generator.operand(0), variable,
+                    argument_numerator, argument_denominator) ||
+               !integration_normalize_rational(argument_numerator,
+                                               argument_denominator))
                 continue;
-            derivative = integration_derivative_poly(argument);
-            if(integration_zero_poly(derivative)) continue;
-            exact_expr derivative_expression = integration_poly_expr(
-                *this, derivative, variable);
+            exact_expr argument_derivative = simplify(
+                differentiate(generator.operand(0), variable));
+            integration_poly derivative_numerator, derivative_denominator;
+            if(!integration_parse_rational(argument_derivative, variable,
+                    derivative_numerator, derivative_denominator) ||
+               !integration_normalize_rational(derivative_numerator,
+                                               derivative_denominator) ||
+               integration_zero_poly(derivative_numerator))
+                continue;
+            exact_expr logarithmic_derivative = simplify(
+                argument_derivative / generator.operand(0));
             exact_expr parameter;
             for(size_t suffix = 0;; ++suffix){
                 parameter = symbol("_risch_log_sub_t" +
@@ -5990,8 +6007,8 @@ risch_result exact_context::integrate_elementary(
 
             // Divide by D(log(g)) = g'/g; the remainder must belong to Q(t).
             exact_expr transformed_input = simplify(
-                substitute(expression, generator, parameter) *
-                generator.operand(0) / derivative_expression);
+                substitute(expression, generator, parameter) /
+                logarithmic_derivative);
             integration_poly numerator, denominator;
             if(!integration_parse_rational(transformed_input, parameter,
                                            numerator, denominator) ||
@@ -6021,7 +6038,24 @@ risch_result exact_context::integrate_elementary(
                                               generator);
             exact_expr error = simplify(expand(
                 differentiate(candidate, variable) - expression, 100000));
-            if(error != integer(0)) continue;
+            bool verified = error == integer(0);
+            integration_expr_poly error_coefficients;
+            if(!verified && integration_parse_expr_poly(
+                   *this, error, generator, error_coefficients)){
+                verified = true;
+                for(const exact_expr &coefficient : error_coefficients){
+                    integration_poly numerator, denominator;
+                    if(!integration_parse_rational(coefficient, variable,
+                            numerator, denominator, degree_budget,
+                            verification_degree_budget) ||
+                       !integration_normalize_rational(numerator, denominator) ||
+                       !integration_zero_poly(numerator)){
+                        verified = false;
+                        break;
+                    }
+                }
+            }
+            if(!verified) continue;
             result.status = risch_status::elementary;
             result.elementary_part = std::move(candidate);
             result.remainder = integer(0);
