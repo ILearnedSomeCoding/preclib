@@ -219,6 +219,7 @@ assume(x, none)
 !tree [EXPR]      输出表达式 DAG
 !info [EXPR]      输出节点统计
 !time EXPR        测量表达式计算时间
+!progress EXPR    显示整数分解的阶段进度，例如 !progress factorint(2^128+1)
 !full             禁止简略显示，输出完整结果
 !clear            清空上下文
 !help             显示帮助

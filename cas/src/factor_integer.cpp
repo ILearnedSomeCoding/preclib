@@ -16,7 +16,49 @@
 #include<unordered_map>
 #include<unordered_set>
 #include<vector>
+static thread_local cas_factor_progress_scope *active_factor_progress = nullptr;
+
+cas_factor_progress_scope::cas_factor_progress_scope(cas_factor_progress_callback callback)
+    : callback_(std::move(callback)), previous_(active_factor_progress){
+    active_factor_progress = this;
+}
+cas_factor_progress_scope::~cas_factor_progress_scope(){
+    active_factor_progress = previous_;
+}
+cas_factor_progress_scope *cas_factor_progress_scope::current(){
+    return active_factor_progress;
+}
+void cas_factor_progress_scope::report(const char *stage, size_t completed,
+                                       size_t total) noexcept{
+    try{
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(callback_) callback_(stage, completed, total);
+    }catch(...){ }
+}
 namespace{
+
+static void factor_report(const char *stage, size_t completed = 0, size_t total = 0){
+    if(active_factor_progress) active_factor_progress->report(stage, completed, total);
+}
+
+struct ecm_progress_state{
+    cas_factor_progress_scope *sink;
+    size_t total;
+    std::mutex mutex;
+    size_t completed = 0;
+};
+
+struct ecm_curve_finished{
+    ecm_progress_state *state;
+    bool complete = true;
+    ~ecm_curve_finished(){
+        if(complete && state && state->sink){
+            std::lock_guard<std::mutex> lock(state->mutex);
+            size_t done = ++state->completed;
+            state->sink->report("ECM curves completed", done, state->total);
+        }
+    }
+};
 
 static bool is_one(const precn_t &a){
     return a.rsiz == 1 && a.a[0] == 1;
@@ -440,7 +482,8 @@ precn_t cas_pollard_rho_factor(const precn_t &value,
 static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                                 unsigned curves, uint32_t stage1_bound,
                                 uint32_t stage2_bound,
-                                std::atomic<bool> *stop){
+                                std::atomic<bool> *stop,
+                                ecm_progress_state *progress = nullptr){
     auto publish = [&](precn_t factor) -> precn_t{
         if(stop) stop->store(true, std::memory_order_relaxed);
         return factor;
@@ -457,6 +500,7 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
     }
     for(unsigned local_curve = 0; local_curve < curves; ++local_curve){
         if(stop && stop->load(std::memory_order_relaxed)) break;
+        ecm_curve_finished completed_curve{progress};
         unsigned curve = first_curve + local_curve;
         // Suyama's parametrization guarantees that the X:Z pair lies on the
         // generated Montgomery curve. Only this setup needs an inverse.
@@ -492,7 +536,10 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                 montgomery.encode(point.x), montgomery.encode(point.z)};
             ecm_mont::number fast_a24 = montgomery.encode(a24);
             for(uint64_t power : stage1_powers){
-                if(stop && stop->load(std::memory_order_relaxed)) return precn_t();
+                if(stop && stop->load(std::memory_order_relaxed)){
+                    completed_curve.complete = false;
+                    return precn_t();
+                }
                 fast_point = ecm_mont_multiply(
                     fast_point, power, fast_a24, montgomery);
             }
@@ -539,7 +586,10 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                 uint32_t center = giant_index * step;
                 uint32_t baby_index = prime >= center
                     ? prime - center : center - prime;
-                if(stop && stop->load(std::memory_order_relaxed)) return precn_t();
+                if(stop && stop->load(std::memory_order_relaxed)){
+                    completed_curve.complete = false;
+                    return precn_t();
+                }
                 if(giant_index != current_giant || current_giant == 0){
                     if(current_giant == 0){
                         giant = ecm_mont_multiply(fast_point, center, fast_a24, montgomery);
@@ -645,13 +695,15 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
 precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
                        uint32_t stage1_bound, uint32_t stage2_bound){
     if(value < precn_t(4) || !curves) return precn_t();
+    ecm_progress_state progress{active_factor_progress, curves};
+    factor_report("ECM curves completed", 0, curves);
 #ifdef __EMSCRIPTEN__
     return ecm_factor_range(value, 0, curves,
-                            stage1_bound, stage2_bound, nullptr);
+                            stage1_bound, stage2_bound, nullptr, &progress);
 #else
     if(curves < 4)
         return ecm_factor_range(value, 0, curves,
-                                stage1_bound, stage2_bound, nullptr);
+                                stage1_bound, stage2_bound, nullptr, &progress);
     unsigned workers = std::thread::hardware_concurrency();
     if(workers == 0) workers = 1;
     workers = std::min<unsigned>(workers, 4);
@@ -667,7 +719,7 @@ precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
         jobs.push_back(std::async(std::launch::async,
             [&, begin, count]{
                 return ecm_factor_range(value, begin, count,
-                                        stage1_bound, stage2_bound, &stop);
+                                        stage1_bound, stage2_bound, &stop, &progress);
             }));
     }
     precn_t factor;
@@ -684,6 +736,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                          size_t interval){
     if(value < precn_t(4) || !polynomial_count || !interval) return precn_t();
     if(mod_u64(value, 2).rsiz == 0) return precn_t(2);
+    auto *progress = active_factor_progress;
+    factor_report("SIQS factor base");
     // Algorithmic reference for log sieving, GF(2) elimination, and
     // single-large-cofactor merging: https://loj.ac/s/2526450
     // This is an independent precn_t implementation; no source was copied.
@@ -726,6 +780,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
     const size_t parity_words = (columns + 63) / 64;
     const size_t dependency_margin = std::max<size_t>(128, columns / 32);
     const size_t relation_limit = columns + dependency_margin;
+    factor_report("SIQS relations", 0, relation_limit);
     std::vector<relation> relations;
     std::unordered_set<std::string> relation_keys;
     std::unordered_map<uint64_t, partial_relation> partial_relations;
@@ -819,6 +874,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
 
         relations.push_back({std::move(relation_x), std::move(powers),
                              std::move(square_multiplier)});
+        if(progress && (relations.size() % 32 == 0 || relations.size() == relation_limit))
+            progress->report("SIQS relations", relations.size(), relation_limit);
         if(relations.size() >= relation_limit)
             collection_complete.store(true, std::memory_order_relaxed);
         return precn_t();
@@ -838,6 +895,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
         8, base.size() / (2 * factors_in_a * factors_in_a));
     const size_t family_size = (size_t)1 << (factors_in_a - 1);
     std::atomic<size_t> next_family(0);
+    std::atomic<size_t> completed_polynomials(0);
     precn_t sieve_factor;
     std::mutex factor_mutex;
     auto sieve_worker = [&]{
@@ -1105,6 +1163,11 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                 collection_complete.store(true, std::memory_order_relaxed);
             }
         }
+        if(progress){
+            size_t done = completed_polynomials.fetch_add(1) + 1;
+            if(done % 8 == 0)
+                progress->report("SIQS polynomials completed", done, polynomial_count);
+        }
     }
     }
     };
@@ -1133,6 +1196,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
         invalid_relations);
 #endif
     if(!relations.empty()){
+        factor_report("SIQS matrix", 0, relations.size());
         const size_t relation_words = (relations.size() + 63) / 64;
         std::vector<std::vector<uint64_t>> pivot_parities(columns);
         std::vector<std::vector<uint64_t>> pivot_combinations(columns);
@@ -1144,6 +1208,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
         // a combination c with c^T*M = 0.
         for(size_t relation_index = 0; relation_index < relations.size();
             ++relation_index){
+            if(relation_index % 64 == 0)
+                factor_report("SIQS matrix", relation_index, relations.size());
             std::vector<uint64_t> parity(parity_words, 0);
             for(size_t column = 0; column < columns; ++column)
                 if(relations[relation_index].powers[column] & 1)
@@ -1208,6 +1274,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                      relations.size(), rank, null_basis.size());
 #endif
         size_t dependencies_tried = 0;
+        factor_report("SIQS matrix", relations.size(), relations.size());
+        factor_report("SIQS dependencies");
         size_t single_limit = null_basis.size();
         for(size_t i = 0; i < single_limit; ++i){
             ++dependencies_tried;
@@ -1311,6 +1379,7 @@ static bool factor_big_impl(const precn_t &value,
                              std::vector<precn_t> &factors,
                              bool trial_division){
     if(is_one(value)) return true;
+    factor_report("Primality test");
     if(cas_probable_prime(value)){
         factors.push_back(value);
         return true;
@@ -1332,7 +1401,11 @@ static bool factor_big_impl(const precn_t &value,
         // One top-level pass strips the factors for which ECM would be pure
         // overhead. Do not repeat this million-prime scan in recursive calls.
         static const std::vector<uint32_t> trial_primes = primes_to(10000000);
+        factor_report("Trial division", 0, trial_primes.size());
+        size_t tested = 0;
         for(uint32_t prime : trial_primes){
+            if(++tested % 4096 == 0)
+                factor_report("Trial division", tested, trial_primes.size());
             while(mod_u64(remaining, prime).rsiz == 0){
                 factors.emplace_back(prime);
                 remaining = div_u64(remaining, prime);
@@ -1345,6 +1418,7 @@ static bool factor_big_impl(const precn_t &value,
         return true;
     }
     size_t remaining_bits = bit_length(remaining);
+    factor_report("Pollard rho");
     precn_t factor = cas_pollard_rho_factor(remaining, 250000);
     if(factor.rsiz == 0){
         unsigned curves = remaining_bits > 160 ? 16 : 128;
@@ -1362,12 +1436,38 @@ static bool factor_big_impl(const precn_t &value,
     }
     if(factor.rsiz == 0 && remaining_bits <= 260)
         factor = cas_ecm_factor(remaining, 900, 250000, 5000000);
-    if(factor.rsiz == 0) factor = cas_qs_factor(remaining);
+    if(factor.rsiz == 0){
+        factor_report("QS fallback");
+        factor = cas_qs_factor(remaining);
+    }
     if(factor.rsiz == 0 || factor == remaining) return false;
     return factor_big_impl(factor, factors, false) &&
            factor_big_impl(remaining / factor, factors, false);
 }
 
 bool cas_factor_big(const precn_t &value, std::vector<precn_t> &factors){
-    return factor_big_impl(value, factors, true);
+    bool result = factor_big_impl(value, factors, true);
+    factor_report(result ? "Factorization complete" : "Factorization budget exhausted");
+    return result;
+}
+
+bool cas_factor_big_progress(const precn_t &value, std::vector<precn_t> &factors,
+                            cas_factor_progress_callback callback){
+    cas_factor_progress_scope scope(std::move(callback));
+    return cas_factor_big(value, factors);
+}
+precn_t cas_ecm_factor_progress(const precn_t &value,
+    cas_factor_progress_callback callback, unsigned curves,
+    uint32_t stage1_bound, uint32_t stage2_bound){
+    cas_factor_progress_scope scope(std::move(callback));
+    precn_t result = cas_ecm_factor(value, curves, stage1_bound, stage2_bound);
+    factor_report(result.rsiz ? "ECM factor found" : "ECM budget exhausted");
+    return result;
+}
+precn_t cas_siqs_factor_progress(const precn_t &value,
+    cas_factor_progress_callback callback, size_t polynomials, size_t interval){
+    cas_factor_progress_scope scope(std::move(callback));
+    precn_t result = cas_siqs_factor(value, polynomials, interval);
+    factor_report(result.rsiz ? "SIQS factor found" : "SIQS budget exhausted");
+    return result;
 }

@@ -1,15 +1,43 @@
 #include"prec_cas.hpp"
+#include"src/factor_integer.hpp"
 
 #include<cctype>
 #include<chrono>
 #include<cstdint>
 #include<cstdlib>
 #include<iostream>
+#include<iomanip>
+#include<sstream>
 #include<stdexcept>
 #include<string>
 #include<vector>
 
 namespace{
+
+class console_factor_progress{
+    std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_ = start_;
+    std::string stage_;
+    cas_factor_progress_scope scope_;
+public:
+    console_factor_progress() : scope_([this](const char *stage, size_t done, size_t total){
+        auto now = std::chrono::steady_clock::now();
+        if(!stage_.empty() && done != total &&
+           now - last_ < std::chrono::milliseconds(150)) return;
+        stage_ = stage;
+        last_ = now;
+        std::ostringstream text;
+        text << '\r' << stage;
+        if(total) text << "  " << done << '/' << total;
+        else if(stage_.find("complete") == std::string::npos &&
+                stage_.find("found") == std::string::npos &&
+                stage_.find("exhausted") == std::string::npos) text << "  working";
+        text << "  " << std::fixed << std::setprecision(1)
+             << std::chrono::duration<double>(now - start_).count() << "s";
+        std::cerr << text.str() << std::string(32, ' ') << std::flush;
+    }){}
+    ~console_factor_progress(){ if(!stage_.empty()) std::cerr << '\n'; }
+};
 
 static precn_t calculator_pow10(size_t exponent){
     precn_t result(1), base(10);
@@ -228,6 +256,10 @@ class parser{
         if(name == "expand") return state_.context.expand(argument);
         if(name == "factor") return state_.context.factor(argument);
         if(name == "factorint") return state_.context.factor_integer(argument);
+        if(name == "factorint_progress"){
+            console_factor_progress progress;
+            return state_.context.factor_integer(argument);
+        }
         if(name == "groebner")
             throw std::runtime_error("groebner requires polynomial and variable lists");
         if(name == "simplify") return state_.context.simplify(argument);
@@ -524,7 +556,7 @@ static const char *help_text(){
         "operators: +  -  *  /  ^  =  and parentheses\n"
         "values: exact integers/fractions, decimal approximations, symbols\n"
         "constants: pi, e, i\n"
-        "algebra: sqrt, abs, simplify, expand, factor, factorint, gcd,\n"
+        "algebra: sqrt, abs, simplify, expand, factor, factorint, factorint_progress, gcd,\n"
         "         groebner({polynomials}, {variables}), trigexpand, trigreduce,\n"
         "         subs(expression, target, replacement), is_poly(expression[, vars])\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
@@ -535,7 +567,7 @@ static const char *help_text(){
         "           sinh, cosh, tanh, asinh, acosh, atanh\n"
         "assumptions: assume(symbol, none|real|nonnegative|positive)\n"
         "commands: !precision BITS  !nodes  !gc  !dump [LIMIT]  !info [EXPR]\n"
-        "          !tree [EXPR]  !time EXPR  !full  !clear  !help  !quit\n";
+        "          !tree [EXPR]  !time EXPR  !progress EXPR  !full  !clear  !help  !quit\n";
 }
 
 static void help(){
@@ -568,7 +600,18 @@ static void print_info(const exact_expr &expression,
 
 static bool command(const std::string &line, calculator_state &state){
     if(line == "!quit" || line == "!q") return false;
-    if(line == "!help") help();
+    if(line == "!progress" || line.compare(0, 10, "!progress ") == 0){
+        if(line.size() <= 10 || line.find_first_not_of(" \t", 10) == std::string::npos)
+            throw std::runtime_error("usage: !progress EXPR");
+        std::string expression = line.substr(10);
+        {
+            console_factor_progress progress;
+            state.answer = parser(expression, state).parse();
+        }
+        collect_garbage(state, false);
+        std::cout << format_answer(state.answer) << '\n';
+    }
+    else if(line == "!help") help();
     else if(line == "!nodes")
         std::cout << state.context.node_count() << " nodes, "
                   << state.context.operand_id_count() << " operand ids\n";

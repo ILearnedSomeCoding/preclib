@@ -32,6 +32,23 @@
 - 按批计算 GCD；整批 GCD 等于 N 时逐项恢复因子。
 - 其他 worker 找到因子后，正在执行曲线的 worker 能提前停止。
 
+## 进度接口
+
+原生计算器支持 `!progress factorint(2^128+1)`，也可以直接调用
+`factorint_progress(2^128+1)`。普通 `factorint` 不显示进度。
+`!progress` 只对本次表达式生效；计算失败后也会恢复默认状态。
+目前接入整数分解，其他表达式可以执行，但没有内部阶段通知。
+
+C++ 可用 `cas_factor_big_progress`、`cas_ecm_factor_progress`、
+`cas_siqs_factor_progress`。回调签名为
+`void(const char *stage, size_t completed, size_t total)`；`total==0`
+表示该阶段没有确定的总量。回调在工作线程上串行执行，不能在回调中再次发起分解；
+通知回调抛出的异常会被忽略。原接口和返回值保持不变。
+
+ECM 报告曲线完成数，SIQS 报告已收集关系、多项式预算和矩阵消元进度。
+这些数字不是找到因子的概率，也不是整个分解任务的完成百分比。
+终端约每 150ms 更新一次，进度写入 stderr，结果仍写入 stdout。
+
 ## 验证与基准
 
 从仓库根目录运行，测试构建不要定义 `NDEBUG`：

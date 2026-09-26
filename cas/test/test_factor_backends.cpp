@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdio>
 #include <chrono>
+#include <stdexcept>
 
 static void require_factor(const precn_t &n, const precn_t &factor){
     assert(factor > precn_t(1) && factor < n);
@@ -32,8 +33,25 @@ int main(int argc, char **){
     assert(cas_siqs_factor(precn_t(1)).rsiz == 0);
     require_factor(precn_t(202), cas_siqs_factor(precn_t(202)));
     require_factor(precn_t(10201), cas_siqs_factor(precn_t(10201)));
-    require_factor(n, cas_siqs_factor(n, 128, 512));
-    require_factor(n, cas_ecm_factor(n, 64, 100, 5000));
+    size_t notifications = 0;
+    auto progress = [&](const char *stage, size_t done, size_t total){
+        assert(stage && *stage);
+        assert(!total || done <= total);
+        ++notifications;
+    };
+    require_factor(n, cas_siqs_factor_progress(n, progress, 128, 512));
+    assert(notifications > 2);
+    notifications = 0;
+    require_factor(n, cas_ecm_factor_progress(n, progress, 64, 100, 5000));
+    assert(notifications > 2);
+    assert(cas_factor_progress_scope::current() == nullptr);
+    {
+        cas_factor_progress_scope outer(progress);
+        require_factor(precn_t(202), cas_ecm_factor_progress(precn_t(202),
+            [](const char *, size_t, size_t){ throw std::runtime_error("callback"); }));
+        assert(cas_factor_progress_scope::current() == &outer);
+    }
+    assert(cas_factor_progress_scope::current() == nullptr);
     bool stage2_recovered = false;
     for(unsigned curve = 0; curve < 32 && !stage2_recovered; ++curve){
         if(ecm_factor_range(n, curve, 1, 100, 100, nullptr).rsiz) continue;
