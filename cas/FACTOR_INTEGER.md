@@ -1,6 +1,6 @@
 # 整数分解：SIQS 与 ECM
 
-实现位于 `src/factor_integer.cpp`，使用本库的 `precn_t`。算法独立实现。
+实现位于 `ntheory/factor_integer.cpp`，使用本库的 `precn_t`。算法独立实现。
 
 ## SIQS
 
@@ -24,12 +24,14 @@
 
 ## ECM
 
-不超过八个 64-bit limb 的输入使用固定数组 Montgomery 运算。每个 worker 预计算第一阶段的素数幂，供多条曲线复用。
+不超过八个 64-bit limb 的输入使用固定数组 Montgomery 运算。一次 ECM 调用只生成一份素数表、第一阶段素数幂和第二阶段去重计划，所有 worker 共享只读计划。
+
+第一阶段按最多 4096 个素数幂设置检查点。若整批的 GCD 等于 N，会从检查点回放单个素数乘法，包含素数幂内部的步骤，以尝试恢复被整批运算掩盖的因子。
 
 第二阶段使用 `p=k*210 +/- r` 的 baby-step/giant-step：
 
 - 巨步只保存相邻两点，以微分加法向前推进。
-- baby 点使用固定数组缓存，不再逐素数查哈希表。
+- 奇数 baby 点通过共享 `[2]Q` 的微分加法链生成，使用固定数组缓存。
 - 同一巨步中 `+r` 与 `-r` 共用一次叉积检查。
 - 按批计算 GCD；整批 GCD 等于 N 时逐项恢复因子。
 - 其他 worker 找到因子后，正在执行曲线的 worker 能提前停止。
@@ -56,11 +58,11 @@ ECM 报告曲线完成数，SIQS 报告已收集关系、多项式预算和矩�
 从仓库根目录运行，测试构建不要定义 `NDEBUG`：
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 -DCAS_SIQS_DIAGNOSTICS cas/test/test_factor_backends.cpp src/*.cpp -o cas/test/test_factor_backends.exe
+clang++ -O3 -mavx2 -std=c++17 -DCAS_SIQS_DIAGNOSTICS cas/test/test_factor_backends.cpp cas/ntheory/integer_properties.cpp src/*.cpp -o cas/test/test_factor_backends.exe
 cas/test/test_factor_backends.exe --large
 ```
 
-测试直接包含实现，以比较内部滚动巨步与独立标量乘法；编译它时不要再次链接 `cas/src/factor_integer.cpp`。覆盖零标量、小 B1、第二阶段独立找到因子，以及 SIQS 小输入与大输入。
+测试直接包含实现，以比较内部滚动巨步与独立标量乘法；编译它时不要再次链接 `cas/ntheory/factor_integer.cpp`。覆盖零标量、小 B1、第一阶段饱和恢复、第二阶段独立找到因子、32 位余数和原地整除，以及 SIQS 小输入与大输入。
 
 大输入为：
 
@@ -70,14 +72,16 @@ cas/test/test_factor_backends.exe --large
 * 256147902778239783113403647473841
 ```
 
-本次诊断构建单次测量约 9.47 秒，6854 条关系、零条无效关系；ASan 的同一大输入测试也通过。时间不作为测试断言，并行关系收集的具体关系数和耗时可能变化。
+此前诊断构建单次测量约 9.47 秒，6854 条关系、零条无效关系；ASan 的同一大输入测试也通过。时间不作为测试断言，并行关系收集的具体关系数和耗时可能变化。本轮迁移及试除优化的同机单次对照为 39.83 秒到 36.47 秒；这些数据反映了明显的运行环境波动，不应跨轮直接比较。
 
 ECM 单独基准：
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas/test/bench_ecm.cpp cas/src/factor_integer.cpp src/*.cpp -o cas/test/bench_ecm.exe
+clang++ -O3 -mavx2 -std=c++17 cas/test/bench_ecm.cpp cas/ntheory/factor_integer.cpp src/*.cpp -o cas/test/bench_ecm.exe
 # 参数顺序为 N、曲线数、B1、B2；省略参数使用代码中的默认值。
 cas/test/bench_ecm.exe
 ```
 
-默认预算的新旧三组交替测量中位数约为 0.347 秒、0.324 秒。两者都耗尽预算而未找到因子，因此这不是该数的完整分解时间。
+上一轮默认预算的新旧三组交替测量中位数约为 0.347 秒、0.324 秒。两者都耗尽预算而未找到因子，因此这不是该数的完整分解时间。
+
+本轮共享计划和第一阶段恢复后的三组交替中位数约为 0.101 秒、0.107 秒，小预算下未测出加速。保留检查点恢复是为了找回原先整批 GCD 等于 N 时丢弃的因子；性能收益需要在更大的曲线预算上继续验证。

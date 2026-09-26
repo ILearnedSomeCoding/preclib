@@ -53,14 +53,14 @@ clang++ -O3 -mavx2 -std=c++17 test\test_number.cpp src\*.cpp -o test\test_number
 Exact CAS arena and canonicalization tests:
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas\test\test_cas.cpp cas\src\*.cpp src\*.cpp -o cas\test\test_cas.exe
+clang++ -O3 -mavx2 -std=c++17 cas\test\test_cas.cpp cas\src\*.cpp cas\ntheory\*.cpp src\*.cpp -o cas\test\test_cas.exe
 .\cas\test\test_cas.exe
 ```
 
 General symbolic expressions with `Number` floating-point leaves:
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas\test\test_expr.cpp cas\src\*.cpp src\*.cpp -o cas\test\test_expr.exe
+clang++ -O3 -mavx2 -std=c++17 cas\test\test_expr.cpp cas\src\*.cpp cas\ntheory\*.cpp src\*.cpp -o cas\test\test_expr.exe
 .\cas\test\test_expr.exe
 ```
 

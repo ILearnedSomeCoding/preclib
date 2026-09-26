@@ -3,7 +3,7 @@
 在仓库根目录执行：
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas\calculator.cpp cas\src\*.cpp src\*.cpp -o cas\calculator.exe
+clang++ -O3 -mavx2 -std=c++17 cas\calculator.cpp cas\src\*.cpp cas\ntheory\*.cpp src\*.cpp -o cas\calculator.exe
 ```
 
 然后启动：
@@ -103,8 +103,8 @@ expand, simplify, approx
 CAS 测试与数值核心分开编译：
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas\test\test_cas.cpp cas\src\*.cpp src\*.cpp -o cas\test\test_cas.exe
-clang++ -O3 -mavx2 -std=c++17 cas\test\test_expr.cpp cas\src\*.cpp src\*.cpp -o cas\test\test_expr.exe
+clang++ -O3 -mavx2 -std=c++17 cas\test\test_cas.cpp cas\src\*.cpp cas\ntheory\*.cpp src\*.cpp -o cas\test\test_cas.exe
+clang++ -O3 -mavx2 -std=c++17 cas\test\test_expr.cpp cas\src\*.cpp cas\ntheory\*.cpp src\*.cpp -o cas\test\test_expr.exe
 ```
 
 运行：

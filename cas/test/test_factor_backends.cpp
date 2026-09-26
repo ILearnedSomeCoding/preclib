@@ -1,5 +1,6 @@
 // Standalone internal tests: compile with src/*.cpp, not cas/src/*.cpp.
-#include "../src/factor_integer.cpp"
+#include "../ntheory/factor_integer.cpp"
+#include "../ntheory/integer_properties.hpp"
 #include <cassert>
 #include <cstdio>
 #include <chrono>
@@ -11,6 +12,25 @@ static void require_factor(const precn_t &n, const precn_t &factor){
 }
 
 int main(int argc, char **){
+    for(uint32_t divisor : {2u, 3u, 65537u, UINT32_MAX}){
+        precn_t a = (precn_t(1) << 521) - 1;
+        precn_t expected = mod_u64(a, divisor);
+        assert(remainder_u32(a, divisor) == (expected.rsiz ? expected.a[0] : 0));
+        precn_t product = mul_u64(a, divisor);
+        divide_exact_u32(product, divisor);
+        assert(product == a);
+    }
+    precn_t root;
+    assert(cas_ntheory::perfect_cube_root(precn_t(125), root) && root == precn_t(5));
+    assert(!cas_ntheory::perfect_cube_root(precn_t(126), root));
+    assert(cas_ntheory::perfect_nth_root(precn_t(1) << 240, 12, root) &&
+           root == (precn_t(1) << 20));
+    uint64_t outside, inside;
+    assert(cas_ntheory::split_small_square_factor_u64(72, outside, inside));
+    assert(outside == 6 && inside == 2);
+    assert(cas_ntheory::split_small_square_factor_u64(0, outside, inside));
+    assert(outside == 0);
+    assert(cas_ntheory::smallest_prime_factor(1) == 0);
     precn_t n("1000036000099");
     ecm_mont m(n);
     ecm_mont_point p{m.encode(precn_t(7)), m.encode(precn_t(1))};
@@ -18,6 +38,30 @@ int main(int argc, char **){
     auto zero = ecm_mont_multiply(p, 0, a24, m);
     assert(m.decode(zero.z).rsiz == 0);
     assert(m.decode(zero.x) == precn_t(1));
+    // Find a saturated first-stage product and verify checkpoint replay
+    // recovers a proper factor instead of discarding the curve.
+    precn_t saturated_modulus(10403);
+    ecm_mont saturated_mont(saturated_modulus);
+    ecm_plan saturated_plan(100, 100);
+    bool recovered = false;
+    for(uint64_t x = 2; x < 100 && !recovered; ++x){
+        ecm_mont_point start{saturated_mont.encode(precn_t(x)),
+                             saturated_mont.encode(precn_t(1))};
+        auto full = start;
+        auto parameter = saturated_mont.encode(precn_t(3));
+        for(uint64_t power : saturated_plan.powers)
+            full = ecm_mont_multiply(full, power, parameter, saturated_mont);
+        if(gcd(saturated_mont.decode(full.z), saturated_modulus) != saturated_modulus)
+            continue;
+        bool cancelled = false;
+        precn_t factor = ecm_stage1(start, parameter, saturated_mont,
+            saturated_modulus, saturated_plan, nullptr, cancelled);
+        if(factor > precn_t(1) && factor < saturated_modulus){
+            require_factor(saturated_modulus, factor);
+            recovered = true;
+        }
+    }
+    assert(recovered);
     // Compare rolling giants against independent scalar ladders projectively.
     auto step = ecm_mont_multiply(p, 210, a24, m);
     auto previous = step, current = ecm_mont_double(step, a24, m);

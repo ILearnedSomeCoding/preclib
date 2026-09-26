@@ -1,4 +1,4 @@
-#include"../src/factor_integer.hpp"
+#include"../ntheory/factor_integer.hpp"
 
 #include<chrono>
 #include<cstdlib>

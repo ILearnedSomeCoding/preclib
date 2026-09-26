@@ -13,6 +13,9 @@
 
 `exact_expr` 和 `expr` 的声明现在都位于 `prec_cas.hpp`。
 
+整数数论实现集中在 [ntheory](ntheory/README.md)。编译 CAS 时需要同时加入
+`cas/src/*.cpp` 和 `cas/ntheory/*.cpp`；底层大整数库仍使用 `src/*.cpp`。
+
 ## 基本示例
 
 ```cpp

@@ -1,5 +1,6 @@
 #include"../prec_cas.hpp"
-#include"factor_integer.hpp"
+#include"../ntheory/factor_integer.hpp"
+#include"../ntheory/integer_properties.hpp"
 
 #include<algorithm>
 #include<cmath>
@@ -18,6 +19,10 @@
 #include<utility>
 
 namespace{
+using cas_ntheory::split_small_square_factor_u64;
+using cas_ntheory::perfect_cube_root;
+using cas_ntheory::perfect_nth_root;
+using cas_ntheory::smallest_prime_factor;
 
 static precz_t rational_integer(const precq_t &value){
     precz_t result(value.numerator());
@@ -119,28 +124,6 @@ static numeric_value exact_pow(numeric_value base, int64_t exponent){
     return negative ? numeric_value(1) / result : result;
 }
 
-static bool split_small_square_factor_u64(uint64_t remaining,
-                                          uint64_t &outside,
-                                          uint64_t &inside){
-    // Trial division is excellent for the small radicands produced by normal
-    // symbolic expansion, but must not turn sqrt(huge_prime) into a long job.
-    if(remaining > UINT64_C(1000000000000)) return false;
-    outside = 1;
-    inside = 1;
-    for(uint64_t prime = 2; prime <= remaining / prime;
-        prime = prime == 2 ? 3 : prime + 2){
-        if(remaining % prime) continue;
-        unsigned count = 0;
-        do{
-            remaining /= prime;
-            ++count;
-        }while(remaining % prime == 0);
-        for(unsigned i = 0; i < count / 2; ++i) outside *= prime;
-        if(count & 1) inside *= prime;
-    }
-    if(remaining > 1) inside *= remaining;
-    return true;
-}
 
 static bool split_small_square_factor(const numeric_value &value,
                                       uint64_t &outside, uint64_t &inside){
@@ -158,20 +141,6 @@ static size_t natural_bit_length(const precn_t &value){
     return bits;
 }
 
-static bool perfect_cube_root(const precn_t &value, precn_t &root){
-    if(value.rsiz == 0){ root = precn_t(); return true; }
-    size_t bits = natural_bit_length(value);
-    precn_t x = precn_t(1) << ((bits + 2) / 3);
-    for(;;){
-        precn_t square = x * x;
-        precn_t y = div_u64(mul_u64(x, 2) + value / square, 3);
-        if(y >= x) break;
-        x = std::move(y);
-    }
-    if(x * x * x != value) return false;
-    root = std::move(x);
-    return true;
-}
 
 static bool exact_cube_root(const numeric_value &value, numeric_value &root){
     if(value.is_approximate()) return false;
@@ -185,47 +154,6 @@ static bool exact_cube_root(const numeric_value &value, numeric_value &root){
     return true;
 }
 
-static int compare_power(const precn_t &base, uint64_t exponent,
-                         const precn_t &limit){
-    precn_t result(1), factor(base);
-    while(exponent){
-        if(exponent & 1){
-            result = result * factor;
-            if(result > limit) return 1;
-        }
-        exponent >>= 1;
-        if(exponent){
-            factor = factor * factor;
-            if(factor > limit) factor = limit + precn_t(1);
-        }
-    }
-    if(result < limit) return -1;
-    return result == limit ? 0 : 1;
-}
-
-static bool perfect_nth_root(const precn_t &value, uint64_t degree,
-                             precn_t &root){
-    if(degree < 2) return false;
-    if(value.rsiz == 0){ root = precn_t(); return true; }
-    size_t bits = natural_bit_length(value);
-    if(degree >= bits){
-        if(value == precn_t(1)){ root = precn_t(1); return true; }
-        return false;
-    }
-    size_t root_bits = (bits + (size_t)degree - 1) / (size_t)degree;
-    precn_t low(1), high = precn_t(1) << root_bits;
-    while(low <= high){
-        precn_t middle = (low + high) >> 1;
-        int comparison = compare_power(middle, degree, value);
-        if(comparison == 0){ root = std::move(middle); return true; }
-        if(comparison < 0) low = middle + precn_t(1);
-        else{
-            if(middle.rsiz == 0) break;
-            high = middle - precn_t(1);
-        }
-    }
-    return false;
-}
 
 static bool exact_nth_root(const numeric_value &value, uint64_t degree,
                            numeric_value &root){
@@ -9340,13 +9268,6 @@ class exact_factor_simplifier{
         return found;
     }
 
-    static uint64_t smallest_prime_factor(uint64_t value){
-        if(value > UINT64_C(1000000000000)) return 0;
-        if((value & 1) == 0) return 2;
-        for(uint64_t divisor = 3; divisor <= value / divisor; divisor += 2)
-            if(value % divisor == 0) return divisor;
-        return value;
-    }
 
     bool root_degree(uint32_t expression, uint64_t &degree){
         exact_node current = storage_.node(expression);

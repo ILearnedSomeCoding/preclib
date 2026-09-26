@@ -1,5 +1,5 @@
 #include"../prec_cas.hpp"
-#include"../src/factor_integer.hpp"
+#include"../ntheory/factor_integer.hpp"
 
 #include<cassert>
 #include<cstdio>

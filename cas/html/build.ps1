@@ -38,6 +38,8 @@ $sources = @(
 )
 $sources += Get-ChildItem (Join-Path $root 'cas\src') -Filter '*.cpp' |
     ForEach-Object FullName
+$sources += Get-ChildItem (Join-Path $root 'cas\ntheory') -Filter '*.cpp' |
+    ForEach-Object FullName
 $sources += Get-ChildItem (Join-Path $root 'src') -Filter '*.cpp' |
     ForEach-Object FullName
 

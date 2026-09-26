@@ -10,6 +10,7 @@
 #include<cstdint>
 #include<future>
 #include<mutex>
+#include<memory>
 #include<queue>
 #include<string>
 #include<thread>
@@ -125,6 +126,30 @@ static uint32_t small_pow_mod(uint32_t base, uint32_t exponent,
         if(exponent) base = (uint32_t)((uint64_t)base * base % modulus);
     }
     return (uint32_t)result;
+}
+
+// Factor-base divisors fit in 32 bits. These loops avoid allocating a big
+// integer for each remainder and keep the quotient in the candidate buffer.
+static uint32_t remainder_u32(const precn_t &value, uint32_t divisor){
+    uint64_t remainder = 0;
+    for(size_t i = value.rsiz; i-- > 0;){
+        remainder = ((remainder << 32) | (value.a[i] >> 32)) % divisor;
+        remainder = ((remainder << 32) | (uint32_t)value.a[i]) % divisor;
+    }
+    return (uint32_t)remainder;
+}
+
+static void divide_exact_u32(precn_t &value, uint32_t divisor){
+    uint64_t remainder = 0;
+    for(size_t i = value.rsiz; i-- > 0;){
+        uint64_t digit = (remainder << 32) | (value.a[i] >> 32);
+        uint64_t high = digit / divisor;
+        remainder = digit % divisor;
+        digit = (remainder << 32) | (uint32_t)value.a[i];
+        value.a[i] = (high << 32) | (digit / divisor);
+        remainder = digit % divisor;
+    }
+    while(value.rsiz && !value.a[value.rsiz - 1]) --value.rsiz;
 }
 
 static uint32_t small_inverse_mod(uint32_t value, uint32_t modulus){
@@ -480,25 +505,87 @@ precn_t cas_pollard_rho_factor(const precn_t &value,
     return precn_t();
 }
 
+struct ecm_plan{
+    struct stage2_entry{ uint32_t giant, baby; };
+    std::vector<uint32_t> primes;
+    std::vector<uint64_t> powers;
+    std::vector<stage2_entry> continuation;
+    uint32_t maximum_baby = 0;
+    ecm_plan(uint32_t b1, uint32_t b2) : primes(primes_to(std::max(b1, b2))){
+        uint32_t last_giant = UINT32_MAX;
+        std::array<bool, 106> seen{};
+        for(uint32_t p : primes){
+            if(p <= b1){
+                uint64_t power = p;
+                while(power <= b1 / p) power *= p;
+                powers.push_back(power);
+            }else{
+                uint32_t giant = (uint32_t)(((uint64_t)p + 105) / 210);
+                uint64_t center = (uint64_t)giant * 210;
+                uint32_t baby = (uint32_t)(p >= center ? p - center : center - p);
+                if(giant != last_giant){ seen.fill(false); last_giant = giant; }
+                if(seen[baby]) continue;
+                seen[baby] = true;
+                continuation.push_back({giant, baby});
+                maximum_baby = std::max(maximum_baby, baby);
+            }
+        }
+    }
+};
+
+static precn_t ecm_stage1(ecm_mont_point &point, const ecm_mont::number &a24,
+                          const ecm_mont &mont, const precn_t &modulus,
+                          const ecm_plan &plan, std::atomic<bool> *stop,
+                          bool &cancelled){
+    for(size_t begin = 0; begin < plan.powers.size(); begin += 4096){
+        ecm_mont_point checkpoint = point;
+        size_t end = std::min(begin + 4096, plan.powers.size());
+        for(size_t i = begin; i < end; ++i){
+            if(stop && stop->load(std::memory_order_relaxed)){
+                cancelled = true;
+                return precn_t();
+            }
+            point = ecm_mont_multiply(point, plan.powers[i], a24, mont);
+        }
+        precn_t factor = gcd(mont.decode(point.z), modulus);
+        if(is_one(factor)) continue;
+        if(factor != modulus) return factor;
+        // A batch may annihilate both prime components at different steps.
+        // Replay individual prime multipliers, including inside prime powers.
+        point = checkpoint;
+        for(size_t i = begin; i < end; ++i){
+            uint64_t power = plan.powers[i];
+            while(power > 1){
+                point = ecm_mont_multiply(point, plan.primes[i], a24, mont);
+                power /= plan.primes[i];
+                factor = gcd(mont.decode(point.z), modulus);
+                if(!is_one(factor)) return factor;
+            }
+        }
+        return modulus;
+    }
+    return plan.powers.empty() ? gcd(mont.decode(point.z), modulus) : precn_t(1);
+}
+
 static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                                 unsigned curves, uint32_t stage1_bound,
                                 uint32_t stage2_bound,
                                 std::atomic<bool> *stop,
-                                ecm_progress_state *progress = nullptr){
+                                ecm_progress_state *progress = nullptr,
+                                const ecm_plan *shared_plan = nullptr){
     auto publish = [&](precn_t factor) -> precn_t{
         if(stop) stop->store(true, std::memory_order_relaxed);
         return factor;
     };
     if(mod_u64(value, 2).rsiz == 0) return publish(precn_t(2));
     if(stage2_bound < stage1_bound) stage2_bound = stage1_bound;
-    std::vector<uint32_t> primes = primes_to(stage2_bound);
-    std::vector<uint64_t> stage1_powers;
-    for(uint32_t prime : primes){
-        if(prime > stage1_bound) break;
-        uint64_t power = prime;
-        while(power <= stage1_bound / prime) power *= prime;
-        stage1_powers.push_back(power);
+    std::unique_ptr<ecm_plan> owned_plan;
+    if(!shared_plan){
+        owned_plan.reset(new ecm_plan(stage1_bound, stage2_bound));
+        shared_plan = owned_plan.get();
     }
+    const auto &primes = shared_plan->primes;
+    const auto &stage1_powers = shared_plan->powers;
     for(unsigned local_curve = 0; local_curve < curves; ++local_curve){
         if(stop && stop->load(std::memory_order_relaxed)) break;
         ecm_curve_finished completed_curve{progress};
@@ -536,16 +623,10 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
             ecm_mont_point fast_point{
                 montgomery.encode(point.x), montgomery.encode(point.z)};
             ecm_mont::number fast_a24 = montgomery.encode(a24);
-            for(uint64_t power : stage1_powers){
-                if(stop && stop->load(std::memory_order_relaxed)){
-                    completed_curve.complete = false;
-                    return precn_t();
-                }
-                fast_point = ecm_mont_multiply(
-                    fast_point, power, fast_a24, montgomery);
-            }
-            precn_t fast_z = montgomery.decode(fast_point.z);
-            precn_t factor = gcd(fast_z, value);
+            bool cancelled = false;
+            precn_t factor = ecm_stage1(fast_point, fast_a24, montgomery,
+                                        value, *shared_plan, stop, cancelled);
+            if(cancelled){ completed_curve.complete = false; return precn_t(); }
             if(factor > precn_t(1) && factor < value)
                 return publish(std::move(factor));
             if(factor == value || stage2_bound == stage1_bound) continue;
@@ -556,7 +637,18 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
             const uint32_t step = 210;
             std::array<ecm_mont_point, step / 2 + 1> babies;
             std::array<bool, step / 2 + 1> baby_ready{};
-            std::array<bool, step / 2 + 1> used_in_giant{};
+            // Build odd baby points by differential addition, sharing [2]Q.
+            auto twice = ecm_mont_double(fast_point, fast_a24, montgomery);
+            babies[1] = fast_point;
+            baby_ready[1] = true;
+            if(shared_plan->maximum_baby >= 3){
+                babies[3] = ecm_mont_add(twice, fast_point, fast_point, montgomery);
+                baby_ready[3] = true;
+                for(uint32_t r = 5; r <= shared_plan->maximum_baby; r += 2){
+                    babies[r] = ecm_mont_add(babies[r - 2], twice, babies[r - 4], montgomery);
+                    baby_ready[r] = true;
+                }
+            }
             uint32_t current_giant = 0;
             ecm_mont_point step_point = ecm_mont_multiply(
                 fast_point, step, fast_a24, montgomery);
@@ -581,12 +673,10 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                 batch.clear();
                 return precn_t();
             };
-            for(uint32_t prime : primes){
-                if(prime <= stage1_bound) continue;
-                uint32_t giant_index = (prime + step / 2) / step;
-                uint32_t center = giant_index * step;
-                uint32_t baby_index = prime >= center
-                    ? prime - center : center - prime;
+            for(const auto &entry : shared_plan->continuation){
+                uint32_t giant_index = entry.giant;
+                uint64_t center = (uint64_t)giant_index * step;
+                uint32_t baby_index = entry.baby;
                 if(stop && stop->load(std::memory_order_relaxed)){
                     completed_curve.complete = false;
                     return precn_t();
@@ -607,11 +697,7 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                             ++current_giant;
                         }
                     }
-                    used_in_giant.fill(false);
                 }
-                // kD-r and kD+r give the same projective cross product.
-                if(used_in_giant[baby_index]) continue;
-                used_in_giant[baby_index] = true;
                 if(!baby_ready[baby_index]){
                     babies[baby_index] = ecm_mont_multiply(fast_point, baby_index,
                                                          fast_a24, montgomery);
@@ -633,10 +719,7 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
             if(factor.rsiz) return publish(std::move(factor));
             continue;
         }else{
-        for(uint32_t prime : primes){
-            if(prime > stage1_bound) break;
-            uint64_t power = prime;
-            while(power <= stage1_bound / prime) power *= prime;
+        for(uint64_t power : stage1_powers){
             point = ecm_multiply(point, power, a24, value);
         }
         precn_t factor = gcd(point.z, value);
@@ -696,17 +779,19 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
 precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
                        uint32_t stage1_bound, uint32_t stage2_bound){
     if(value < precn_t(4) || !curves) return precn_t();
+    if(!(value.a[0] & 1)) return precn_t(2);
+    ecm_plan plan(stage1_bound, stage2_bound);
     ecm_progress_state progress{active_factor_progress, curves};
     progress.stage = "ECM B1=" + std::to_string(stage1_bound) +
                      " B2=" + std::to_string(stage2_bound) + " curves";
     factor_report(progress.stage.c_str(), 0, curves);
 #ifdef __EMSCRIPTEN__
     return ecm_factor_range(value, 0, curves,
-                            stage1_bound, stage2_bound, nullptr, &progress);
+                            stage1_bound, stage2_bound, nullptr, &progress, &plan);
 #else
     if(curves < 4)
         return ecm_factor_range(value, 0, curves,
-                                stage1_bound, stage2_bound, nullptr, &progress);
+                                stage1_bound, stage2_bound, nullptr, &progress, &plan);
     unsigned workers = std::thread::hardware_concurrency();
     if(workers == 0) workers = 1;
     workers = std::min<unsigned>(workers, 4);
@@ -722,7 +807,7 @@ precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
         jobs.push_back(std::async(std::launch::async,
             [&, begin, count]{
                 return ecm_factor_range(value, begin, count,
-                                        stage1_bound, stage2_bound, &stop, &progress);
+                                        stage1_bound, stage2_bound, &stop, &progress, &plan);
             }));
     }
     precn_t factor;
@@ -1054,8 +1139,12 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                 uint32_t delta = cached_gamma_mod[index * factors_in_a + changed];
                 int64_t shift = subtract_delta ? (int64_t)delta : -(int64_t)delta;
                 if(wrapped) shift += subtract_delta ? -1 : 1;
-                roots[0] = (uint32_t)(((int64_t)root1[index] + shift + prime) % prime);
-                roots[1] = (uint32_t)(((int64_t)root2[index] + shift + prime) % prime);
+                for(unsigned which = 0; which < 2; ++which){
+                    int64_t root = (which ? root2[index] : root1[index]) + shift;
+                    if(root < 0) root += prime;
+                    if(root >= prime) root -= prime;
+                    roots[which] = (uint32_t)root;
+                }
             }else{
             precn_t residue = mod_u64(b, prime);
             uint32_t bv = residue.rsiz ? (uint32_t)residue.a[0] : 0;
@@ -1073,7 +1162,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
             for(unsigned which = 0; which < 2; ++which){
                 uint32_t root = roots[which];
                 if(which && root == roots[0]) continue;
-                size_t position = (root + interval_mod) % prime;
+                size_t position = root + interval_mod;
+                if(position >= prime) position -= prime;
                 for(; position < sieve_size; position += prime){
                     unsigned sum = sieve[position] + weight;
                     sieve[position] = (uint8_t)std::min<unsigned>(sum, 255);
@@ -1103,7 +1193,8 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
             uint32_t roots[2] = {root1[index], root2[index]};
             for(unsigned which = 0; which < 2; ++which){
                 if(which && roots[which] == roots[0]) continue;
-                size_t position = (roots[which] + interval_mod) % prime;
+                size_t position = roots[which] + interval_mod;
+                if(position >= prime) position -= prime;
                 for(; position < sieve_size; position += prime){
                     int32_t slot = candidate_slot[position];
                     if(slot < 0) continue;
@@ -1136,25 +1227,28 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                 }
                 continue;
             }
-            precn_t remainder = numerator % a;
-            if(remainder.rsiz) continue;
+#ifdef CAS_SIQS_DIAGNOSTICS
+            if((numerator % a).rsiz) std::abort();
+#endif
+            // B^2 == N (mod A), so every candidate numerator is divisible by A.
             precn_t smooth = numerator / a;
             std::vector<uint16_t> powers = a_powers;
             // Primes dividing A have a linear root in Q, not the two roots
             // obtained by inverting A. Their extra powers must still be removed.
             for(size_t index : selected){
                 uint32_t prime = base[index].prime;
-                while(smooth.rsiz && mod_u64(smooth, prime).rsiz == 0){
-                    smooth = div_u64(smooth, prime);
+                while(smooth.rsiz && remainder_u32(smooth, prime) == 0){
+                    divide_exact_u32(smooth, prime);
                     ++powers[index + 1];
                 }
             }
             for(int32_t hit = hit_head[candidate_index]; hit >= 0;
                 hit = hit_next[(size_t)hit]){
                 size_t index = hit_prime[(size_t)hit];
+                if(!cached_a_inverse[index]) continue; // Already removed above.
                 uint32_t prime = base[index].prime;
-                while(smooth.rsiz && mod_u64(smooth, prime).rsiz == 0){
-                    smooth = div_u64(smooth, prime);
+                while(smooth.rsiz && remainder_u32(smooth, prime) == 0){
+                    divide_exact_u32(smooth, prime);
                     ++powers[index + 1];
                 }
             }
