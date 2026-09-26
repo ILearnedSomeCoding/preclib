@@ -256,6 +256,11 @@ class parser{
         if(name == "expand") return state_.context.expand(argument);
         if(name == "factor") return state_.context.factor(argument);
         if(name == "factorint") return state_.context.factor_integer(argument);
+        if(name == "aprcl" || name == "isprime") return state_.context.is_prime(argument);
+        if(name == "aprcl_progress"){
+            console_factor_progress progress;
+            return state_.context.is_prime(argument);
+        }
         if(name == "factorint_progress"){
             console_factor_progress progress;
             return state_.context.factor_integer(argument);
@@ -559,6 +564,7 @@ static const char *help_text(){
         "algebra: sqrt, abs, simplify, expand, factor, factorint, factorint_progress, gcd,\n"
         "         groebner({polynomials}, {variables}), trigexpand, trigreduce,\n"
         "         subs(expression, target, replacement), is_poly(expression[, vars])\n"
+        "number theory: aprcl, aprcl_progress, isprime (1=proved prime, 0=composite)\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
         "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
         "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"

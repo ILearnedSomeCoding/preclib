@@ -1,6 +1,7 @@
 #include"../prec_cas.hpp"
 #include"../ntheory/factor_integer.hpp"
 #include"../ntheory/integer_properties.hpp"
+#include"../ntheory/aprcl.hpp"
 
 #include<algorithm>
 #include<cmath>
@@ -10116,6 +10117,19 @@ exact_expr exact_context::factor(const exact_expr &expression){
         throw std::invalid_argument("exact expression belongs to a different context");
     exact_factor_simplifier factorer(*storage_, true);
     return exact_expr(storage_, factorer.simplify(expression.root_));
+}
+exact_expr exact_context::is_prime(const exact_expr &expression){
+    if(!expression.valid() || expression.storage_ != storage_)
+        throw std::invalid_argument("exact expression belongs to a different context");
+    if(!expression.is_value() || !expression.value().is_integer())
+        throw std::invalid_argument("aprcl/isprime requires an exact integer");
+    // Copy before creating the result, which may grow the arena's value table.
+    precz_t integer_value = expression.value().integer();
+    if(integer_value.is_negative()) return integer(0);
+    auto result = cas_aprcl(integer_value.magnitude());
+    if(result.status == cas_primality_status::unknown)
+        throw std::runtime_error("APR-CL proof incomplete: " + result.reason);
+    return integer(result.status == cas_primality_status::prime ? 1 : 0);
 }
 exact_expr exact_context::factor_integer(const exact_expr &expression){
     if(!expression.valid() || expression.storage_ != storage_)

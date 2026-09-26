@@ -198,6 +198,13 @@ Hermite/部分分式归约；指数扩张求解 `R' + g'R = f`，并对有理 `f
 Rothstein-Trager resultant/RootSum 表示，任意代数扩张和任意嵌套微分塔也仍可能
 保留为 `integrate(...)`。
 
+### 素性证明
+
+`aprcl(n)` 或 `isprime(n)` 使用 APR-CL：已证明素数返回 `1`，合数返回 `0`。
+参数必须是精确整数；预算不足时报错，不返回“可能是素数”。
+`aprcl_progress(n)` 和 `!progress aprcl(n)` 可显示证明阶段。
+实现与预算说明见 [APRCL.md](ntheory/APRCL.md)。
+
 ## 8. 假设和调试
 
 变量假设：

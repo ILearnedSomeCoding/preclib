@@ -302,6 +302,7 @@ public:
     exact_expr groebner(const std::vector<exact_expr> &polynomials,
                         const std::vector<exact_expr> &variables);
     exact_expr factor_integer(const exact_expr &expression);
+    exact_expr is_prime(const exact_expr &expression);
     exact_expr gcd(const exact_expr &left, const exact_expr &right);
     exact_expr simplify(const exact_expr &expression,
                         size_t automatic_expansion_terms = 64);
@@ -531,6 +532,7 @@ public:
     expr expand(const expr &value, size_t maximum_terms = 100000);
     expr factor(const expr &value);
     expr factor_integer(const expr &value);
+    expr is_prime(const expr &value);
     expr gcd(const expr &left, const expr &right);
 };
 

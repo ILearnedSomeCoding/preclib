@@ -162,6 +162,12 @@ expr expr_context::factor(const expr &value){
         throw std::invalid_argument("expression belongs to a different context");
     return expr(state_, state_->context.factor(value.node_));
 }
+expr expr_context::is_prime(const expr &value){
+    require_state(value);
+    if(value.state_ != state_)
+        throw std::invalid_argument("expression belongs to a different context");
+    return expr(state_, state_->context.is_prime(value.node_));
+}
 expr expr_context::factor_integer(const expr &value){
     require_state(value);
     if(value.state_ != state_)

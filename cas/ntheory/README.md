@@ -2,6 +2,7 @@
 
 - `factor_integer.hpp/.cpp`：素性测试、Pollard rho、ECM、QS、SIQS、整数分解分派及进度回调。
 - `integer_properties.hpp/.cpp`：精确整数立方根、n 次根、小整数平方因子提取和最小素因子。
+- `aprcl.hpp/.cpp`：APR-CL 素性证明，返回素数、合数或未完成，详见 [APRCL.md](APRCL.md)。
 
 表达式层保留参数检查、符号结构和结果打印。大整数库共用的 `src/gcd.cpp`、乘除法和开方仍属于基础库；本模块通过 `prec.hpp` 使用它们。
 

@@ -920,6 +920,12 @@ int main(){
     assert(context.factor_integer(context.integer(-12)).to_string() ==
            "{-1, 2^2, 3}");
     assert(context.factor_integer(context.integer(1)).to_string() == "{}");
+    assert(context.is_prime(context.integer(0)) == context.integer(0));
+    assert(context.is_prime(context.integer(-17)) == context.integer(0));
+    assert(context.is_prime(context.integer(1009)) == context.integer(1));
+    assert(context.is_prime(context.integer(1000036000099ULL)) == context.integer(0));
+    assert(context.is_prime(context.value(numeric_value(precz_t(
+               "170141183460469231731687303715884105727")))) == context.integer(1));
     assert(context.factor_integer(context.integer(UINT64_C(1000036000099)))
                .to_string() == "{1000003, 1000033}");
     assert(context.factor_integer(context.value(numeric_value(
