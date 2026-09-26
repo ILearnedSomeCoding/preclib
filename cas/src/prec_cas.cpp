@@ -5499,23 +5499,47 @@ risch_result exact_context::integrate_elementary(
            expression.operand_count() < 2)
             return false;
         exact_expr candidate = integer(0);
+        exact_expr remainder = integer(0);
+        size_t unresolved_terms = 0;
+        bool sole_remainder_is_proven_nonelementary = false;
         for(size_t i = 0; i < expression.operand_count(); ++i){
             risch_result term = integrate_elementary(expression.operand(i),
                                                       variable, options);
-            if(term.status != risch_status::elementary ||
-               term.remainder != integer(0))
+            if(term.status != risch_status::elementary &&
+               term.status != risch_status::proven_nonelementary &&
+               term.status != risch_status::unsupported)
                 return false;
             candidate = candidate + term.elementary_part;
-            if(candidate.reachable_node_count() > options.maximum_nodes)
+            if(term.remainder != integer(0)){
+                remainder = remainder + term.remainder;
+                ++unresolved_terms;
+                sole_remainder_is_proven_nonelementary =
+                    unresolved_terms == 1 &&
+                    term.status == risch_status::proven_nonelementary;
+            }
+            if(candidate.reachable_node_count() > options.maximum_nodes ||
+               remainder.reachable_node_count() > options.maximum_nodes)
                 return false;
         }
-        exact_expr error = simplify(expand(
-            differentiate(candidate, variable) - expression, 100000));
+
+        remainder = simplify(remainder);
+        if(candidate == integer(0) && unresolved_terms != 0) return false;
+        exact_expr error = simplify(expand(differentiate(candidate, variable) +
+                                            remainder - expression, 100000));
         if(error != integer(0)) return false;
-        result.status = risch_status::elementary;
+        if(remainder == integer(0))
+            result.status = risch_status::elementary;
+        else if(unresolved_terms == 1 &&
+                sole_remainder_is_proven_nonelementary)
+            result.status = risch_status::proven_nonelementary;
+        else
+            result.status = risch_status::unsupported;
         result.elementary_part = std::move(candidate);
-        result.remainder = integer(0);
-        result.diagnostic.clear();
+        result.remainder = std::move(remainder);
+        result.diagnostic = result.status == risch_status::elementary
+            ? "" : result.status == risch_status::proven_nonelementary
+            ? "one additive remainder is proven non-elementary"
+            : "additive remainder is preserved without a non-elementarity proof";
         return true;
     };
     if(classify_additive_risch_terms()) return result;

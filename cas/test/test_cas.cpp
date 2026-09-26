@@ -280,6 +280,35 @@ int main(){
            risch_status::proven_nonelementary);
     assert(exp_laurent_partial.elementary_part != context.integer(0));
     assert(exp_laurent_partial.remainder != context.integer(0));
+    exact_expr mixed_elementary_and_nonelementary =
+        context.integer(1) / x + exp_x / x;
+    risch_result mixed_partial_integral = context.integrate_elementary(
+        mixed_elementary_and_nonelementary, x);
+    assert(mixed_partial_integral.status ==
+           risch_status::proven_nonelementary);
+    assert(mixed_partial_integral.elementary_part != context.integer(0));
+    exact_expr mixed_partial_error = context.simplify(context.expand(
+        context.differentiate(mixed_partial_integral.elementary_part, x) +
+        mixed_partial_integral.remainder - mixed_elementary_and_nonelementary,
+        100000));
+    if(mixed_partial_error != context.integer(0))
+        std::fprintf(stderr, "mixed Risch: status=%d, part=%s, remainder=%s, error=%s\n",
+            (int)mixed_partial_integral.status,
+            mixed_partial_integral.elementary_part.to_string().c_str(),
+            mixed_partial_integral.remainder.to_string().c_str(),
+            mixed_partial_error.to_string().c_str());
+    assert(mixed_partial_error == context.integer(0));
+    exact_expr two_nonelementary_terms = mixed_elementary_and_nonelementary +
+        context.exponential(context.power(x, context.integer(2)));
+    risch_result multiple_partial_integral = context.integrate_elementary(
+        two_nonelementary_terms, x);
+    assert(multiple_partial_integral.status == risch_status::unsupported);
+    assert(multiple_partial_integral.elementary_part != context.integer(0));
+    assert(context.simplify(context.expand(
+               context.differentiate(multiple_partial_integral.elementary_part,
+                                     x) +
+               multiple_partial_integral.remainder - two_nonelementary_terms,
+               100000)) == context.integer(0));
     assert(context.integrate_elementary(context.natural_logarithm(x), x).status ==
            risch_status::elementary);
     assert(context.integrate_elementary(
