@@ -3236,7 +3236,9 @@ static bool integration_normalize_rational(integration_poly &numerator,
 
 static bool integration_solve_linear(
     std::vector<std::vector<numeric_value>> &matrix, size_t columns,
-    std::vector<numeric_value> &solution){
+    std::vector<numeric_value> &solution,
+    std::vector<std::vector<numeric_value>> *kernel = nullptr){
+    if(kernel) kernel->clear();
     const size_t rows = matrix.size();
     size_t pivot_row = 0;
     std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
@@ -3267,10 +3269,100 @@ static bool integration_solve_linear(
     }
     solution.assign(columns, numeric_value(0));
     for(size_t column = 0; column < columns; ++column){
-        if(pivot_for_column[column] == SIZE_MAX) return false;
+        if(pivot_for_column[column] == SIZE_MAX){
+            if(!kernel) return false;
+            continue;
+        }
         solution[column] = matrix[pivot_for_column[column]][columns];
     }
+    if(kernel){
+        kernel->clear();
+        for(size_t free_column = 0; free_column < columns; ++free_column){
+            if(pivot_for_column[free_column] != SIZE_MAX) continue;
+            std::vector<numeric_value> vector(columns, numeric_value(0));
+            vector[free_column] = numeric_value(1);
+            for(size_t column = 0; column < columns; ++column)
+                if(pivot_for_column[column] != SIZE_MAX)
+                    vector[column] = numeric_value(0) -
+                        matrix[pivot_for_column[column]][free_column];
+            kernel->push_back(std::move(vector));
+        }
+    }
     return true;
+}
+
+struct integration_parametric_rde_basis{
+    integration_poly solution;
+    std::vector<numeric_value> constants;
+};
+
+enum class integration_parametric_rde_status{
+    solved, resource_limit, verification_failed
+};
+
+// Full polynomial solution space over Q. For nonzero a, the leading term
+// bounds deg(y) by max deg(b_i)-deg(a). For a=0 add one integration degree;
+// its constant homogeneous solution is retained as a free matrix column.
+static integration_parametric_rde_status integration_parametric_rde_polynomial(
+    integration_poly a, std::vector<integration_poly> right,
+    std::vector<integration_parametric_rde_basis> &basis,
+    size_t maximum_matrix_entries = 65536){
+    basis.clear();
+    integration_trim(a);
+    size_t maximum_degree = 0;
+    for(auto &b : right){
+        integration_trim(b);
+        maximum_degree = std::max(maximum_degree, b.size() - 1);
+    }
+    bool derivative_only = integration_zero_poly(a);
+    size_t degree_a = a.size() - 1;
+    size_t degree_y = derivative_only ? maximum_degree + 1 :
+        maximum_degree >= degree_a ? maximum_degree - degree_a : 0;
+    size_t y_columns = degree_y + 1;
+    if(right.size() > SIZE_MAX - y_columns - 1)
+        return integration_parametric_rde_status::resource_limit;
+    size_t columns = y_columns + right.size();
+    size_t rows = std::max(maximum_degree + 1, degree_y + degree_a + 1);
+    if(columns + 1 > maximum_matrix_entries ||
+       rows > maximum_matrix_entries / (columns + 1))
+        return integration_parametric_rde_status::resource_limit;
+    std::vector<std::vector<numeric_value>> matrix(rows,
+        std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t column = 0; column < y_columns; ++column){
+        if(column) matrix[column - 1][column] = numeric_value(column);
+        for(size_t i = 0; i < a.size(); ++i)
+            matrix[i + column][column] = matrix[i + column][column] + a[i];
+    }
+    for(size_t j = 0; j < right.size(); ++j)
+        for(size_t i = 0; i < right[j].size(); ++i)
+            matrix[i][y_columns + j] = numeric_value(0) - right[j][i];
+    std::vector<numeric_value> particular;
+    std::vector<std::vector<numeric_value>> kernel;
+    if(!integration_solve_linear(matrix, columns, particular, &kernel))
+        return integration_parametric_rde_status::verification_failed;
+    for(const auto &vector : kernel){
+        integration_parametric_rde_basis entry;
+        entry.solution.assign(vector.begin(), vector.begin() + y_columns);
+        entry.constants.assign(vector.begin() + y_columns, vector.end());
+        integration_trim(entry.solution);
+        integration_poly rhs{numeric_value(0)};
+        for(size_t i = 0; i < right.size(); ++i){
+            integration_poly term = right[i];
+            for(auto &v : term) v = v * entry.constants[i];
+            rhs = integration_add(rhs, term);
+        }
+        integration_trim(rhs);
+        integration_poly lhs = integration_add(
+            integration_derivative_poly(entry.solution),
+            integration_mul(a, entry.solution));
+        integration_trim(lhs);
+        if(lhs != rhs){
+            basis.clear();
+            return integration_parametric_rde_status::verification_failed;
+        }
+        basis.push_back(std::move(entry));
+    }
+    return integration_parametric_rde_status::solved;
 }
 
 enum class integration_rde_status{
@@ -3304,24 +3396,18 @@ static integration_rde_result integration_rde_polynomial(
     size_t degree_b = b.size() - 1;
     if(degree_a && degree_b < degree_a)
         return {integration_rde_status::no_polynomial_solution, {}};
-    size_t degree_y = degree_a ? degree_b - degree_a : degree_b;
-    size_t columns = degree_y + 1;
-    size_t rows = std::max(degree_b + 1, degree_y + degree_a + 1);
-    std::vector<std::vector<numeric_value>> matrix(
-        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
-    for(size_t column = 0; column < columns; ++column){
-        if(column)
-            matrix[column - 1][column] =
-                matrix[column - 1][column] + numeric_value(column);
-        for(size_t i = 0; i < a.size(); ++i)
-            matrix[i + column][column] =
-                matrix[i + column][column] + a[i];
-    }
-    for(size_t row = 0; row < b.size(); ++row)
-        matrix[row][columns] = b[row];
-    integration_poly solution;
-    if(!integration_solve_linear(matrix, columns, solution))
+    std::vector<integration_parametric_rde_basis> basis;
+    auto state = integration_parametric_rde_polynomial(a, {b}, basis, SIZE_MAX);
+    if(state != integration_parametric_rde_status::solved)
+        return {integration_rde_status::verification_failed, {}};
+    auto selected = std::find_if(basis.begin(), basis.end(),
+        [](const integration_parametric_rde_basis &entry){
+            return !entry.constants[0].is_zero();
+        });
+    if(selected == basis.end())
         return {integration_rde_status::no_polynomial_solution, {}};
+    integration_poly solution = selected->solution;
+    for(auto &value : solution) value = value / selected->constants[0];
     integration_poly reconstructed = integration_add(
         integration_derivative_poly(solution), integration_mul(a, solution));
     integration_trim(reconstructed);
