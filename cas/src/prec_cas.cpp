@@ -4147,6 +4147,105 @@ static exact_expr integration_hyperexponential_polynomial(
         context.exponential(inner);
 }
 
+struct integration_parametric_rational_basis{
+    integration_poly numerator, denominator;
+    std::vector<numeric_value> constants;
+};
+
+// Polynomial a has no finite poles. A rational solution's pole order is
+// at most one less than the maximal right-hand pole order, uniformly over
+// all constant combinations. Keep the entire kernel, including cancellations.
+static integration_parametric_rde_status integration_parametric_rde_rational(
+    integration_poly a,
+    std::vector<std::pair<integration_poly, integration_poly>> right,
+    std::vector<integration_parametric_rational_basis> &basis,
+    size_t maximum_matrix_entries = 65536){
+    basis.clear();
+    integration_trim(a);
+    integration_poly common{numeric_value(1)};
+    int64_t degree_f = -1;
+    for(auto &term : right){
+        if(!integration_normalize_rational(term.first, term.second))
+            return integration_parametric_rde_status::verification_failed;
+        if(!integration_zero_poly(term.first))
+            degree_f = std::max(degree_f,
+                (int64_t)term.first.size() - (int64_t)term.second.size());
+        integration_poly divisor = integration_gcd_poly(common, term.second), quotient;
+        if(!integration_divide_poly(term.second, divisor, quotient))
+            return integration_parametric_rde_status::verification_failed;
+        if(common.size() > maximum_matrix_entries ||
+           quotient.size() > maximum_matrix_entries - common.size())
+            return integration_parametric_rde_status::resource_limit;
+        common = integration_mul(common, quotient);
+    }
+    integration_poly h = integration_gcd_poly(common,
+        integration_derivative_poly(common));
+    int64_t polynomial_degree = integration_zero_poly(a) ? degree_f + 1 :
+        degree_f - (int64_t)a.size() + 1;
+    size_t degree_z = h.size() - 1 + (size_t)std::max((int64_t)0, polynomial_degree);
+    size_t y_columns = degree_z + 1;
+    if(y_columns >= maximum_matrix_entries ||
+       right.size() >= maximum_matrix_entries - y_columns)
+        return integration_parametric_rde_status::resource_limit;
+    size_t columns = y_columns + right.size();
+    integration_poly weight = integration_mul(common, h);
+    integration_poly diagonal = integration_mul(common, integration_sub(
+        integration_mul(a, h), integration_derivative_poly(h)));
+    integration_poly h_squared = integration_mul(h, h);
+    size_t rows = std::max(weight.size(), diagonal.size()) + degree_z;
+    std::vector<integration_poly> rhs;
+    for(const auto &term : right){
+        integration_poly quotient;
+        if(!integration_divide_poly(common, term.second, quotient))
+            return integration_parametric_rde_status::verification_failed;
+        rhs.push_back(integration_mul(integration_mul(term.first, quotient), h_squared));
+        rows = std::max(rows, rhs.back().size());
+    }
+    if(rows > maximum_matrix_entries / (columns + 1))
+        return integration_parametric_rde_status::resource_limit;
+    std::vector<std::vector<numeric_value>> matrix(rows,
+        std::vector<numeric_value>(columns + 1, numeric_value(0)));
+    for(size_t k = 0; k < y_columns; ++k){
+        if(k) for(size_t i = 0; i < weight.size(); ++i)
+            matrix[i + k - 1][k] = weight[i] * numeric_value(k);
+        for(size_t i = 0; i < diagonal.size(); ++i)
+            matrix[i + k][k] = matrix[i + k][k] + diagonal[i];
+    }
+    for(size_t j = 0; j < rhs.size(); ++j)
+        for(size_t i = 0; i < rhs[j].size(); ++i)
+            matrix[i][y_columns + j] = numeric_value(0) - rhs[j][i];
+    std::vector<numeric_value> particular;
+    std::vector<std::vector<numeric_value>> kernel;
+    if(!integration_solve_linear(matrix, columns, particular, &kernel))
+        return integration_parametric_rde_status::verification_failed;
+    for(const auto &vector : kernel){
+        integration_poly z(vector.begin(), vector.begin() + y_columns);
+        integration_trim(z);
+        integration_poly lhs = integration_add(integration_mul(weight,
+            integration_derivative_poly(z)), integration_mul(diagonal, z));
+        integration_poly target{numeric_value(0)};
+        for(size_t j = 0; j < rhs.size(); ++j){
+            integration_poly term = rhs[j];
+            for(auto &v : term) v = v * vector[y_columns + j];
+            target = integration_add(target, term);
+        }
+        integration_trim(lhs);
+        integration_trim(target);
+        if(lhs != target){
+            basis.clear();
+            return integration_parametric_rde_status::verification_failed;
+        }
+        integration_parametric_rational_basis entry{z, h,
+            std::vector<numeric_value>(vector.begin() + y_columns, vector.end())};
+        if(!integration_normalize_rational(entry.numerator, entry.denominator)){
+            basis.clear();
+            return integration_parametric_rde_status::verification_failed;
+        }
+        basis.push_back(std::move(entry));
+    }
+    return integration_parametric_rde_status::solved;
+}
+
 struct integration_rational_rde_result{
     integration_rde_status status;
     integration_poly numerator;
@@ -4163,55 +4262,17 @@ static integration_rational_rde_result integration_rde_rational(
     integration_trim(a);
     if(integration_zero_poly(a))
         return {integration_rde_status::verification_failed, {}, {}};
-    integration_poly bound = integration_gcd_poly(
-        q, integration_derivative_poly(q));
-    integration_poly bound_derivative = integration_derivative_poly(bound);
-    int64_t degree_f = (int64_t)p.size() - (int64_t)q.size();
-    int64_t degree_a = (int64_t)a.size() - 1;
-    size_t polynomial_degree = degree_f > degree_a
-        ? (size_t)(degree_f - degree_a) : 0;
-    size_t degree_z = bound.size() - 1 + polynomial_degree;
-    size_t columns = degree_z + 1;
-
-    std::vector<integration_poly> matrix_columns;
-    matrix_columns.reserve(columns);
-    size_t rows = 1;
-    for(size_t degree = 0; degree < columns; ++degree){
-        integration_poly basis(degree + 1, numeric_value(0));
-        basis[degree] = numeric_value(1);
-        integration_poly differential_numerator = integration_sub(
-            integration_mul(integration_derivative_poly(basis), bound),
-            integration_mul(basis, bound_derivative));
-        differential_numerator = integration_add(differential_numerator,
-            integration_mul(a, integration_mul(basis, bound)));
-        matrix_columns.push_back(integration_mul(q, differential_numerator));
-        rows = std::max(rows, matrix_columns.back().size());
-    }
-    integration_poly rhs = integration_mul(p, integration_mul(bound, bound));
-    rows = std::max(rows, rhs.size());
-    std::vector<std::vector<numeric_value>> matrix(
-        rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
-    for(size_t column = 0; column < columns; ++column)
-        for(size_t row = 0; row < matrix_columns[column].size(); ++row)
-            matrix[row][column] = matrix_columns[column][row];
-    for(size_t row = 0; row < rhs.size(); ++row)
-        matrix[row][columns] = rhs[row];
-    integration_poly solution;
-    if(!integration_solve_linear(matrix, columns, solution))
-        return {integration_rde_status::no_polynomial_solution, {}, bound};
-
-    integration_poly reconstructed = integration_mul(q, integration_add(
-        integration_sub(
-            integration_mul(integration_derivative_poly(solution), bound),
-            integration_mul(solution, bound_derivative)),
-        integration_mul(a, integration_mul(solution, bound))));
-    integration_trim(reconstructed);
-    integration_trim(rhs);
-    if(reconstructed != rhs)
+    std::vector<integration_parametric_rational_basis> basis;
+    auto status = integration_parametric_rde_rational(a, {{p, q}}, basis, SIZE_MAX);
+    if(status != integration_parametric_rde_status::solved)
         return {integration_rde_status::verification_failed, {}, {}};
-    integration_trim(solution);
-    return {integration_rde_status::solved, std::move(solution),
-            std::move(bound)};
+    for(auto &entry : basis){
+        if(entry.constants[0].is_zero()) continue;
+        for(auto &v : entry.numerator) v = v / entry.constants[0];
+        return {integration_rde_status::solved, std::move(entry.numerator),
+                std::move(entry.denominator)};
+    }
+    return {integration_rde_status::no_polynomial_solution, {}, {}};
 }
 
 // Rational part of the Risch differential equation. For an integrand

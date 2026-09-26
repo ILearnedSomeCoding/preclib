@@ -35,6 +35,32 @@ int main(){
     assert(basis[0].constants[0] + basis[0].constants[1] == numeric_value(0));
     assert(integration_parametric_rde_polynomial({numeric_value(1)}, {}, basis) == status::solved);
     assert(basis.empty());
+    std::vector<integration_parametric_rational_basis> rational_basis;
+    assert(integration_parametric_rde_rational({numeric_value(1)},
+        {{{numeric_value(0), numeric_value(1)},
+          {numeric_value(1), numeric_value(2), numeric_value(1)}}},
+        rational_basis) == status::solved);
+    assert(rational_basis.size() == 1);
+    assert((rational_basis[0].numerator == integration_poly{numeric_value(1)}));
+    assert((rational_basis[0].denominator == integration_poly{numeric_value(1), numeric_value(1)}));
+    assert(rational_basis[0].constants[0] == numeric_value(1));
+    assert(integration_parametric_rde_rational({numeric_value(1)},
+        {{{numeric_value(1)}, {numeric_value(0), numeric_value(1)}},
+         {{numeric_value(-1), numeric_value(1)}, {numeric_value(0), numeric_value(1)}}},
+        rational_basis) == status::solved);
+    assert(rational_basis.size() == 1);
+    assert(rational_basis[0].constants[0] == rational_basis[0].constants[1]);
+    assert(integration_parametric_rde_rational({numeric_value(0)},
+        {{{numeric_value(1)}, {numeric_value(0), numeric_value(1)}}},
+        rational_basis) == status::solved);
+    assert(rational_basis.size() == 1 && rational_basis[0].constants[0].is_zero());
+    assert(integration_parametric_rde_rational({numeric_value(1)},
+        {{{numeric_value(1)}, {numeric_value(0), numeric_value(1)}}},
+        rational_basis) == status::solved);
+    assert(rational_basis.empty());
+    assert(integration_parametric_rde_rational({numeric_value(1)},
+        {{{numeric_value(1)}, {numeric_value(1)}}}, rational_basis, 1) == status::resource_limit);
+    assert(rational_basis.empty());
     assert(integration_parametric_rde_polynomial({numeric_value(0)}, {}, basis) == status::solved);
     assert(basis.size() == 1);
     assert(integration_parametric_rde_polynomial({numeric_value(1)},
