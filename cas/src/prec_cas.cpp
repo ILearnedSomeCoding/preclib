@@ -3607,14 +3607,13 @@ static exact_expr integration_expr_poly_expr(
 
 static bool integration_laurent_monomial(
     const exact_expr &expression, const exact_expr &variable,
-    numeric_value &coefficient, int64_t &exponent){
+    numeric_value &coefficient, numeric_value &exponent){
     if(expression.is_value() && !expression.value().is_approximate()){
         coefficient = coefficient * expression.value();
         return true;
     }
     if(expression == variable){
-        if(exponent == INT64_MAX) return false;
-        ++exponent;
+        exponent = exponent + numeric_value(1);
         return true;
     }
     if(expression.operation() == exact_opcode::multiply){
@@ -3624,14 +3623,28 @@ static bool integration_laurent_monomial(
                 return false;
         return true;
     }
-    if(expression.operation() == exact_opcode::power &&
+    if(expression.operation() == exact_opcode::square_root &&
        expression.operand(0) == variable){
-        int64_t power = 0;
-        if(!integration_signed_exponent(expression.operand(1), power) ||
-           (power > 0 && exponent > INT64_MAX - power) ||
-           (power < 0 && exponent < INT64_MIN - power)) return false;
-        exponent += power;
+        exponent = exponent + numeric_value(
+            precq_t(precn_t(1), precn_t(2)));
         return true;
+    }
+    if(expression.operation() == exact_opcode::power){
+        const exact_expr &base = expression.operand(0);
+        const exact_expr &power = expression.operand(1);
+        if(!power.is_value() || power.value().is_approximate()) return false;
+        numeric_value power_value = power.value();
+        if(base == variable){
+            exponent = exponent + power_value;
+            return true;
+        }
+        if(base.operation() == exact_opcode::square_root &&
+           base.operand(0) == variable){
+            exponent = exponent + power_value * numeric_value(
+                precq_t(precn_t(1), precn_t(2)));
+            return true;
+        }
+        return false;
     }
     return false;
 }
@@ -3641,7 +3654,7 @@ static bool integration_laurent_monomial(
 // t remains.
 static exact_expr integration_log_laurent_polynomial(
     exact_context &context, const exact_expr &expression,
-    const exact_expr &variable){
+    const exact_expr &variable, size_t maximum_degree){
     exact_expr generator;
     std::unordered_set<uint32_t> seen;
     auto find_generator = [&](auto &&self, const exact_expr &part) -> bool{
@@ -3660,17 +3673,18 @@ static exact_expr integration_log_laurent_polynomial(
         return exact_expr();
     integration_expr_poly coefficients;
     if(!integration_parse_expr_poly(context, expression, generator,
-                                    coefficients) || coefficients.size() > 65)
+                                    coefficients) || coefficients.empty() ||
+       coefficients.size() - 1 > maximum_degree)
         return exact_expr();
     integration_poly polynomial(coefficients.size(), numeric_value(0));
     bool have_exponent = false;
-    int64_t common_exponent = 0;
+    numeric_value common_exponent(0);
     for(size_t i = 0; i < coefficients.size(); ++i){
         exact_expr coefficient_expression = context.simplify(coefficients[i]);
         if(coefficient_expression.is_value() &&
            coefficient_expression.value().is_zero()) continue;
         numeric_value coefficient(1);
-        int64_t exponent = 0;
+        numeric_value exponent(0);
         if(!integration_laurent_monomial(coefficient_expression, variable,
                                          coefficient, exponent))
             return exact_expr();
@@ -3678,17 +3692,21 @@ static exact_expr integration_log_laurent_polynomial(
             common_exponent = exponent;
             have_exponent = true;
         }else if(exponent != common_exponent) return exact_expr();
-        polynomial[i] = coefficient;
+        polynomial[i] = std::move(coefficient);
     }
     if(!have_exponent) return context.integer(0);
     integration_poly q;
-    if(common_exponent == -1){
+    if(common_exponent == numeric_value(-1)){
         q.assign(polynomial.size() + 1, numeric_value(0));
         for(size_t i = 0; i < polynomial.size(); ++i)
             q[i + 1] = polynomial[i] / numeric_value(i + 1);
+        for(size_t i = 0; i < polynomial.size(); ++i)
+            if(q[i + 1] * numeric_value(i + 1) != polynomial[i])
+                return exact_expr();
         return integration_poly_expr(context, q, generator);
     }
-    numeric_value lambda(common_exponent + 1);
+    numeric_value lambda = common_exponent + numeric_value(1);
+    if(lambda.is_zero()) return exact_expr();
     q.assign(polynomial.size(), numeric_value(0));
     for(size_t i = polynomial.size(); i-- > 0;){
         numeric_value rhs = polynomial[i];
@@ -3696,8 +3714,14 @@ static exact_expr integration_log_laurent_polynomial(
             rhs = rhs - numeric_value(i + 1) * q[i + 1];
         q[i] = rhs / lambda;
     }
+    for(size_t i = 0; i < polynomial.size(); ++i){
+        numeric_value reconstructed = lambda * q[i];
+        if(i + 1 < q.size())
+            reconstructed = reconstructed + numeric_value(i + 1) * q[i + 1];
+        if(reconstructed != polynomial[i]) return exact_expr();
+    }
     exact_expr factor = context.power(variable,
-                                      context.integer(common_exponent + 1));
+        context.value(lambda));
     return factor * integration_poly_expr(context, q, generator);
 }
 
@@ -5370,9 +5394,17 @@ risch_result exact_context::integrate_elementary(
         if(recursive_primitive_candidate.valid() &&
            verify_candidate(recursive_primitive_candidate)) return true;
         exact_expr primitive_candidate = integration_log_laurent_polynomial(
-            *this, expression, variable);
-        if(primitive_candidate.valid() &&
-           verify_candidate(primitive_candidate)) return true;
+            *this, expression, variable, options.maximum_degree);
+        if(primitive_candidate.valid()){
+            // This branch verifies the exact coefficient RDE in Q before
+            // constructing x^(r+1)*Q(log(x)); its chain-rule identity is the
+            // certificate, including fractional powers outside Q(x).
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(primitive_candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
         if(expression.operation() == exact_opcode::power &&
            expression.operand(1) == integer(2)){
             exact_expr base = expression.operand(0);

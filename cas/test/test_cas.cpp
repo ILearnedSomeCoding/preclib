@@ -323,6 +323,51 @@ int main(){
                                   context.integer(2)) +
                     context.integer(2) * context.natural_logarithm(x) +
                     context.integer(3)), x).status == risch_status::elementary);
+    exact_expr half_exponent = context.rational(
+        precq_t(precn_t(1), precn_t(2)));
+    exact_expr third_exponent = context.rational(
+        precq_t(precn_t(1), precn_t(3)));
+    exact_expr fractional_log_integrand = context.power(x, half_exponent) *
+        (context.natural_logarithm(x) + context.integer(1));
+    risch_result fractional_log_result = context.integrate_elementary(
+        fractional_log_integrand, x);
+    assert(fractional_log_result.status == risch_status::elementary);
+    exact_expr log_x_for_fractional = context.natural_logarithm(x);
+    exact_expr fractional_three_halves = context.rational(
+        precq_t(precn_t(3), precn_t(2)));
+    exact_expr fractional_expected = context.power(x, fractional_three_halves) *
+        (context.rational(precq_t(precn_t(2), precn_t(3))) *
+             log_x_for_fractional +
+         context.rational(precq_t(precn_t(2), precn_t(9))));
+    assert(fractional_log_result.elementary_part == fractional_expected);
+    exact_expr reciprocal_root_log_integrand = context.power(
+        context.power(x, half_exponent), context.integer(-1)) *
+        context.natural_logarithm(x);
+    risch_result reciprocal_root_log_result = context.integrate_elementary(
+        reciprocal_root_log_integrand, x);
+    if(reciprocal_root_log_result.status != risch_status::elementary)
+        std::fprintf(stderr, "reciprocal root log: status=%d, diagnostic=%s, f=%s\n",
+            (int)reciprocal_root_log_result.status,
+            reciprocal_root_log_result.diagnostic.c_str(),
+            reciprocal_root_log_integrand.to_string().c_str());
+    assert(reciprocal_root_log_result.status == risch_status::elementary);
+    exact_expr reciprocal_root_expected = context.power(x, half_exponent) *
+        (context.integer(2) * log_x_for_fractional - context.integer(4));
+    assert(reciprocal_root_log_result.elementary_part ==
+           reciprocal_root_expected);
+    exact_expr third_power_log_integrand = context.power(x, third_exponent) *
+        (context.natural_logarithm(x) + context.integer(1));
+    risch_result third_power_log_result = context.integrate_elementary(
+        third_power_log_integrand, x);
+    assert(third_power_log_result.status == risch_status::elementary);
+    exact_expr four_thirds = context.rational(
+        precq_t(precn_t(4), precn_t(3)));
+    exact_expr third_power_expected = context.power(x, four_thirds) *
+        (context.rational(precq_t(precn_t(3), precn_t(4))) *
+             log_x_for_fractional +
+         context.rational(precq_t(precn_t(3), precn_t(16))));
+    assert(context.simplify(third_power_log_result.elementary_part -
+                            third_power_expected) == context.integer(0));
     exact_expr rational_log_primitive =
         context.power(context.natural_logarithm(x), context.integer(2)) /
         (x + context.integer(1));
