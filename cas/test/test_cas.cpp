@@ -490,6 +490,14 @@ int main(){
                context.simplify(context.differentiate(
                    triple_angle_primitive, x)), x).status ==
            risch_status::elementary);
+    exact_expr fortyfold_angle = context.integer(40) * x;
+    exact_expr fortyfold_trig_integrand = context.sine(fortyfold_angle) /
+        (context.integer(1) + context.cosine(fortyfold_angle));
+    risch_options wider_trig_budget;
+    wider_trig_budget.maximum_degree = 128;
+    assert(context.integrate_elementary(fortyfold_trig_integrand, x,
+                                        wider_trig_budget).status ==
+           risch_status::elementary);
     assert(context.integrate_elementary(
                context.integer(1) /
                    (context.integer(1) + context.hyperbolic_sine(x) +

@@ -5522,6 +5522,10 @@ risch_result exact_context::integrate_elementary(
     auto classify_rational_trigonometric_field = [&]() -> bool{
         bool has_circular = false;
         bool has_hyperbolic = false;
+        // A frequency n produces rational polynomials of degree up to 2*n
+        // after the half-angle substitution. Keep this path inside the same
+        // caller-controlled degree budget as the rational integrator.
+        const size_t frequency_budget = degree_budget / 2;
         std::vector<std::pair<exact_expr, int64_t>> generators;
         std::unordered_set<uint32_t> seen;
         auto integer_frequency = [&](const exact_expr &argument,
@@ -5533,8 +5537,9 @@ risch_result exact_context::integrate_elementary(
             integration_poly linear;
             return integration_parse_poly(argument, variable, linear) &&
                 linear.size() == 2 && linear[0].is_zero() &&
-                integer_i64(linear[1], frequency) && frequency >= -32 &&
-                frequency <= 32;
+                integer_i64(linear[1], frequency) &&
+                frequency >= -(int64_t)frequency_budget &&
+                frequency <= (int64_t)frequency_budget;
         };
         auto collect = [&](auto &&self, const exact_expr &part) -> void{
             if(!seen.insert(part.id()).second) return;
@@ -5584,7 +5589,7 @@ risch_result exact_context::integrate_elementary(
                                exact_expr &tangent_value) -> bool{
             int64_t signed_n = frequency;
             size_t n = (size_t)(signed_n < 0 ? -signed_n : signed_n);
-            if(n > 32) return false;
+            if(n > frequency_budget) return false;
             integration_poly sine_numerator, cosine_numerator, denominator;
             if(has_circular){
                 integration_poly real{numeric_value(1)};
