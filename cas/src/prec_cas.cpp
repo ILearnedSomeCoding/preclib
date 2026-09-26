@@ -3649,20 +3649,26 @@ static bool integration_laurent_monomial(
     return false;
 }
 
-// Integrate sum_r x^r P_r(log(x)) by solving Q' + (r+1)Q = P_r in
-// t=log(x). The rational-power groups remain independent over Q.
+// Integrate sum_r x^r P_r(t), t=log(c*x^b), by solving
+// b*Q' + (r+1)Q = P_r. Rational-power groups remain independent over Q.
 static exact_expr integration_log_laurent_polynomial(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, size_t maximum_degree){
     exact_expr generator;
+    numeric_value generator_slope(0);
     std::unordered_set<uint32_t> seen;
     auto find_generator = [&](auto &&self, const exact_expr &part) -> bool{
         if(!seen.insert(part.id()).second) return true;
-        if(part.operation() == exact_opcode::natural_logarithm &&
-           part.operand(0) == variable){
+        if(part.operation() == exact_opcode::natural_logarithm){
+            numeric_value scale(1), slope(0);
+            if(integration_laurent_monomial(part.operand(0), variable,
+                                             scale, slope) &&
+               !scale.is_zero() && !scale.is_negative() && !slope.is_zero()){
             if(generator.valid() && generator != part) return false;
             generator = part;
-            return true;
+                generator_slope = std::move(slope);
+                return true;
+            }
         }
         for(size_t i = 0; i < part.operand_count(); ++i)
             if(!self(self, part.operand(i))) return false;
@@ -3736,9 +3742,11 @@ static exact_expr integration_log_laurent_polynomial(
         if(group.exponent == numeric_value(-1)){
             q.assign(group.polynomial.size() + 1, numeric_value(0));
             for(size_t i = 0; i < group.polynomial.size(); ++i)
-                q[i + 1] = group.polynomial[i] / numeric_value(i + 1);
+                q[i + 1] = group.polynomial[i] /
+                    (generator_slope * numeric_value(i + 1));
             for(size_t i = 0; i < group.polynomial.size(); ++i)
-                if(q[i + 1] * numeric_value(i + 1) != group.polynomial[i])
+                if(q[i + 1] * generator_slope * numeric_value(i + 1) !=
+                   group.polynomial[i])
                     return exact_expr();
             candidate = candidate + integration_poly_expr(context, q,
                                                             generator);
@@ -3750,13 +3758,14 @@ static exact_expr integration_log_laurent_polynomial(
         for(size_t i = group.polynomial.size(); i-- > 0;){
             numeric_value rhs = group.polynomial[i];
             if(i + 1 < q.size())
-                rhs = rhs - numeric_value(i + 1) * q[i + 1];
+                rhs = rhs - generator_slope * numeric_value(i + 1) * q[i + 1];
             q[i] = rhs / lambda;
         }
         for(size_t i = 0; i < group.polynomial.size(); ++i){
             numeric_value reconstructed = lambda * q[i];
             if(i + 1 < q.size())
-                reconstructed = reconstructed + numeric_value(i + 1) * q[i + 1];
+                reconstructed = reconstructed + generator_slope *
+                    numeric_value(i + 1) * q[i + 1];
             if(reconstructed != group.polynomial[i]) return exact_expr();
         }
         exact_expr factor = context.power(variable, context.value(lambda));

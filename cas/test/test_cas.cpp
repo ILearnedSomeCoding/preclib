@@ -392,6 +392,29 @@ int main(){
              context.rational(precq_t(precn_t(9), precn_t(16))));
     assert(context.simplify(mixed_power_log_result.elementary_part -
                             mixed_power_log_expected) == context.integer(0));
+    exact_expr half_log_argument = context.integer(2) *
+                                   context.power(x, half_exponent);
+    exact_expr half_log_generator = context.natural_logarithm(
+        half_log_argument);
+    exact_expr scaled_log_integrand = context.power(x, third_exponent) *
+        (half_log_generator + context.integer(1));
+    risch_result scaled_log_result = context.integrate_elementary(
+        scaled_log_integrand, x);
+    assert(scaled_log_result.status == risch_status::elementary);
+    exact_expr scaled_log_expected = context.power(x, four_thirds) *
+        (context.rational(precq_t(precn_t(3), precn_t(4))) *
+             half_log_generator +
+         context.rational(precq_t(precn_t(15), precn_t(32))));
+    assert(context.simplify(scaled_log_result.elementary_part -
+                            scaled_log_expected) == context.integer(0));
+    exact_expr log_x_squared = context.natural_logarithm(
+        context.power(x, context.integer(2)));
+    risch_result log_x_squared_result = context.integrate_elementary(
+        log_x_squared / x, x);
+    assert(log_x_squared_result.status == risch_status::elementary);
+    assert(context.simplify(log_x_squared_result.elementary_part -
+        context.power(log_x_squared, context.integer(2)) /
+            context.integer(4)) == context.integer(0));
     exact_expr rational_log_primitive =
         context.power(context.natural_logarithm(x), context.integer(2)) /
         (x + context.integer(1));
