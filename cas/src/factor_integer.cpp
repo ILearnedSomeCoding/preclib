@@ -290,6 +290,7 @@ static ecm_mont_point ecm_mont_multiply(const ecm_mont_point &p,
                                         uint64_t scalar,
                                         const ecm_mont::number &a24,
                                         const ecm_mont &m){
+    if(scalar == 0) return {m.encode(precn_t(1)), {}};
     if(scalar == 1) return p;
     ecm_mont_point lower = p, upper = ecm_mont_double(p, a24, m);
     uint64_t bit = UINT64_C(1) << 63;
@@ -447,6 +448,13 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
     if(mod_u64(value, 2).rsiz == 0) return publish(precn_t(2));
     if(stage2_bound < stage1_bound) stage2_bound = stage1_bound;
     std::vector<uint32_t> primes = primes_to(stage2_bound);
+    std::vector<uint64_t> stage1_powers;
+    for(uint32_t prime : primes){
+        if(prime > stage1_bound) break;
+        uint64_t power = prime;
+        while(power <= stage1_bound / prime) power *= prime;
+        stage1_powers.push_back(power);
+    }
     for(unsigned local_curve = 0; local_curve < curves; ++local_curve){
         if(stop && stop->load(std::memory_order_relaxed)) break;
         unsigned curve = first_curve + local_curve;
@@ -483,10 +491,8 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
             ecm_mont_point fast_point{
                 montgomery.encode(point.x), montgomery.encode(point.z)};
             ecm_mont::number fast_a24 = montgomery.encode(a24);
-            for(uint32_t prime : primes){
-                if(prime > stage1_bound) break;
-                uint64_t power = prime;
-                while(power <= stage1_bound / prime) power *= prime;
+            for(uint64_t power : stage1_powers){
+                if(stop && stop->load(std::memory_order_relaxed)) return precn_t();
                 fast_point = ecm_mont_multiply(
                     fast_point, power, fast_a24, montgomery);
             }
@@ -500,24 +506,13 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
             // p = kD +/- r, [p]Q is infinity when [kD]Q and [r]Q have the
             // same projective x-coordinate, so their cross product vanishes.
             const uint32_t step = 210;
-            std::unordered_map<uint32_t, ecm_mont_point> babies;
-            uint32_t first_giant = (stage1_bound + 1 + step / 2) / step;
-            uint32_t last_giant = (stage2_bound + step / 2) / step;
-            if(first_giant < 1) first_giant = 1;
-            std::vector<ecm_mont_point> giants(last_giant - first_giant + 1);
+            std::array<ecm_mont_point, step / 2 + 1> babies;
+            std::array<bool, step / 2 + 1> baby_ready{};
+            std::array<bool, step / 2 + 1> used_in_giant{};
+            uint32_t current_giant = 0;
             ecm_mont_point step_point = ecm_mont_multiply(
                 fast_point, step, fast_a24, montgomery);
-            giants[0] = ecm_mont_multiply(
-                fast_point, (uint64_t)first_giant * step,
-                fast_a24, montgomery);
-            if(giants.size() > 1){
-                giants[1] = ecm_mont_multiply(
-                    fast_point, (uint64_t)(first_giant + 1) * step,
-                    fast_a24, montgomery);
-                for(size_t i = 2; i < giants.size(); ++i)
-                    giants[i] = ecm_mont_add(
-                        giants[i - 1], step_point, giants[i - 2], montgomery);
-            }
+            ecm_mont_point giant{}, previous_giant{};
             ecm_mont::number product = montgomery.encode(precn_t(1));
             std::vector<ecm_mont::number> batch;
             batch.reserve(256);
@@ -544,18 +539,37 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
                 uint32_t center = giant_index * step;
                 uint32_t baby_index = prime >= center
                     ? prime - center : center - prime;
-                if(baby_index == 0) continue;
-                auto baby = babies.find(baby_index);
-                if(baby == babies.end())
-                    baby = babies.emplace(baby_index,
-                        ecm_mont_multiply(fast_point, baby_index,
-                                          fast_a24, montgomery)).first;
-                if(giant_index < first_giant || giant_index > last_giant)
-                    continue;
-                const ecm_mont_point &giant = giants[giant_index - first_giant];
+                if(stop && stop->load(std::memory_order_relaxed)) return precn_t();
+                if(giant_index != current_giant || current_giant == 0){
+                    if(current_giant == 0){
+                        giant = ecm_mont_multiply(fast_point, center, fast_a24, montgomery);
+                        previous_giant = ecm_mont_multiply(fast_point,
+                            center >= step ? center - step : 0, fast_a24, montgomery);
+                        current_giant = giant_index;
+                    }else{
+                        while(current_giant < giant_index){
+                            ecm_mont_point next = current_giant == 1
+                                ? ecm_mont_double(giant, fast_a24, montgomery)
+                                : ecm_mont_add(giant, step_point, previous_giant, montgomery);
+                            previous_giant = giant;
+                            giant = next;
+                            ++current_giant;
+                        }
+                    }
+                    used_in_giant.fill(false);
+                }
+                // kD-r and kD+r give the same projective cross product.
+                if(used_in_giant[baby_index]) continue;
+                used_in_giant[baby_index] = true;
+                if(!baby_ready[baby_index]){
+                    babies[baby_index] = ecm_mont_multiply(fast_point, baby_index,
+                                                         fast_a24, montgomery);
+                    baby_ready[baby_index] = true;
+                }
+                const auto &baby = babies[baby_index];
                 ecm_mont::number cross = montgomery.sub(
-                    montgomery.mul(giant.x, baby->second.z),
-                    montgomery.mul(baby->second.x, giant.z));
+                    montgomery.mul(giant.x, baby.z),
+                    montgomery.mul(baby.x, giant.z));
                 product = montgomery.mul(product, cross);
                 batch.push_back(cross);
                 if(batch.size() == 256){
@@ -630,6 +644,7 @@ static precn_t ecm_factor_range(const precn_t &value, unsigned first_curve,
 
 precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
                        uint32_t stage1_bound, uint32_t stage2_bound){
+    if(value < precn_t(4) || !curves) return precn_t();
 #ifdef __EMSCRIPTEN__
     return ecm_factor_range(value, 0, curves,
                             stage1_bound, stage2_bound, nullptr);
@@ -667,7 +682,9 @@ precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
 
 precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                          size_t interval){
-    // Algorithmic reference for log sieving, online GF(2) elimination, and
+    if(value < precn_t(4) || !polynomial_count || !interval) return precn_t();
+    if(mod_u64(value, 2).rsiz == 0) return precn_t(2);
+    // Algorithmic reference for log sieving, GF(2) elimination, and
     // single-large-cofactor merging: https://loj.ac/s/2526450
     // This is an independent precn_t implementation; no source was copied.
     precn_t square_root = precn_sqrt(value);
@@ -687,6 +704,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
     for(uint32_t prime : primes_to(prime_bound)){
         uint32_t residue_value = 0;
         precn_t residue = mod_u64(value, prime);
+        if(residue.rsiz == 0 && value > precn_t(prime)) return precn_t(prime);
         if(residue.rsiz) residue_value = (uint32_t)residue.a[0];
         uint32_t root = 0;
         if(small_sqrt_mod(residue_value, prime, root))
@@ -707,12 +725,10 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
     const size_t columns = base.size() + 1; // Column zero is the sign.
     const size_t parity_words = (columns + 63) / 64;
     const size_t dependency_margin = std::max<size_t>(128, columns / 32);
-    const size_t relation_limit = columns * 4 + dependency_margin;
+    const size_t relation_limit = columns + dependency_margin;
     std::vector<relation> relations;
     std::unordered_set<std::string> relation_keys;
     std::unordered_map<uint64_t, partial_relation> partial_relations;
-    std::vector<std::vector<uint64_t>> collection_pivots(columns);
-    size_t collection_rank = 0;
     std::atomic<bool> collection_complete(false);
     std::mutex relation_mutex;
 #ifdef CAS_SIQS_DIAGNOSTICS
@@ -725,7 +741,6 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                                bool negative,
                                std::vector<uint16_t> powers,
                                bool factor_smooth) -> precn_t{
-        std::lock_guard<std::mutex> lock(relation_mutex);
         if(collection_complete.load(std::memory_order_relaxed))
             return precn_t();
         if(negative) powers[0] = 1;
@@ -740,6 +755,10 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
         }
         precn_t relation_x = x % value;
         precn_t square_multiplier(1);
+        const uint64_t large_prime_limit = (uint64_t)base.back().prime * 100;
+        if(!is_one(smooth) && (smooth.rsiz != 1 || smooth.a[0] > large_prime_limit))
+            return precn_t();
+        std::lock_guard<std::mutex> lock(relation_mutex);
         if(!is_one(smooth)){
 #ifdef CAS_SIQS_DIAGNOSTICS
             ++tested_candidates;
@@ -800,24 +819,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
 
         relations.push_back({std::move(relation_x), std::move(powers),
                              std::move(square_multiplier)});
-        std::vector<uint64_t> parity(parity_words, 0);
-        const auto &stored_powers = relations.back().powers;
-        for(size_t i = 0; i < columns; ++i)
-            if(stored_powers[i] & 1)
-                parity[i / 64] |= UINT64_C(1) << (i % 64);
-        for(size_t column = columns; column-- > 0;){
-            if(!bit_test(parity, column)) continue;
-            if(collection_pivots[column].empty()){
-                collection_pivots[column] = std::move(parity);
-                ++collection_rank;
-                break;
-            }
-            bit_xor(parity, collection_pivots[column]);
-        }
-        // Counting relations alone is misleading when many polynomial-family
-        // cycles occupy the same low-dimensional parity subspace.
-        if(collection_rank * 4 >= columns * 3 &&
-           relations.size() >= collection_rank + dependency_margin)
+        if(relations.size() >= relation_limit)
             collection_complete.store(true, std::memory_order_relaxed);
         return precn_t();
     };
@@ -834,8 +836,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
           base[factor_center].prime < target_factor) ++factor_center;
     size_t factor_span = std::max<size_t>(
         8, base.size() / (2 * factors_in_a * factors_in_a));
-    const size_t family_size = input_bits > 192
-        ? (((size_t)1 << (factors_in_a - 1)) - 1) : 4;
+    const size_t family_size = (size_t)1 << (factors_in_a - 1);
     std::atomic<size_t> next_family(0);
     precn_t sieve_factor;
     std::mutex factor_mutex;
@@ -845,9 +846,10 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
     std::vector<size_t> cached_selected;
     std::vector<precn_t> cached_gamma;
     std::vector<uint16_t> cached_a_powers;
-    std::vector<uint32_t> cached_a_mod;
     std::vector<uint32_t> cached_a_inverse;
     std::vector<uint32_t> cached_gamma_mod;
+    std::vector<precn_t> cached_delta;
+    precn_t family_b;
     const size_t sieve_size = interval * 2 + 1;
     std::vector<uint32_t> interval_remainders(base.size());
     std::vector<uint8_t> sieve_weights(base.size());
@@ -879,7 +881,6 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                                    polynomial_count - first_polynomial);
         for(size_t variant = 0; variant < variants &&
             !collection_complete.load(std::memory_order_relaxed); ++variant){
-        size_t polynomial = first_polynomial + variant;
         // Keep the first CRT sign fixed; the remaining factors follow Gray
         // code, yielding 2^(s-1) B values for an s-factor A.
         size_t sign_pattern = variant ^ (variant >> 1);
@@ -923,70 +924,87 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                     small_inverse_mod(quotient_mod, q) % q);
                 cached_gamma.push_back(mul_u64(quotient, coefficient));
             }
+            family_b = precn_t();
+            cached_delta.clear();
+            for(const auto &gamma : cached_gamma){
+                family_b = add_mod(family_b, gamma, cached_a);
+                cached_delta.push_back(add_mod(gamma, gamma, cached_a));
+            }
             cached_a_powers.assign(columns, 0);
             for(size_t index : cached_selected)
                 ++cached_a_powers[index + 1];
             cached_a_inverse.assign(base.size(), 0);
-            cached_a_mod.assign(base.size(), 0);
             cached_gamma_mod.assign(base.size() * factors_in_a, 0);
             for(size_t index = 0; index < base.size(); ++index){
                 uint32_t prime = base[index].prime;
                 precn_t residue = mod_u64(cached_a, prime);
                 if(residue.rsiz == 0) continue;
-                cached_a_mod[index] = (uint32_t)residue.a[0];
                 cached_a_inverse[index] = small_inverse_mod(
                     (uint32_t)residue.a[0], prime);
                 for(size_t j = 0; j < factors_in_a; ++j){
-                    precn_t gamma_residue = mod_u64(cached_gamma[j], prime);
+                    precn_t gamma_residue = mod_u64(cached_delta[j], prime);
                     cached_gamma_mod[index * factors_in_a + j] =
-                        gamma_residue.rsiz ? (uint32_t)gamma_residue.a[0] : 0;
+                        gamma_residue.rsiz ? (uint32_t)(gamma_residue.a[0] *
+                            cached_a_inverse[index] % prime) : 0;
                 }
             }
         }
         const precn_t &a = cached_a;
         const std::vector<size_t> &selected = cached_selected;
         const std::vector<uint16_t> &a_powers = cached_a_powers;
-        precn_t b;
-        int b_wraps = 0;
-        for(size_t j = 0; j < factors_in_a; ++j){
-            bool flip = j > 0 && ((sign_pattern >> (j - 1)) & 1);
-            if(flip){
-                if(b < cached_gamma[j]) --b_wraps;
-                b = sub_mod(b, cached_gamma[j], a);
-            }else{
-                if(b + cached_gamma[j] >= a) ++b_wraps;
-                b = add_mod(b, cached_gamma[j], a);
-            }
+        size_t changed = 0;
+        bool subtract_delta = false, wrapped = false;
+        if(variant){
+            size_t bit = variant;
+            changed = 1;
+            while(!(bit & 1)){ ++changed; bit >>= 1; }
+            subtract_delta = ((sign_pattern >> (changed - 1)) & 1) != 0;
+            const precn_t &delta = cached_delta[changed];
+            wrapped = subtract_delta ? family_b < delta : family_b + delta >= a;
+            family_b = subtract_delta ? sub_mod(family_b, delta, a)
+                                      : add_mod(family_b, delta, a);
         }
+        const precn_t &b = family_b;
+        precn_t b_square = b * b;
+        bool c_negative = b_square < value;
+        precn_t c_magnitude = (c_negative ? value - b_square : b_square - value) / a;
 
         std::fill(sieve.begin(), sieve.end(), 0);
-        std::fill(root1.begin(), root1.end(), UINT32_MAX);
-        std::fill(root2.begin(), root2.end(), UINT32_MAX);
+        if(!variant){
+            std::fill(root1.begin(), root1.end(), UINT32_MAX);
+            std::fill(root2.begin(), root2.end(), UINT32_MAX);
+        }
         uint32_t interval_mod = 0;
         for(size_t index = 0; index < base.size(); ++index){
             uint32_t prime = base[index].prime;
             uint32_t inverse = cached_a_inverse[index];
-            if(inverse == 0) continue;
-            uint32_t bv = 0;
-            for(size_t j = 0; j < factors_in_a; ++j){
-                uint32_t term = cached_gamma_mod[index * factors_in_a + j];
-                bool flip = j > 0 && ((sign_pattern >> (j - 1)) & 1);
-                bv = flip ? (bv >= term ? bv - term : bv + prime - term)
-                          : (uint32_t)(((uint64_t)bv + term) % prime);
-            }
-            int64_t correction = (int64_t)b_wraps * cached_a_mod[index];
-            correction %= (int64_t)prime;
-            int64_t corrected = (int64_t)bv - correction;
-            corrected %= (int64_t)prime;
-            if(corrected < 0) corrected += prime;
-            bv = (uint32_t)corrected;
             uint32_t roots[2];
+            if(inverse == 0){
+                precn_t br = mod_u64(b, prime), cr = mod_u64(c_magnitude, prime);
+                uint32_t bv = br.rsiz ? (uint32_t)br.a[0] : 0;
+                uint32_t cv = cr.rsiz ? (uint32_t)cr.a[0] : 0;
+                if(!c_negative && cv) cv = prime - cv;
+                uint32_t linear = (uint32_t)((uint64_t)2 * bv % prime);
+                if(!linear) continue;
+                roots[0] = roots[1] = (uint32_t)((uint64_t)cv *
+                    small_inverse_mod(linear, prime) % prime);
+            }else if(variant){
+                // Reducing B modulo A translates both roots by one on wrap.
+                uint32_t delta = cached_gamma_mod[index * factors_in_a + changed];
+                int64_t shift = subtract_delta ? (int64_t)delta : -(int64_t)delta;
+                if(wrapped) shift += subtract_delta ? -1 : 1;
+                roots[0] = (uint32_t)(((int64_t)root1[index] + shift + prime) % prime);
+                roots[1] = (uint32_t)(((int64_t)root2[index] + shift + prime) % prime);
+            }else{
+            precn_t residue = mod_u64(b, prime);
+            uint32_t bv = residue.rsiz ? (uint32_t)residue.a[0] : 0;
             roots[0] = (uint32_t)((uint64_t)(base[index].root + prime - bv) %
                                   prime * inverse % prime);
             uint32_t opposite = base[index].root == 0
                 ? 0 : prime - base[index].root;
             roots[1] = (uint32_t)((uint64_t)(opposite + prime - bv) % prime *
                                   inverse % prime);
+            }
             root1[index] = roots[0];
             root2[index] = roots[1];
             interval_mod = interval_remainders[index];
@@ -1061,6 +1079,15 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
             if(remainder.rsiz) continue;
             precn_t smooth = numerator / a;
             std::vector<uint16_t> powers = a_powers;
+            // Primes dividing A have a linear root in Q, not the two roots
+            // obtained by inverting A. Their extra powers must still be removed.
+            for(size_t index : selected){
+                uint32_t prime = base[index].prime;
+                while(smooth.rsiz && mod_u64(smooth, prime).rsiz == 0){
+                    smooth = div_u64(smooth, prime);
+                    ++powers[index + 1];
+                }
+            }
             for(int32_t hit = hit_head[candidate_index]; hit >= 0;
                 hit = hit_next[(size_t)hit]){
                 size_t index = hit_prime[(size_t)hit];
@@ -1099,13 +1126,13 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
     if(sieve_factor.rsiz) return sieve_factor;
 #ifdef CAS_SIQS_DIAGNOSTICS
     std::fprintf(stderr,
-        "siqs: base=%zu tested=%zu relations=%zu rank=%zu partials=%zu min-rem=%zu bits invalid=%zu\n",
-        base.size(), tested_candidates, relations.size(), collection_rank,
+        "siqs: base=%zu tested=%zu relations=%zu partials=%zu min-rem=%zu bits invalid=%zu\n",
+        base.size(), tested_candidates, relations.size(),
         partial_relations.size(),
         smallest_remainder_bits == (size_t)-1 ? 0 : smallest_remainder_bits,
         invalid_relations);
 #endif
-    if(relations.size() > collection_rank){
+    if(!relations.empty()){
         const size_t relation_words = (relations.size() + 63) / 64;
         std::vector<std::vector<uint64_t>> pivot_parities(columns);
         std::vector<std::vector<uint64_t>> pivot_combinations(columns);
@@ -1165,9 +1192,9 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                     exponent_sums[j] += relations[i].powers[j];
             }
             for(size_t i = 0; i < base.size(); ++i)
-                for(uint32_t exponent = exponent_sums[i + 1] / 2;
-                    exponent; --exponent)
-                    right = mul_mod(right, precn_t(base[i].prime), value);
+                if(exponent_sums[i + 1])
+                    right = mul_mod(right, pow_mod(precn_t(base[i].prime),
+                        precn_t(exponent_sums[i + 1] / 2), value), value);
             precn_t difference = left >= right ? left - right : right - left;
             precn_t factor = gcd(difference, value);
             if(factor > precn_t(1) && factor < value) return factor;
@@ -1181,7 +1208,7 @@ precn_t cas_siqs_factor(const precn_t &value, size_t polynomial_count,
                      relations.size(), rank, null_basis.size());
 #endif
         size_t dependencies_tried = 0;
-        size_t single_limit = std::min<size_t>(16, null_basis.size());
+        size_t single_limit = null_basis.size();
         for(size_t i = 0; i < single_limit; ++i){
             ++dependencies_tried;
             precn_t factor = try_dependency(null_basis[i]);
@@ -1324,8 +1351,8 @@ static bool factor_big_impl(const precn_t &value,
         factor = cas_ecm_factor(remaining, curves, 10000, 30000);
     }
     if(factor.rsiz == 0){
-        size_t polynomial_count = remaining_bits > 240 ? 512
-                                : remaining_bits > 192 ? 512
+        size_t polynomial_count = remaining_bits > 260 ? 512
+                                : remaining_bits > 192 ? 60000
                                 : remaining_bits > 160 ? 1024 : 96;
         double log_remaining = remaining_bits * std::log(2.0);
         size_t sieve_interval = remaining_bits > 192
@@ -1333,7 +1360,7 @@ static bool factor_big_impl(const precn_t &value,
                               : remaining_bits > 160 ? 8192 : 384;
         factor = cas_siqs_factor(remaining, polynomial_count, sieve_interval);
     }
-    if(factor.rsiz == 0 && remaining_bits <= 240)
+    if(factor.rsiz == 0 && remaining_bits <= 260)
         factor = cas_ecm_factor(remaining, 900, 250000, 5000000);
     if(factor.rsiz == 0) factor = cas_qs_factor(remaining);
     if(factor.rsiz == 0 || factor == remaining) return false;
