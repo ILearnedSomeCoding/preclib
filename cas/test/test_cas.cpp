@@ -325,6 +325,39 @@ int main(){
                     context.integer(3)), x).status == risch_status::elementary);
     exact_expr half_exponent = context.rational(
         precq_t(precn_t(1), precn_t(2)));
+    for(int slope : {2, -3}){
+        exact_expr u = context.integer(slope) * x + context.integer(3);
+        exact_expr log_u = context.natural_logarithm(u);
+        for(const auto &power : {context.integer(-1), context.integer(2),
+                                half_exponent}){
+            exact_expr f = context.power(u, power) * context.power(log_u,
+                context.integer(3));
+            auto integral = context.integrate_elementary(f, x);
+            if(integral.status != risch_status::elementary)
+                std::fprintf(stderr, "affine primitive: %s: %s\n",
+                    f.to_string().c_str(), integral.diagnostic.c_str());
+            assert(integral.status == risch_status::elementary);
+            exact_expr v = context.symbol("_test_affine_coordinate");
+            exact_expr mapped = context.substitute(integral.elementary_part,
+                log_u, context.natural_logarithm(v));
+            mapped = context.substitute(mapped, u, v);
+            mapped = context.substitute(mapped, x,
+                (v - context.integer(3)) / context.integer(slope));
+            mapped = context.simplify(context.expand(mapped, 100000));
+            exact_expr error = context.simplify(context.expand(
+                context.integer(slope) * context.differentiate(mapped, v) -
+                context.power(v, power) * context.power(context.natural_logarithm(v),
+                    context.integer(3)), 100000));
+            if(error != context.integer(0))
+                std::fprintf(stderr, "affine derivative: f=%s F=%s error=%s\n",
+                    f.to_string().c_str(), integral.elementary_part.to_string().c_str(),
+                    error.to_string().c_str());
+            assert(error == context.integer(0));
+        }
+        exact_expr f = x * context.power(log_u, context.integer(3));
+        assert(context.integrate_elementary(f, x).status ==
+               risch_status::elementary);
+    }
     exact_expr third_exponent = context.rational(
         precq_t(precn_t(1), precn_t(3)));
     exact_expr fractional_log_integrand = context.power(x, half_exponent) *

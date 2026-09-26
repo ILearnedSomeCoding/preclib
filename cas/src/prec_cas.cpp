@@ -3584,7 +3584,10 @@ static exact_expr integration_log_laurent_polynomial(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, size_t maximum_degree){
     exact_expr generator;
+    exact_expr monomial_base = variable;
     numeric_value generator_slope(0);
+    numeric_value coordinate_scale(1);
+    numeric_value coordinate_offset(0);
     std::unordered_set<uint32_t> seen;
     auto find_generator = [&](auto &&self, const exact_expr &part) -> bool{
         if(!seen.insert(part.id()).second) return true;
@@ -3593,9 +3596,22 @@ static exact_expr integration_log_laurent_polynomial(
             if(integration_laurent_monomial(part.operand(0), variable,
                                              scale, slope) &&
                !scale.is_zero() && !scale.is_negative() && !slope.is_zero()){
-            if(generator.valid() && generator != part) return false;
-            generator = part;
+                if(generator.valid() && generator != part) return false;
+                generator = part;
                 generator_slope = std::move(slope);
+                return true;
+            }
+            integration_poly affine_argument;
+            if(integration_parse_poly(part.operand(0), variable,
+                                      affine_argument) &&
+               affine_argument.size() == 2 &&
+               !affine_argument[1].is_zero()){
+                if(generator.valid() && generator != part) return false;
+                generator = part;
+                monomial_base = part.operand(0);
+                generator_slope = numeric_value(1);
+                coordinate_scale = numeric_value(1) / affine_argument[1];
+                coordinate_offset = affine_argument[0];
                 return true;
             }
         }
@@ -3605,6 +3621,14 @@ static exact_expr integration_log_laurent_polynomial(
     };
     if(!find_generator(find_generator, expression) || !generator.valid())
         return exact_expr();
+    exact_expr coordinate = variable;
+    if(monomial_base != variable){
+        for(size_t suffix = 0;; ++suffix){
+            coordinate = context.symbol("_risch_affine_" + std::to_string(suffix));
+            if(coordinate != variable &&
+               !integration_depends_on(expression, coordinate)) break;
+        }
+    }
     integration_expr_poly coefficients;
     if(!integration_parse_expr_poly(context, expression, generator,
                                     coefficients) || coefficients.empty() ||
@@ -3626,7 +3650,7 @@ static exact_expr integration_log_laurent_polynomial(
         }
         if(term.is_value() && term.value().is_zero()) return true;
         numeric_value coefficient(1), exponent(0);
-        if(!integration_laurent_monomial(term, variable, coefficient,
+        if(!integration_laurent_monomial(term, coordinate, coefficient,
                                          exponent))
             return false;
         for(auto &entry : out){
@@ -3639,7 +3663,18 @@ static exact_expr integration_log_laurent_polynomial(
         return true;
     };
     for(size_t i = 0; i < coefficients.size(); ++i){
-        exact_expr coefficient_expression = context.simplify(coefficients[i]);
+        exact_expr coefficient_expression = coefficients[i];
+        if(monomial_base != variable){
+            // Preserve powers of the affine coordinate before replacing x;
+            // the fresh symbol prevents simplification from undoing the map.
+            coefficient_expression = context.substitute(coefficient_expression,
+                monomial_base, coordinate);
+            coefficient_expression = context.substitute(coefficient_expression,
+                variable, (coordinate - context.value(coordinate_offset)) *
+                          context.value(coordinate_scale));
+            coefficient_expression = context.expand(coefficient_expression);
+        }
+        coefficient_expression = context.simplify(coefficient_expression);
         if(coefficient_expression.is_value() &&
            coefficient_expression.value().is_zero()) continue;
         std::vector<std::pair<numeric_value, numeric_value>> monomials;
@@ -3677,7 +3712,8 @@ static exact_expr integration_log_laurent_polynomial(
                 if(q[i + 1] * generator_slope * numeric_value(i + 1) !=
                    group.polynomial[i])
                     return exact_expr();
-            candidate = candidate + integration_poly_expr(context, q,
+            candidate = candidate + context.value(coordinate_scale) *
+                integration_poly_expr(context, q,
                                                             generator);
             continue;
         }
@@ -3697,8 +3733,8 @@ static exact_expr integration_log_laurent_polynomial(
                     numeric_value(i + 1) * q[i + 1];
             if(reconstructed != group.polynomial[i]) return exact_expr();
         }
-        exact_expr factor = context.power(variable, context.value(lambda));
-        candidate = candidate + factor *
+        exact_expr factor = context.power(monomial_base, context.value(lambda));
+        candidate = candidate + context.value(coordinate_scale) * factor *
             integration_poly_expr(context, q, generator);
     }
     return candidate;
