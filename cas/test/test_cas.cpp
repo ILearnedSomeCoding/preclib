@@ -316,6 +316,17 @@ int main(){
             nested_log_integral.elementary_part.to_string().c_str(),
             nested_log_integral.remainder.to_string().c_str());
     assert(nested_log_integral.status == risch_status::elementary);
+    exact_expr nested_log_generator = context.natural_logarithm(
+        context.natural_logarithm(x));
+    exact_expr nested_log_rational_integrand = context.differentiate(
+        nested_log_generator, x) /
+        (context.integer(1) + nested_log_generator);
+    risch_result nested_log_rational_result = context.integrate_elementary(
+        nested_log_rational_integrand, x);
+    assert(nested_log_rational_result.status == risch_status::elementary);
+    assert(nested_log_rational_result.elementary_part ==
+        context.natural_logarithm(context.integer(1) +
+                                  nested_log_generator));
     exact_expr log_x = context.natural_logarithm(x);
     exact_expr log_rational_integrand = log_x /
         context.power(log_x + context.integer(1), context.integer(2));

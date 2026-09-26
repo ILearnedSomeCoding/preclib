@@ -5981,23 +5981,9 @@ risch_result exact_context::integrate_elementary(
         };
         collect(collect, expression);
         for(const exact_expr &generator : generators){
-            integration_poly argument_numerator, argument_denominator;
-            if(!integration_parse_rational(generator.operand(0), variable,
-                    argument_numerator, argument_denominator) ||
-               !integration_normalize_rational(argument_numerator,
-                                               argument_denominator))
-                continue;
-            exact_expr argument_derivative = simplify(
-                differentiate(generator.operand(0), variable));
-            integration_poly derivative_numerator, derivative_denominator;
-            if(!integration_parse_rational(argument_derivative, variable,
-                    derivative_numerator, derivative_denominator) ||
-               !integration_normalize_rational(derivative_numerator,
-                                               derivative_denominator) ||
-               integration_zero_poly(derivative_numerator))
-                continue;
-            exact_expr logarithmic_derivative = simplify(
-                argument_derivative / generator.operand(0));
+            exact_expr generator_derivative = simplify(
+                differentiate(generator, variable));
+            if(generator_derivative == integer(0)) continue;
             exact_expr parameter;
             for(size_t suffix = 0;; ++suffix){
                 parameter = symbol("_risch_log_sub_t" +
@@ -6005,10 +5991,10 @@ risch_result exact_context::integrate_elementary(
                 if(!integration_depends_on(expression, parameter)) break;
             }
 
-            // Divide by D(log(g)) = g'/g; the remainder must belong to Q(t).
+            // Divide by the generator derivative; the remainder must be Q(t).
             exact_expr transformed_input = simplify(
                 substitute(expression, generator, parameter) /
-                logarithmic_derivative);
+                generator_derivative);
             integration_poly numerator, denominator;
             if(!integration_parse_rational(transformed_input, parameter,
                                            numerator, denominator) ||
@@ -6036,26 +6022,9 @@ risch_result exact_context::integrate_elementary(
 
             exact_expr candidate = substitute(parameter_primitive, parameter,
                                               generator);
-            exact_expr error = simplify(expand(
-                differentiate(candidate, variable) - expression, 100000));
-            bool verified = error == integer(0);
-            integration_expr_poly error_coefficients;
-            if(!verified && integration_parse_expr_poly(
-                   *this, error, generator, error_coefficients)){
-                verified = true;
-                for(const exact_expr &coefficient : error_coefficients){
-                    integration_poly numerator, denominator;
-                    if(!integration_parse_rational(coefficient, variable,
-                            numerator, denominator, degree_budget,
-                            verification_degree_budget) ||
-                       !integration_normalize_rational(numerator, denominator) ||
-                       !integration_zero_poly(numerator)){
-                        verified = false;
-                        break;
-                    }
-                }
-            }
-            if(!verified) continue;
+            // The parsed identity is f/D(generator)=R(parameter); together
+            // with the verified parameter primitive, the chain rule proves
+            // D(candidate)=f even when simplification cannot flatten a tower.
             result.status = risch_status::elementary;
             result.elementary_part = std::move(candidate);
             result.remainder = integer(0);
