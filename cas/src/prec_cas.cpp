@@ -3649,9 +3649,8 @@ static bool integration_laurent_monomial(
     return false;
 }
 
-// Integrate x^m P(log(x)) by solving Q' + (m+1)Q = P in the primitive
-// generator t=log(x). For m=-1, dx/x=dt and only polynomial integration in
-// t remains.
+// Integrate sum_r x^r P_r(log(x)) by solving Q' + (r+1)Q = P_r in
+// t=log(x). The rational-power groups remain independent over Q.
 static exact_expr integration_log_laurent_polynomial(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, size_t maximum_degree){
@@ -3676,53 +3675,95 @@ static exact_expr integration_log_laurent_polynomial(
                                     coefficients) || coefficients.empty() ||
        coefficients.size() - 1 > maximum_degree)
         return exact_expr();
-    integration_poly polynomial(coefficients.size(), numeric_value(0));
-    bool have_exponent = false;
-    numeric_value common_exponent(0);
+    struct exponent_group{
+        numeric_value exponent;
+        integration_poly polynomial;
+    };
+    std::vector<exponent_group> groups;
+    auto collect_monomials = [&](auto &&self, const exact_expr &term,
+                                 std::vector<std::pair<numeric_value,
+                                                       numeric_value>> &out)
+        -> bool{
+        if(term.operation() == exact_opcode::add){
+            for(size_t i = 0; i < term.operand_count(); ++i)
+                if(!self(self, term.operand(i), out)) return false;
+            return true;
+        }
+        if(term.is_value() && term.value().is_zero()) return true;
+        numeric_value coefficient(1), exponent(0);
+        if(!integration_laurent_monomial(term, variable, coefficient,
+                                         exponent))
+            return false;
+        for(auto &entry : out){
+            if(entry.first == exponent){
+                entry.second = entry.second + coefficient;
+                return true;
+            }
+        }
+        out.emplace_back(std::move(exponent), std::move(coefficient));
+        return true;
+    };
     for(size_t i = 0; i < coefficients.size(); ++i){
         exact_expr coefficient_expression = context.simplify(coefficients[i]);
         if(coefficient_expression.is_value() &&
            coefficient_expression.value().is_zero()) continue;
-        numeric_value coefficient(1);
-        numeric_value exponent(0);
-        if(!integration_laurent_monomial(coefficient_expression, variable,
-                                         coefficient, exponent))
+        std::vector<std::pair<numeric_value, numeric_value>> monomials;
+        if(!collect_monomials(collect_monomials, coefficient_expression,
+                              monomials))
             return exact_expr();
-        if(!have_exponent){
-            common_exponent = exponent;
-            have_exponent = true;
-        }else if(exponent != common_exponent) return exact_expr();
-        polynomial[i] = std::move(coefficient);
+        for(auto &monomial : monomials){
+            auto group = std::find_if(groups.begin(), groups.end(),
+                [&](const exponent_group &entry){
+                    return entry.exponent == monomial.first;
+                });
+            if(group == groups.end()){
+                groups.push_back({monomial.first,
+                    integration_poly(coefficients.size(), numeric_value(0))});
+                group = groups.end() - 1;
+            }
+            group->polynomial[i] = group->polynomial[i] + monomial.second;
+        }
     }
-    if(!have_exponent) return context.integer(0);
-    integration_poly q;
-    if(common_exponent == numeric_value(-1)){
-        q.assign(polynomial.size() + 1, numeric_value(0));
-        for(size_t i = 0; i < polynomial.size(); ++i)
-            q[i + 1] = polynomial[i] / numeric_value(i + 1);
-        for(size_t i = 0; i < polynomial.size(); ++i)
-            if(q[i + 1] * numeric_value(i + 1) != polynomial[i])
-                return exact_expr();
-        return integration_poly_expr(context, q, generator);
+    exact_expr candidate = context.integer(0);
+    for(exponent_group &group : groups){
+        integration_trim(group.polynomial);
+        bool zero = std::all_of(group.polynomial.begin(),
+            group.polynomial.end(), [](const numeric_value &coefficient){
+                return coefficient.is_zero();
+            });
+        if(zero) continue;
+        integration_poly q;
+        if(group.exponent == numeric_value(-1)){
+            q.assign(group.polynomial.size() + 1, numeric_value(0));
+            for(size_t i = 0; i < group.polynomial.size(); ++i)
+                q[i + 1] = group.polynomial[i] / numeric_value(i + 1);
+            for(size_t i = 0; i < group.polynomial.size(); ++i)
+                if(q[i + 1] * numeric_value(i + 1) != group.polynomial[i])
+                    return exact_expr();
+            candidate = candidate + integration_poly_expr(context, q,
+                                                            generator);
+            continue;
+        }
+        numeric_value lambda = group.exponent + numeric_value(1);
+        if(lambda.is_zero()) return exact_expr();
+        q.assign(group.polynomial.size(), numeric_value(0));
+        for(size_t i = group.polynomial.size(); i-- > 0;){
+            numeric_value rhs = group.polynomial[i];
+            if(i + 1 < q.size())
+                rhs = rhs - numeric_value(i + 1) * q[i + 1];
+            q[i] = rhs / lambda;
+        }
+        for(size_t i = 0; i < group.polynomial.size(); ++i){
+            numeric_value reconstructed = lambda * q[i];
+            if(i + 1 < q.size())
+                reconstructed = reconstructed + numeric_value(i + 1) * q[i + 1];
+            if(reconstructed != group.polynomial[i]) return exact_expr();
+        }
+        exact_expr factor = context.power(variable, context.value(lambda));
+        candidate = candidate + factor *
+            integration_poly_expr(context, q, generator);
     }
-    numeric_value lambda = common_exponent + numeric_value(1);
-    if(lambda.is_zero()) return exact_expr();
-    q.assign(polynomial.size(), numeric_value(0));
-    for(size_t i = polynomial.size(); i-- > 0;){
-        numeric_value rhs = polynomial[i];
-        if(i + 1 < q.size())
-            rhs = rhs - numeric_value(i + 1) * q[i + 1];
-        q[i] = rhs / lambda;
-    }
-    for(size_t i = 0; i < polynomial.size(); ++i){
-        numeric_value reconstructed = lambda * q[i];
-        if(i + 1 < q.size())
-            reconstructed = reconstructed + numeric_value(i + 1) * q[i + 1];
-        if(reconstructed != polynomial[i]) return exact_expr();
-    }
-    exact_expr factor = context.power(variable,
-        context.value(lambda));
-    return factor * integration_poly_expr(context, q, generator);
+    return candidate;
 }
 
 // Integrate D(t)*P(t) for a primitive generator already present in the DAG.

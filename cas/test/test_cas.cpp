@@ -368,6 +368,30 @@ int main(){
          context.rational(precq_t(precn_t(3), precn_t(16))));
     assert(context.simplify(third_power_log_result.elementary_part -
                             third_power_expected) == context.integer(0));
+    exact_expr mixed_power_log_integrand =
+        (context.power(x, context.integer(-1)) +
+         context.power(x, half_exponent) +
+         context.power(x, third_exponent)) * log_x_for_fractional;
+    risch_result mixed_power_log_result = context.integrate_elementary(
+        mixed_power_log_integrand, x);
+    assert(mixed_power_log_result.status == risch_status::elementary);
+    exact_expr three_halves_for_mixed = context.rational(
+        precq_t(precn_t(3), precn_t(2)));
+    exact_expr fractional_four_thirds = context.rational(
+        precq_t(precn_t(4), precn_t(3)));
+    exact_expr mixed_power_log_expected =
+        context.power(log_x_for_fractional, context.integer(2)) /
+            context.integer(2) +
+        context.power(x, three_halves_for_mixed) *
+            (context.rational(precq_t(precn_t(2), precn_t(3))) *
+                 log_x_for_fractional -
+             context.rational(precq_t(precn_t(4), precn_t(9)))) +
+        context.power(x, fractional_four_thirds) *
+            (context.rational(precq_t(precn_t(3), precn_t(4))) *
+                 log_x_for_fractional -
+             context.rational(precq_t(precn_t(9), precn_t(16))));
+    assert(context.simplify(mixed_power_log_result.elementary_part -
+                            mixed_power_log_expected) == context.integer(0));
     exact_expr rational_log_primitive =
         context.power(context.natural_logarithm(x), context.integer(2)) /
         (x + context.integer(1));
