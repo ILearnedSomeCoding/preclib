@@ -46,6 +46,7 @@ struct ecm_progress_state{
     size_t total;
     std::mutex mutex;
     size_t completed = 0;
+    std::string stage;
 };
 
 struct ecm_curve_finished{
@@ -55,7 +56,7 @@ struct ecm_curve_finished{
         if(complete && state && state->sink){
             std::lock_guard<std::mutex> lock(state->mutex);
             size_t done = ++state->completed;
-            state->sink->report("ECM curves completed", done, state->total);
+            state->sink->report(state->stage.c_str(), done, state->total);
         }
     }
 };
@@ -696,7 +697,9 @@ precn_t cas_ecm_factor(const precn_t &value, unsigned curves,
                        uint32_t stage1_bound, uint32_t stage2_bound){
     if(value < precn_t(4) || !curves) return precn_t();
     ecm_progress_state progress{active_factor_progress, curves};
-    factor_report("ECM curves completed", 0, curves);
+    progress.stage = "ECM B1=" + std::to_string(stage1_bound) +
+                     " B2=" + std::to_string(stage2_bound) + " curves";
+    factor_report(progress.stage.c_str(), 0, curves);
 #ifdef __EMSCRIPTEN__
     return ecm_factor_range(value, 0, curves,
                             stage1_bound, stage2_bound, nullptr, &progress);
@@ -1424,9 +1427,8 @@ static bool factor_big_impl(const precn_t &value,
         unsigned curves = remaining_bits > 160 ? 16 : 128;
         factor = cas_ecm_factor(remaining, curves, 10000, 30000);
     }
-    if(factor.rsiz == 0){
-        size_t polynomial_count = remaining_bits > 260 ? 512
-                                : remaining_bits > 192 ? 60000
+    if(factor.rsiz == 0 && remaining_bits <= 260){
+        size_t polynomial_count = remaining_bits > 192 ? 60000
                                 : remaining_bits > 160 ? 1024 : 96;
         double log_remaining = remaining_bits * std::log(2.0);
         size_t sieve_interval = remaining_bits > 192
@@ -1436,7 +1438,12 @@ static bool factor_big_impl(const precn_t &value,
     }
     if(factor.rsiz == 0 && remaining_bits <= 260)
         factor = cas_ecm_factor(remaining, 900, 250000, 5000000);
-    if(factor.rsiz == 0){
+    // ECM depends primarily on the size of the unknown factor. A large
+    // cofactor is not a reason to skip it, but does make QS impractical.
+    if(factor.rsiz == 0 && remaining_bits > 260 &&
+       remaining.rsiz <= ecm_mont::maximum_limbs)
+        factor = cas_ecm_factor(remaining, 128, 50000, 1000000);
+    if(factor.rsiz == 0 && remaining_bits <= 192){
         factor_report("QS fallback");
         factor = cas_qs_factor(remaining);
     }

@@ -10214,8 +10214,24 @@ exact_expr exact_context::factor_integer(const exact_expr &expression){
         result.push_back(storage_->intern_value(numeric_value(-1)));
     std::vector<precn_t> factors;
     if(!cas_factor_big(magnitude, factors)){
-        throw std::runtime_error(
-            "ECM and quadratic sieve did not find a factor");
+        std::string message = "factorization budget exhausted";
+        precn_t unresolved = magnitude;
+        if(!factors.empty()){
+            std::sort(factors.begin(), factors.end());
+            message += "; known factors: {";
+            for(size_t i = 0; i < factors.size(); ++i){
+                if(i) message += ", ";
+                message += (std::string)factors[i];
+                unresolved = unresolved / factors[i];
+            }
+            message += "}";
+        }
+        if(unresolved.rsiz <= 16)
+            message += "; unresolved cofactor: " + (std::string)unresolved;
+        else
+            message += "; unresolved cofactor: " + std::to_string(unresolved.rsiz) +
+                       " limbs";
+        throw std::runtime_error(message);
     }
     std::sort(factors.begin(), factors.end());
     for(size_t begin = 0; begin < factors.size();){
