@@ -4152,16 +4152,26 @@ struct integration_parametric_rational_basis{
     std::vector<numeric_value> constants;
 };
 
-// Polynomial a has no finite poles. A rational solution's pole order is
-// at most one less than the maximal right-hand pole order, uniformly over
-// all constant combinations. Keep the entire kernel, including cancellations.
+// Polynomial a uses the ordinary pole-order bound. A single simple pole
+// additionally admits integer-residue cancellation, both at that pole and
+// at infinity. Keep the entire kernel, including right-hand cancellations.
 static integration_parametric_rde_status integration_parametric_rde_rational(
     integration_poly a,
     std::vector<std::pair<integration_poly, integration_poly>> right,
     std::vector<integration_parametric_rational_basis> &basis,
-    size_t maximum_matrix_entries = 65536){
+    size_t maximum_matrix_entries = 65536,
+    integration_poly ad = {numeric_value(1)}){
     basis.clear();
-    integration_trim(a);
+    if(!integration_normalize_rational(a, ad))
+        return integration_parametric_rde_status::verification_failed;
+    if(ad.size() > 2) return integration_parametric_rde_status::unsupported;
+    integration_poly polynomial_a, residue;
+    if(!integration_divmod_poly(a, ad, polynomial_a, residue))
+        return integration_parametric_rde_status::verification_failed;
+    int64_t integral_residue = 0;
+    bool resonant = ad.size() == 2 && integer_i64(residue[0], integral_residue);
+    if(ad.size() == 2 && residue[0].is_integer() && !resonant)
+        return integration_parametric_rde_status::resource_limit;
     integration_poly common{numeric_value(1)};
     int64_t degree_f = -1;
     for(auto &term : right){
@@ -4180,8 +4190,39 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     }
     integration_poly h = integration_gcd_poly(common,
         integration_derivative_poly(common));
-    int64_t polynomial_degree = integration_zero_poly(a) ? degree_f + 1 :
-        degree_f - (int64_t)a.size() + 1;
+    if(resonant && integral_residue > 0){
+        if((uint64_t)integral_residue > maximum_matrix_entries)
+            return integration_parametric_rde_status::resource_limit;
+        integration_poly remaining = h;
+        size_t existing_order = 0;
+        for(;;){
+            integration_poly quotient, remainder;
+            if(!integration_divmod_poly(remaining, ad, quotient, remainder))
+                return integration_parametric_rde_status::verification_failed;
+            if(!integration_zero_poly(remainder)) break;
+            remaining = std::move(quotient);
+            ++existing_order;
+        }
+        for(size_t i = existing_order; i < (uint64_t)integral_residue; ++i){
+            if(h.size() >= maximum_matrix_entries)
+                return integration_parametric_rde_status::resource_limit;
+            h = integration_mul(h, ad);
+        }
+    }
+    if(ad.size() == 2){
+        integration_poly quotient, remainder;
+        if(!integration_divmod_poly(common, ad, quotient, remainder))
+            return integration_parametric_rde_status::verification_failed;
+        if(!integration_zero_poly(remainder)) common = integration_mul(common, ad);
+    }
+    int64_t polynomial_degree = integration_zero_poly(polynomial_a) ? degree_f + 1 :
+        degree_f - (int64_t)polynomial_a.size() + 1;
+    if(resonant && integral_residue < 0 && integration_zero_poly(polynomial_a)){
+        uint64_t exceptional_degree = 0 - (uint64_t)integral_residue;
+        if(exceptional_degree > maximum_matrix_entries)
+            return integration_parametric_rde_status::resource_limit;
+        polynomial_degree = std::max(polynomial_degree, (int64_t)exceptional_degree);
+    }
     size_t degree_z = h.size() - 1 + (size_t)std::max((int64_t)0, polynomial_degree);
     size_t y_columns = degree_z + 1;
     if(y_columns >= maximum_matrix_entries ||
@@ -4189,8 +4230,12 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
         return integration_parametric_rde_status::resource_limit;
     size_t columns = y_columns + right.size();
     integration_poly weight = integration_mul(common, h);
-    integration_poly diagonal = integration_mul(common, integration_sub(
-        integration_mul(a, h), integration_derivative_poly(h)));
+    integration_poly a_multiplier;
+    if(!integration_divide_poly(common, ad, a_multiplier))
+        return integration_parametric_rde_status::verification_failed;
+    integration_poly diagonal = integration_sub(
+        integration_mul(a_multiplier, integration_mul(a, h)),
+        integration_mul(common, integration_derivative_poly(h)));
     integration_poly h_squared = integration_mul(h, h);
     size_t rows = std::max(weight.size(), diagonal.size()) + degree_z;
     std::vector<integration_poly> rhs;
@@ -4261,6 +4306,9 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     if(an.size() - 1 > options.maximum_degree ||
        ad.size() - 1 > options.maximum_degree)
         return integration_parametric_rde_status::resource_limit;
+    if(ad.size() <= 2)
+        return integration_parametric_rde_rational(an, std::move(right), basis,
+            options.maximum_matrix_entries, ad);
     integration_poly a0, residual;
     if(!integration_divmod_poly(an, ad, a0, residual))
         return integration_parametric_rde_status::verification_failed;
