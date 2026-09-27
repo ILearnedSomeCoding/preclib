@@ -438,5 +438,112 @@ int main(){
             assert(context.integrate_elementary(f, x).status == risch_status::elementary);
         }
     }
+    exact_expr lower_log = context.natural_logarithm(x);
+    exact_expr shifted_log = context.natural_logarithm(x + context.integer(1));
+    exact_expr second_shifted_log = context.natural_logarithm(x + context.integer(2));
+    for(const auto &original : {
+            context.power(x + lower_log + shifted_log, context.integer(2)) /
+                (x + context.integer(2)),
+            x * (lower_log + context.integer(1)) * (shifted_log + context.integer(1)) *
+                (second_shifted_log + context.integer(1))}){
+        exact_expr f = context.simplify(context.expand(context.differentiate(original, x), 100000));
+        exact_expr candidate = integration_joint_primitives(context, f, x, risch_options());
+        assert(candidate.valid());
+        assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(candidate - original, x), 100000));
+        std::vector<exact_expr> logs{lower_log, shifted_log, second_shifted_log};
+        auto verify_coefficients = [&](auto &&self, const exact_expr &part, size_t axis) -> bool{
+            if(axis == logs.size()){
+                integration_poly n, d;
+                return integration_parse_rational(part, x, n, d) &&
+                    integration_normalize_rational(n, d) && integration_zero_poly(n);
+            }
+            integration_expr_poly coefficients;
+            if(!integration_parse_expr_poly(context, part, logs[axis], coefficients)) return false;
+            for(const auto &coefficient : coefficients)
+                if(!self(self, coefficient, axis + 1)) return false;
+            return true;
+        };
+        assert(verify_coefficients(verify_coefficients, error, 0));
+        exact_expr ordinary = context.integrate(f, x);
+        assert(ordinary.operation() != exact_opcode::integral);
+        exact_expr ordinary_error = context.simplify(context.expand(
+            context.differentiate(ordinary - original, x), 100000));
+        assert(verify_coefficients(verify_coefficients, ordinary_error, 0));
+        risch_options small_grid;
+        small_grid.maximum_matrix_entries = 1;
+        assert(!integration_joint_primitives(context, f, x, small_grid).valid());
+    }
+    exact_expr multilog_y = context.power(x + lower_log + shifted_log, context.integer(2)) /
+        (x + context.integer(2));
+    exact_expr multilog_b = context.simplify(context.expand(
+        context.differentiate(multilog_y, x) + multilog_y, 100000));
+    assert(integration_mixed_primitive_exponential(context,
+        multilog_b * context.exponential(x), x, risch_options()).valid());
+    assert(context.integrate_elementary(multilog_b * context.exponential(x), x).status ==
+        risch_status::elementary);
+    for(const auto &g : {x, context.power(x, context.integer(2)), context.integer(1) / x}){
+        for(const auto &h : {x, x / (x + context.integer(1))}){
+            exact_expr t = context.natural_logarithm(h);
+            exact_expr y = context.power(x + t, context.integer(3)) /
+                context.power(x + context.integer(2), context.integer(2));
+            exact_expr b = context.simplify(context.expand(context.differentiate(y, x) +
+                context.differentiate(g, x) * y, 100000));
+            exact_expr candidate = integration_mixed_primitive_exponential(context,
+                b * context.exponential(g), x, risch_options());
+            assert(candidate.valid());
+            auto mixed = context.integrate_elementary(b * context.exponential(g), x);
+            assert(mixed.status == risch_status::elementary);
+            exact_expr ordinary = context.integrate(b * context.exponential(g), x);
+            assert(ordinary.operation() != exact_opcode::integral);
+            risch_options tiny_mixed;
+            tiny_mixed.maximum_matrix_entries = 1;
+            assert(!integration_mixed_primitive_exponential(context,
+                b * context.exponential(g), x, tiny_mixed).valid());
+            integration_expr_poly errors;
+            exact_expr error = context.simplify(context.expand(
+                context.differentiate(candidate / context.exponential(g) - y, x), 100000));
+            assert(integration_parse_expr_poly(context, error, t, errors));
+            for(const auto &coefficient : errors){
+                integration_poly n, d;
+                assert(integration_parse_rational(coefficient, x, n, d));
+                assert(integration_normalize_rational(n, d));
+                assert(integration_zero_poly(n));
+            }
+            exact_expr ordinary_y = ordinary / context.exponential(g);
+            exact_expr ordinary_error = context.simplify(context.expand(
+                context.differentiate(ordinary_y, x) +
+                context.differentiate(g, x) * ordinary_y - b, 100000));
+            assert(integration_parse_expr_poly(context, ordinary_error, t, errors));
+            for(const auto &coefficient : errors){
+                integration_poly n, d;
+                assert(integration_parse_rational(coefficient, x, n, d));
+                assert(integration_normalize_rational(n, d));
+                assert(integration_zero_poly(n));
+            }
+        }
+    }
+    exact_expr nested_log = context.natural_logarithm(lower_log);
+    for(const auto &original : {
+            context.power(lower_log + nested_log, context.integer(2)),
+            context.power(lower_log + nested_log, context.integer(3)) /
+                (lower_log + context.integer(2)),
+            context.power(nested_log, context.integer(2)) * lower_log}){
+        exact_expr f = context.differentiate(original, x);
+        auto nested = context.integrate_elementary(f, x);
+        if(nested.status != risch_status::elementary)
+            fprintf(stderr, "Nested primitive status %d: %s; input %s\n",
+                (int)nested.status, nested.diagnostic.c_str(), f.to_string().c_str());
+        assert(nested.status == risch_status::elementary);
+        assert(nested.remainder == context.integer(0));
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(nested.elementary_part - original, x), 100000));
+        assert(error == context.integer(0));
+    }
+    risch_options no_recursion;
+    no_recursion.maximum_recursion_depth = 0;
+    assert(context.integrate_elementary(x, x, no_recursion).status == risch_status::resource_limit);
+    assert(context.integrate_elementary(x, x).status == risch_status::elementary);
     puts("parametric RDE and coupled primitive ok");
 }

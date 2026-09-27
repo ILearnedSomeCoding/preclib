@@ -176,6 +176,7 @@ struct risch_options{
     size_t maximum_nodes = 4096;
     size_t maximum_degree = 64;
     size_t maximum_matrix_entries = 65536;
+    size_t maximum_recursion_depth = 16;
 };
 
 struct risch_result{

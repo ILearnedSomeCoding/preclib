@@ -3876,17 +3876,46 @@ static exact_expr integration_exact_primitive_polynomial(
 // Joint coefficient matching retains constants that couple adjacent powers
 // of t. This is a verified rational-coefficient ansatz, not a no-solution
 // test; failure must fall through to the other primitive algorithms.
-static exact_expr integration_joint_primitive_polynomial(
+static exact_expr integration_joint_primitive_grid(
     exact_context &context, const integration_expr_poly &input,
-    const exact_expr &generator, const exact_expr &variable,
-    const risch_options &options){
-    integration_poly an, ad;
-    if(!integration_parse_rational(context.differentiate(generator, variable),
-            variable, an, ad, options.maximum_degree, options.maximum_degree) ||
-       !integration_normalize_rational(an, ad) || integration_zero_poly(an))
-        return exact_expr();
+    const std::vector<exact_expr> &generators, const std::vector<size_t> &counts,
+    const exact_expr &variable,
+    const risch_options &options,
+    const exact_expr &rde_coefficient = exact_expr()){
+    if(generators.empty() || counts.size() != generators.size()) return exact_expr();
+    size_t levels = 1;
+    std::vector<size_t> steps;
+    std::vector<integration_poly> an, ad;
+    integration_poly common{numeric_value(1)};
+    for(size_t j = 0; j < generators.size(); ++j){
+        if(!counts[j] || counts[j] - 1 > options.maximum_degree ||
+           levels > options.maximum_matrix_entries / counts[j]) return exact_expr();
+        steps.push_back(levels);
+        levels *= counts[j];
+        integration_poly n, d, quotient;
+        if(!integration_parse_rational(context.differentiate(generators[j], variable),
+                variable, n, d, options.maximum_degree, options.maximum_degree) ||
+           !integration_normalize_rational(n, d) || integration_zero_poly(n) ||
+           !integration_divide_poly(d, integration_gcd_poly(common, d), quotient) ||
+           common.size() - 1 + quotient.size() - 1 > options.maximum_degree)
+            return exact_expr();
+        common = integration_mul(common, quotient);
+        an.push_back(std::move(n));
+        ad.push_back(std::move(d));
+    }
+    if(input.size() != levels) return exact_expr();
     std::vector<integration_poly> numerators, denominators;
-    integration_poly common = ad;
+    integration_poly rn{numeric_value(0)}, rd{numeric_value(1)};
+    if(rde_coefficient.valid()){
+        if(!integration_parse_rational(rde_coefficient, variable, rn, rd,
+                options.maximum_degree, options.maximum_degree) ||
+           !integration_normalize_rational(rn, rd)) return exact_expr();
+        integration_poly quotient;
+        if(!integration_divide_poly(rd, integration_gcd_poly(common, rd), quotient) ||
+           common.size() - 1 + quotient.size() - 1 > options.maximum_degree)
+            return exact_expr();
+        common = integration_mul(common, quotient);
+    }
     size_t degree_y = 0;
     for(const auto &coefficient : input){
         integration_poly n, d;
@@ -3909,23 +3938,30 @@ static exact_expr integration_joint_primitive_polynomial(
     // in the common input denominator therefore supply the candidate h.
     // All coefficients share h so their free constants remain coupled.
     degree_y += h.size() - 1;
-    if(degree_y > options.maximum_degree ||
-       input.size() > options.maximum_degree) return exact_expr();
-    size_t levels = input.size() + 1, stride = degree_y + 1;
+    if(degree_y > options.maximum_degree) return exact_expr();
+    size_t stride = degree_y + 1;
     integration_poly quotient;
-    if(!integration_divide_poly(common, ad, quotient)) return exact_expr();
-    integration_poly a = integration_mul(integration_mul(an, quotient), h);
+    std::vector<integration_poly> coupling;
+    for(size_t j = 0; j < generators.size(); ++j){
+        if(!integration_divide_poly(common, ad[j], quotient)) return exact_expr();
+        coupling.push_back(integration_mul(integration_mul(an[j], quotient), h));
+        if(coupling.back().size() - 1 > options.maximum_degree) return exact_expr();
+    }
     integration_poly derivative_weight = integration_mul(common, h);
     integration_poly diagonal = integration_mul(common,
         integration_derivative_poly(h));
     for(auto &v : diagonal) v = numeric_value(0) - v;
+    if(!integration_divide_poly(common, rd, quotient)) return exact_expr();
+    diagonal = integration_add(diagonal,
+        integration_mul(integration_mul(rn, quotient), h));
     integration_poly h_squared = integration_mul(h, h);
     if(derivative_weight.size() - 1 > options.maximum_degree ||
-       a.size() - 1 > options.maximum_degree ||
+       diagonal.size() - 1 > options.maximum_degree ||
        h_squared.size() - 1 > options.maximum_degree) return exact_expr();
     std::vector<integration_poly> right(levels, {numeric_value(0)});
-    size_t rows_per_level = std::max({derivative_weight.size(), a.size(),
-                                    diagonal.size()}) + degree_y;
+    size_t rows_per_level = std::max(derivative_weight.size(), diagonal.size());
+    for(const auto &a : coupling) rows_per_level = std::max(rows_per_level, a.size());
+    rows_per_level += degree_y;
     for(size_t j = 0; j < input.size(); ++j){
         if(!integration_divide_poly(common, denominators[j], quotient))
             return exact_expr();
@@ -3954,9 +3990,15 @@ static exact_expr integration_joint_primitive_polynomial(
             for(size_t i = 0; i < diagonal.size(); ++i)
                 matrix[offset + i + k][column] =
                     matrix[offset + i + k][column] + diagonal[i];
-            if(level) for(size_t i = 0; i < a.size(); ++i)
-                matrix[offset - rows_per_level + i + k][column] =
-                    a[i] * numeric_value(level);
+            for(size_t j = 0; j < generators.size(); ++j){
+                size_t exponent = (level / steps[j]) % counts[j];
+                if(!exponent) continue;
+                for(size_t i = 0; i < coupling[j].size(); ++i){
+                    size_t row = (level - steps[j]) * rows_per_level + i + k;
+                    matrix[row][column] = matrix[row][column] +
+                        coupling[j][i] * numeric_value(exponent);
+                }
+            }
         }
     }
     std::vector<numeric_value> solution;
@@ -3976,16 +4018,121 @@ static exact_expr integration_joint_primitive_polynomial(
         integration_poly lhs = integration_add(integration_mul(derivative_weight,
             integration_derivative_poly(coefficients[j])),
             integration_mul(diagonal, coefficients[j]));
-        if(j + 1 < levels){
-            integration_poly term = integration_mul(a, coefficients[j + 1]);
-            for(auto &v : term) v = v * numeric_value(j + 1);
+        for(size_t axis = 0; axis < generators.size(); ++axis){
+            size_t exponent = (j / steps[axis]) % counts[axis];
+            if(exponent + 1 == counts[axis]) continue;
+            integration_poly term = integration_mul(coupling[axis],
+                coefficients[j + steps[axis]]);
+            for(auto &v : term) v = v * numeric_value(exponent + 1);
             lhs = integration_add(lhs, term);
         }
         integration_trim(lhs);
         integration_trim(right[j]);
         if(lhs != right[j]) return exact_expr();
     }
-    return integration_expr_poly_expr(context, expressions, generator);
+    exact_expr result = context.integer(0);
+    for(size_t j = 0; j < levels; ++j){
+        if(integration_zero_poly(coefficients[j])) continue;
+        exact_expr term = expressions[j];
+        for(size_t axis = 0; axis < generators.size(); ++axis){
+            size_t exponent = (j / steps[axis]) % counts[axis];
+            if(exponent) term = term * context.power(generators[axis], context.integer(exponent));
+        }
+        result = result + term;
+    }
+    return result;
+}
+
+static exact_expr integration_joint_primitive_polynomial(
+    exact_context &context, const integration_expr_poly &input,
+    const exact_expr &generator, const exact_expr &variable,
+    const risch_options &options, const exact_expr &rde_coefficient = exact_expr()){
+    if(input.size() > options.maximum_degree) return exact_expr();
+    integration_expr_poly padded = input;
+    padded.push_back(context.integer(0));
+    return integration_joint_primitive_grid(context, padded, {generator},
+        {padded.size()}, variable, options, rde_coefficient);
+}
+
+static exact_expr integration_joint_primitives(
+    exact_context &context, const exact_expr &expression, const exact_expr &variable,
+    const risch_options &options, const exact_expr &rde_coefficient = exact_expr()){
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part, variable)) generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i) self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    if(generators.size() < 2) return exact_expr();
+    integration_expr_poly input{expression};
+    std::vector<size_t> counts;
+    for(const auto &generator : generators){
+        std::vector<integration_expr_poly> children;
+        size_t count = 1;
+        for(const auto &coefficient : input){
+            integration_expr_poly child;
+            if(!integration_parse_expr_poly(context, coefficient, generator, child) ||
+               child.size() > options.maximum_degree) return exact_expr();
+            count = std::max(count, child.size() + 1);
+            children.push_back(std::move(child));
+        }
+        if(input.size() > options.maximum_matrix_entries / count) return exact_expr();
+        integration_expr_poly expanded(input.size() * count, context.integer(0));
+        for(size_t j = 0; j < children.size(); ++j)
+            for(size_t k = 0; k < children[j].size(); ++k)
+                expanded[j + input.size() * k] = children[j][k];
+        input = std::move(expanded);
+        counts.push_back(count);
+    }
+    return integration_joint_primitive_grid(context, input, generators, counts,
+        variable, options, rde_coefficient);
+}
+
+// Solve all log-polynomial coefficients together after removing exp(g).
+static exact_expr integration_mixed_primitive_exponential(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, const risch_options &options){
+    std::vector<exact_expr> factors, coefficients;
+    integration_factor_list(expression, factors);
+    exact_expr inner = context.integer(0);
+    bool has_exponential = false;
+    for(const auto &factor : factors){
+        if(factor.operation() == exact_opcode::exponential){
+            inner = inner + factor.operand(0);
+            has_exponential = true;
+        }else coefficients.push_back(factor);
+    }
+    if(!has_exponential) return exact_expr();
+    integration_poly n, d;
+    if(!integration_parse_rational(inner, variable, n, d,
+        options.maximum_degree, options.maximum_degree)) return exact_expr();
+    exact_expr derivative = context.differentiate(inner, variable);
+    exact_expr cofactor = coefficients.empty() ? context.integer(1) :
+        context.multiply(coefficients);
+    exact_expr joint = integration_joint_primitives(context, cofactor, variable, options, derivative);
+    if(joint.valid()) return joint * context.exponential(inner);
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part, variable)) generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, cofactor);
+    for(const auto &generator : generators){
+        integration_expr_poly input;
+        if(!integration_parse_expr_poly(context, cofactor, generator, input) ||
+           input.size() < 2) continue;
+        exact_expr solution = integration_joint_primitive_polynomial(context,
+            input, generator, variable, options, derivative);
+        if(solution.valid()) return solution * context.exponential(inner);
+    }
+    return exact_expr();
 }
 
 // Integrate a polynomial in a primitive generator by solving its coefficient
@@ -5596,6 +5743,9 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                     tower_integrated = true;
                 }else{
                     exact_expr polynomial_solution =
+                        integration_mixed_primitive_exponential(
+                            *this, source, variable, risch_options());
+                    if(!polynomial_solution.valid()) polynomial_solution =
                         integration_hyperexponential_polynomial(
                             *this, simplify(source / factor), inner, variable);
                     if(polynomial_solution.valid()){
@@ -5821,6 +5971,8 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         return result;
     };
     exact_expr normalized = simplify(expression);
+    exact_expr multilog = integration_joint_primitives(*this, normalized, variable, risch_options());
+    if(multilog.valid()) return simplify(multilog);
     exact_expr direct = antiderivative(normalized.root_);
     if(direct.operation() != exact_opcode::integral) return simplify(direct);
 
@@ -5844,6 +5996,30 @@ risch_result exact_context::integrate_elementary(
 
     risch_result result{risch_status::unsupported, integer(0), expression, {},
                         "outside verified Q(x) support"};
+    struct active_call{
+        const exact_context *context;
+        uint32_t expression, variable;
+    };
+    static thread_local std::vector<active_call> active;
+    size_t depth = 0;
+    for(const auto &call : active){
+        if(call.context != this) continue;
+        ++depth;
+        if(call.expression == expression.id() && call.variable == variable.id()){
+            result.diagnostic = "cyclic recursive integration subproblem";
+            return result;
+        }
+    }
+    if(depth >= options.maximum_recursion_depth){
+        result.status = risch_status::resource_limit;
+        result.diagnostic = "recursive integration depth budget exceeded";
+        return result;
+    }
+    active.push_back({this, expression.id(), variable.id()});
+    struct call_scope{
+        std::vector<active_call> &calls;
+        ~call_scope(){ calls.pop_back(); }
+    } scope{active};
     if(options.maximum_nodes == 0 || options.maximum_degree == 0 ||
        expression.reachable_node_count() > options.maximum_nodes){
         result.status = risch_status::resource_limit;
@@ -6001,6 +6177,25 @@ risch_result exact_context::integrate_elementary(
         result.diagnostic.clear();
         return true;
         };
+        exact_expr mixed_candidate = integration_mixed_primitive_exponential(
+            *this, expression, variable, options);
+        if(mixed_candidate.valid()){
+            // Joint coefficient identities certify D(exp(g)*Y)=input exactly.
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(mixed_candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        exact_expr multilog_candidate = integration_joint_primitives(
+            *this, expression, variable, options);
+        if(multilog_candidate.valid()){
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(multilog_candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
         exact_expr exact_primitive_candidate =
             integration_exact_primitive_polynomial(*this, expression, variable);
         if(exact_primitive_candidate.valid() &&
@@ -6666,15 +6861,39 @@ risch_result exact_context::integrate_elementary(
                 if(!integration_depends_on(expression, parameter)) break;
             }
 
-            // Divide by the generator derivative; the remainder must be Q(t).
+            // Divide before substituting so lower-field derivative factors cancel.
             exact_expr transformed_input = simplify(
-                substitute(expression, generator, parameter) /
-                generator_derivative);
+                substitute(simplify(expand(expression / generator_derivative, 100000)),
+                    generator, parameter));
             integration_poly numerator, denominator;
             if(!integration_parse_rational(transformed_input, parameter,
                                            numerator, denominator) ||
-               !integration_normalize_rational(numerator, denominator))
-                continue;
+               !integration_normalize_rational(numerator, denominator)){
+                if(integration_depends_on(transformed_input, variable)) continue;
+                size_t lower_logs = 0;
+                std::unordered_set<uint32_t> lower_seen;
+                auto count_logs = [&](auto &&self, const exact_expr &part) -> void{
+                    if(!lower_seen.insert(part.id()).second) return;
+                    if(part.operation() == exact_opcode::natural_logarithm &&
+                       integration_depends_on(part, parameter)) ++lower_logs;
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                count_logs(count_logs, transformed_input);
+                if(lower_logs >= generators.size()) continue;
+                risch_result lower = integrate_elementary(transformed_input, parameter, options);
+                if(lower.status != risch_status::elementary ||
+                   lower.remainder != integer(0)) continue;
+                // The lower strict identity and f/D(generator) substitution certify the chain rule.
+                result.status = risch_status::elementary;
+                result.elementary_part = substitute(lower.elementary_part, parameter, generator);
+                result.remainder = integer(0);
+                result.conditions.clear();
+                for(const auto &condition : lower.conditions)
+                    result.conditions.push_back(substitute(condition, parameter, generator));
+                result.diagnostic.clear();
+                return true;
+            }
             exact_expr rational_integrand = integration_poly_expr(
                 *this, numerator, parameter) /
                 integration_poly_expr(*this, denominator, parameter);
