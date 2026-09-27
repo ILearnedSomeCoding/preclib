@@ -4152,7 +4152,78 @@ struct integration_parametric_rational_basis{
     std::vector<numeric_value> constants;
 };
 
-// Polynomial a and split higher-order poles use the ordinary pole-order bound.
+// Find every positive integer residue without constructing algebraic roots.
+static integration_parametric_rde_status integration_integer_residue_factors(
+    const integration_poly &p, const integration_poly &numerator,
+    const integration_poly &derivative,
+    std::vector<std::pair<integration_poly, int64_t>> &resonances,
+    size_t budget){
+    size_t n = p.size() - 1;
+    if(!n || n > budget / n || n * n > budget / (n + 1))
+        return integration_parametric_rde_status::resource_limit;
+    using matrix_t = std::vector<std::vector<numeric_value>>;
+    auto multiplication = [&](const integration_poly &v, matrix_t &m) -> bool{
+        m.assign(n, std::vector<numeric_value>(n, numeric_value(0)));
+        for(size_t j = 0; j < n; ++j){
+            integration_poly shifted(j, numeric_value(0)), q, r;
+            shifted.insert(shifted.end(), v.begin(), v.end());
+            if(!integration_divmod_poly(shifted, p, q, r)) return false;
+            for(size_t i = 0; i < r.size(); ++i) m[i][j] = r[i];
+        }
+        return true;
+    };
+    matrix_t inverse_system;
+    if(!multiplication(derivative, inverse_system))
+        return integration_parametric_rde_status::verification_failed;
+    for(size_t i = 0; i < n; ++i)
+        inverse_system[i].push_back(i < numerator.size() ? numerator[i] : numeric_value(0));
+    integration_poly residue;
+    if(!integration_solve_linear(inverse_system, n, residue))
+        return integration_parametric_rde_status::verification_failed;
+    integration_trim(residue);
+    integration_poly q, check;
+    if(!integration_divmod_poly(integration_sub(integration_mul(residue, derivative),
+        numerator), p, q, check) || !integration_zero_poly(check))
+        return integration_parametric_rde_status::verification_failed;
+    matrix_t r, b(n, std::vector<numeric_value>(n, numeric_value(0)));
+    if(!multiplication(residue, r))
+        return integration_parametric_rde_status::verification_failed;
+    for(size_t i = 0; i < n; ++i) b[i][i] = numeric_value(1);
+    numeric_value bound(1);
+    // Faddeev-LeVerrier gives the monic characteristic polynomial over Q.
+    for(size_t k = 1; k <= n; ++k){
+        matrix_t c(n, std::vector<numeric_value>(n, numeric_value(0)));
+        for(size_t i = 0; i < n; ++i)
+            for(size_t j = 0; j < n; ++j)
+                for(size_t l = 0; l < n; ++l)
+                    c[i][j] = c[i][j] + r[i][l] * b[l][j];
+        numeric_value coefficient(0);
+        for(size_t i = 0; i < n; ++i) coefficient = coefficient - c[i][i];
+        coefficient = coefficient / numeric_value(k);
+        numeric_value absolute = coefficient.is_negative() ? -coefficient : coefficient;
+        numeric_value candidate = numeric_value(1) + absolute;
+        if((bound - candidate).is_negative()) bound = candidate;
+        for(size_t i = 0; i < n; ++i) c[i][i] = c[i][i] + coefficient;
+        b = std::move(c);
+    }
+    for(const auto &row : b)
+        for(const auto &entry : row)
+            if(!entry.is_zero())
+                return integration_parametric_rde_status::verification_failed;
+    // Cauchy's bound certifies that no positive integer eigenvalue was skipped.
+    size_t searches = std::min<size_t>(budget / n, (size_t)INT64_MAX);
+    if((numeric_value(searches) - bound).is_negative())
+        return integration_parametric_rde_status::resource_limit;
+    for(size_t k = 1; k <= searches && !(bound - numeric_value(k)).is_negative(); ++k){
+        integration_poly scaled = derivative;
+        for(auto &v : scaled) v = v * numeric_value(k);
+        integration_poly factor = integration_gcd_poly(p, integration_sub(numerator, scaled));
+        if(factor.size() > 1) resonances.push_back({std::move(factor), (int64_t)k});
+    }
+    return integration_parametric_rde_status::solved;
+}
+
+// Polynomial a and higher-order poles use the ordinary pole-order bound.
 // Simple poles additionally admit integer-residue cancellation, at the poles and
 // at infinity. Keep the entire kernel, including right-hand cancellations.
 static integration_parametric_rde_status integration_parametric_rde_rational(
@@ -4168,20 +4239,28 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     if(ad.size() == 2) pole_factors = {ad};
     if(ad.size() > 1){
         if(pole_factors.empty()){
-            // rad(ad) divides gcd(ad,ad') exactly when every pole has order >= 2.
+            // Yun decomposition groups all poles by order without factoring over Q.
             integration_poly repeated = integration_gcd_poly(ad,
                 integration_derivative_poly(ad)), radical, quotient;
-            if(!integration_divide_poly(ad, repeated, radical) ||
-               !integration_divide_poly(repeated, radical, quotient))
-                return integration_parametric_rde_status::unsupported;
+            if(!integration_divide_poly(ad, repeated, radical))
+                return integration_parametric_rde_status::verification_failed;
+            size_t multiplicity = 1;
+            while(radical.size() > 1){
+                integration_poly next = integration_gcd_poly(radical, repeated), layer;
+                if(!integration_divide_poly(radical, next, layer) ||
+                   !integration_divide_poly(repeated, next, quotient))
+                    return integration_parametric_rde_status::verification_failed;
+                if(layer.size() > 1)
+                    for(size_t i = 0; i < multiplicity; ++i) pole_factors.push_back(layer);
+                radical = std::move(next);
+                repeated = std::move(quotient);
+                ++multiplicity;
+            }
         }else{
             integration_poly product{numeric_value(1)};
             for(const auto &factor : pole_factors){
                 if(factor.size() < 2 || factor.back() != numeric_value(1) ||
                    integration_gcd_poly(factor, integration_derivative_poly(factor)).size() != 1)
-                    return integration_parametric_rde_status::unsupported;
-                size_t multiplicity = std::count(pole_factors.begin(), pole_factors.end(), factor);
-                if(factor.size() > 2 && multiplicity == 1)
                     return integration_parametric_rde_status::unsupported;
                 for(const auto &other : pole_factors)
                     if(other != factor && integration_gcd_poly(factor, other).size() != 1)
@@ -4194,13 +4273,8 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     integration_poly polynomial_a, residue;
     if(!integration_divmod_poly(a, ad, polynomial_a, residue))
         return integration_parametric_rde_status::verification_failed;
-    auto evaluate = [](const integration_poly &p, const numeric_value &x){
-        numeric_value value(0);
-        for(size_t i = p.size(); i-- > 0;) value = value * x + p[i];
-        return value;
-    };
     integration_poly ad_derivative = integration_derivative_poly(ad);
-    std::vector<int64_t> positive_residues(pole_factors.size(), 0);
+    std::vector<std::pair<integration_poly, int64_t>> resonances;
     // The coefficient of 1/x also includes simple parts of repeated poles.
     numeric_value residue_sum = residue.size() == ad.size() - 1 ?
         residue.back() : numeric_value(0);
@@ -4208,12 +4282,26 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
         // At higher-order poles a*y dominates y', so no residue resonance occurs.
         if(std::count(pole_factors.begin(), pole_factors.end(), pole_factors[i]) > 1)
             continue;
-        numeric_value root = numeric_value(0) - pole_factors[i][0];
-        numeric_value local = evaluate(residue, root) / evaluate(ad_derivative, root);
+        // Residues equal r at every root of p iff numerator == r*ad' modulo p.
+        integration_poly quotient, numerator_mod, derivative_mod;
+        if(!integration_divmod_poly(residue, pole_factors[i], quotient, numerator_mod) ||
+           !integration_divmod_poly(ad_derivative, pole_factors[i], quotient, derivative_mod) ||
+           integration_zero_poly(derivative_mod))
+            return integration_parametric_rde_status::verification_failed;
+        numeric_value local = numerator_mod.back() / derivative_mod.back();
+        integration_poly scaled = derivative_mod;
+        for(auto &v : scaled) v = v * local;
+        integration_trim(scaled);
+        if(scaled != numerator_mod){
+            auto status = integration_integer_residue_factors(pole_factors[i],
+                numerator_mod, derivative_mod, resonances, maximum_matrix_entries);
+            if(status != integration_parametric_rde_status::solved) return status;
+            continue;
+        }
         int64_t integer = 0;
         if(local.is_integer() && !integer_i64(local, integer))
             return integration_parametric_rde_status::resource_limit;
-        if(integer > 0) positive_residues[i] = integer;
+        if(integer > 0) resonances.push_back({pole_factors[i], integer});
     }
     integration_poly common{numeric_value(1)};
     int64_t degree_f = -1;
@@ -4233,10 +4321,9 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     }
     integration_poly h = integration_gcd_poly(common,
         integration_derivative_poly(common));
-    for(size_t pole = 0; pole < pole_factors.size(); ++pole){
-        int64_t integral_residue = positive_residues[pole];
-        if(!integral_residue) continue;
-        const integration_poly &factor = pole_factors[pole];
+    for(const auto &resonance : resonances){
+        int64_t integral_residue = resonance.second;
+        const integration_poly &factor = resonance.first;
         if((uint64_t)integral_residue > maximum_matrix_entries)
             return integration_parametric_rde_status::resource_limit;
         integration_poly remaining = h;
@@ -4368,8 +4455,8 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     std::vector<exact_expr> factored;
     integration_factor_list(context.factor(integration_poly_expr(context, ad, variable)),
         factored);
-    std::vector<integration_poly> linear_factors;
-    bool all_linear = true;
+    std::vector<integration_poly> factors;
+    bool parsed_factors = true;
     for(const auto &factor : factored){
         if(factor.is_value()) continue;
         exact_expr base = factor;
@@ -4378,21 +4465,20 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
             base = factor.operand(0);
             if(!integration_exponent(factor.operand(1), multiplicity) ||
                multiplicity > options.maximum_degree){
-                all_linear = false; break;
+                parsed_factors = false; break;
             }
         }
         integration_poly p;
-        if(!integration_parse_poly(base, variable, p) || p.size() < 2 ||
-           (p.size() > 2 && multiplicity == 1)){
-            all_linear = false; break;
+        if(!integration_parse_poly(base, variable, p) || p.size() < 2){
+            parsed_factors = false; break;
         }
         numeric_value leading = p.back();
         for(auto &v : p) v = v / leading;
-        for(size_t i = 0; i < multiplicity; ++i) linear_factors.push_back(p);
+        for(size_t i = 0; i < multiplicity; ++i) factors.push_back(p);
     }
-    if(all_linear && !linear_factors.empty()){
+    if(parsed_factors && !factors.empty()){
         auto status = integration_parametric_rde_rational(an, right, basis,
-            options.maximum_matrix_entries, ad, linear_factors);
+            options.maximum_matrix_entries, ad, factors);
         if(status != integration_parametric_rde_status::unsupported) return status;
     }
     integration_poly a0, residual;
@@ -5990,35 +6076,31 @@ risch_result exact_context::integrate_elementary(
         };
         collect(collect, expression);
         if(generators.size() < 2) return false;
-        std::vector<integration_poly> arguments;
+        std::vector<std::pair<integration_poly, integration_poly>> arguments;
         arguments.reserve(generators.size());
         for(const exact_expr &generator : generators){
-            integration_poly argument;
-            if(!integration_parse_poly(generator.operand(0), variable,
-                                       argument))
+            integration_poly n, d;
+            if(!integration_parse_rational(generator.operand(0), variable, n, d,
+                    degree_budget, degree_budget) || !integration_normalize_rational(n, d))
                 return false;
-            arguments.push_back(std::move(argument));
+            arguments.push_back({std::move(n), std::move(d)});
         }
 
-        const integration_poly &reference = arguments.front();
-        size_t pivot = 0;
-        while(pivot < reference.size() && reference[pivot].is_zero()) ++pivot;
-        if(pivot == reference.size()) return false;
+        const auto &reference = arguments.front();
 
         std::vector<numeric_value> ratios;
         ratios.reserve(arguments.size());
         precz_t common_denominator(1);
-        for(const integration_poly &argument : arguments){
-            if(pivot >= argument.size()) return false;
-            numeric_value ratio = argument[pivot] / reference[pivot];
-            size_t count = std::max(reference.size(), argument.size());
-            for(size_t coefficient = 0; coefficient < count; ++coefficient){
-                numeric_value lhs = coefficient < argument.size()
-                    ? argument[coefficient] : numeric_value(0);
-                numeric_value rhs = coefficient < reference.size()
-                    ? reference[coefficient] * ratio : numeric_value(0);
-                if(lhs != rhs) return false;
-            }
+        for(const auto &argument : arguments){
+            integration_poly lhs = integration_mul(argument.first, reference.second);
+            integration_poly rhs = integration_mul(reference.first, argument.second);
+            size_t pivot = 0;
+            while(pivot < rhs.size() && rhs[pivot].is_zero()) ++pivot;
+            if(pivot == rhs.size() || pivot >= lhs.size()) return false;
+            numeric_value ratio = lhs[pivot] / rhs[pivot];
+            for(auto &v : rhs) v = v * ratio;
+            integration_trim(rhs);
+            if(lhs != rhs) return false;
             precq_t exact_ratio = ratio.rational();
             precz_t denominator(exact_ratio.denominator());
             common_denominator = (common_denominator /
@@ -6040,12 +6122,13 @@ risch_result exact_context::integrate_elementary(
             powers.push_back(power_value);
         }
 
-        integration_poly base_argument = reference;
+        integration_poly base_argument = reference.first;
         numeric_value scale(common_denominator);
         for(numeric_value &coefficient : base_argument)
             coefficient = coefficient / scale;
         exact_expr base_generator = exponential(integration_poly_expr(
-            *this, base_argument, variable));
+            *this, base_argument, variable) /
+            integration_poly_expr(*this, reference.second, variable));
         exact_expr normalized = expression;
         for(size_t i = 0; i < generators.size(); ++i){
             exact_expr replacement = powers[i] == 1 ? base_generator
@@ -6736,12 +6819,17 @@ risch_result exact_context::integrate_elementary(
         };
         collect(collect, expression);
         for(const exact_expr &generator : generators){
-            integration_poly inner, numerator, denominator;
-            if(!integration_parse_poly(generator.operand(0), variable, inner) ||
-               inner.size() < 2)
+            integration_poly inner, inner_denominator, numerator, denominator;
+            if(!integration_parse_rational(generator.operand(0), variable, inner,
+                    inner_denominator, degree_budget, degree_budget) ||
+               !integration_normalize_rational(inner, inner_denominator))
                 continue;
+            integration_poly derivative = integration_sub(
+                integration_mul(integration_derivative_poly(inner), inner_denominator),
+                integration_mul(inner, integration_derivative_poly(inner_denominator)));
+            if(integration_zero_poly(derivative)) continue;
             exact_expr candidate;
-            if(inner.size() == 2){
+            if(inner.size() == 2 && inner_denominator.size() == 1){
                 if(!integration_parse_rational(expression, generator,
                                                numerator, denominator) ||
                    !integration_normalize_rational(numerator, denominator))
@@ -6760,18 +6848,17 @@ risch_result exact_context::integrate_elementary(
             }else{
                 // For nonlinear g, substitution t=exp(g) is useful when
                 // the integrand visibly supplies the missing factor g'(x).
-                integration_poly derivative =
-                    integration_derivative_poly(inner);
-                exact_expr derivative_expression = integration_poly_expr(
-                    *this, derivative, variable);
+                exact_expr derivative_expression = simplify(
+                    differentiate(generator.operand(0), variable));
                 exact_expr parameter;
                 for(size_t suffix = 0;; ++suffix){
                     parameter = symbol("_risch_exp_t" +
                                       std::to_string(suffix));
                     if(!integration_depends_on(expression, parameter)) break;
                 }
-                exact_expr transformed_input = substitute(
-                    expression, generator, parameter) / derivative_expression;
+                // dt = t*g'(x)*dx, including the exponential Jacobian t.
+                exact_expr transformed_input = simplify(substitute(
+                    expression / derivative_expression, generator, parameter) / parameter);
                 if(!integration_parse_rational(transformed_input, parameter,
                                                numerator, denominator) ||
                    !integration_normalize_rational(numerator, denominator))
@@ -6813,12 +6900,17 @@ risch_result exact_context::integrate_elementary(
         };
         collect(collect, expression);
         for(const exact_expr &generator : generators){
-            integration_poly inner;
-            if(!integration_parse_poly(generator.operand(0), variable, inner))
+            integration_poly inner, inner_denominator;
+            if(!integration_parse_rational(generator.operand(0), variable, inner,
+                    inner_denominator, degree_budget, degree_budget) ||
+               !integration_normalize_rational(inner, inner_denominator))
                 continue;
-            integration_poly inner_derivative =
-                integration_derivative_poly(inner);
+            integration_poly inner_derivative = integration_sub(
+                integration_mul(integration_derivative_poly(inner), inner_denominator),
+                integration_mul(inner, integration_derivative_poly(inner_denominator)));
             if(integration_zero_poly(inner_derivative)) continue;
+            integration_poly derivative_denominator = integration_mul(
+                inner_denominator, inner_denominator);
 
             using laurent_terms = std::map<int64_t, exact_expr>;
             auto add_term = [&](laurent_terms &terms, int64_t exponent,
@@ -6833,9 +6925,33 @@ risch_result exact_context::integrate_elementary(
                     terms.emplace(1, integer(1));
                     return true;
                 }
-                if(!integration_depends_on(part, generator)){
-                    terms.emplace(0, part);
+                if(part.operation() == exact_opcode::exponential){
+                    integration_poly n, d;
+                    if(!integration_parse_rational(part.operand(0), variable, n, d,
+                        degree_budget, degree_budget)) return false;
+                    integration_poly lhs = integration_mul(n, inner_denominator);
+                    integration_poly rhs = integration_mul(inner, d);
+                    size_t pivot = 0;
+                    while(pivot < rhs.size() && rhs[pivot].is_zero()) ++pivot;
+                    if(pivot == rhs.size() || pivot >= lhs.size()) return false;
+                    numeric_value ratio = lhs[pivot] / rhs[pivot];
+                    for(auto &v : rhs) v = v * ratio;
+                    integration_trim(rhs);
+                    int64_t exponent = 0;
+                    if(lhs != rhs || !integer_i64(ratio, exponent) ||
+                       exponent < -(int64_t)degree_budget ||
+                       exponent > (int64_t)degree_budget) return false;
+                    terms.emplace(exponent, integer(1));
                     return true;
+                }
+                if(!integration_depends_on(part, generator)){
+                    // A subtree may contain exp(k*g) without the exact generator node.
+                    integration_poly n, d;
+                    if(integration_parse_rational(part, variable, n, d,
+                        degree_budget, degree_budget)){
+                        terms.emplace(0, part);
+                        return true;
+                    }
                 }
                 if(part.operation() == exact_opcode::power &&
                    part.operand(0) == generator){
@@ -6921,8 +7037,27 @@ risch_result exact_context::integrate_elementary(
                 if(term.first < 0) scale = -scale;
                 for(numeric_value &coefficient : scaled_derivative)
                     coefficient = coefficient * scale;
-                integration_rational_rde_result rde =
-                    integration_rde_rational(p, q, scaled_derivative);
+                std::vector<integration_parametric_rational_basis> basis;
+                auto solved = integration_parametric_rde_rational(scaled_derivative,
+                    {{p, q}}, basis, options.maximum_matrix_entries, derivative_denominator);
+                if(solved == integration_parametric_rde_status::resource_limit){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic = "exponential Laurent RDE budget exhausted";
+                    return true;
+                }
+                integration_rational_rde_result rde{
+                    solved == integration_parametric_rde_status::solved ?
+                        integration_rde_status::no_polynomial_solution :
+                        integration_rde_status::verification_failed, {}, {}};
+                for(auto &entry : basis){
+                    if(entry.constants[0].is_zero()) continue;
+                    for(auto &v : entry.numerator) v = v / entry.constants[0];
+                    rde = {integration_rde_status::solved, std::move(entry.numerator),
+                        std::move(entry.denominator)};
+                    break;
+                }
                 if(rde.status == integration_rde_status::solved){
                     exact_expr rational_solution =
                         integration_poly_expr(*this, rde.numerator, variable) /
@@ -6958,7 +7093,7 @@ risch_result exact_context::integrate_elementary(
         return false;
     };
     if(classify_exponential_laurent()) return result;
-    auto classify_polynomial_hyperexponential = [&]() -> bool{
+    auto classify_rational_hyperexponential = [&]() -> bool{
         exact_expr exponential_factor;
         exact_expr cofactor = integer(1);
         if(expression.operation() == exact_opcode::exponential){
@@ -6980,15 +7115,38 @@ risch_result exact_context::integrate_elementary(
             cofactor = other_factors.empty() ? integer(1)
                                              : multiply(other_factors);
         }else return false;
-        integration_poly p, q, g;
-        if(!integration_parse_rational(cofactor, variable, p, q) ||
+        integration_poly p, q, gn, gd;
+        if(!integration_parse_rational(cofactor, variable, p, q, degree_budget, degree_budget) ||
            !integration_normalize_rational(p, q) ||
-           !integration_parse_poly(exponential_factor.operand(0), variable, g))
+           !integration_parse_rational(exponential_factor.operand(0), variable,
+                gn, gd, degree_budget, degree_budget) ||
+           !integration_normalize_rational(gn, gd))
             return false;
-        integration_poly logarithmic_derivative = integration_derivative_poly(g);
+        integration_poly logarithmic_derivative = integration_sub(
+            integration_mul(integration_derivative_poly(gn), gd),
+            integration_mul(gn, integration_derivative_poly(gd)));
         if(integration_zero_poly(logarithmic_derivative)) return false;
-        integration_rational_rde_result rde = integration_rde_rational(
-            p, q, logarithmic_derivative);
+        integration_poly derivative_denominator = integration_mul(gd, gd);
+        std::vector<integration_parametric_rational_basis> basis;
+        auto solved = integration_parametric_rde_rational(logarithmic_derivative,
+            {{p, q}}, basis, options.maximum_matrix_entries, derivative_denominator);
+        if(solved == integration_parametric_rde_status::resource_limit){
+            result.status = risch_status::resource_limit;
+            result.diagnostic = "rational hyperexponential RDE budget exhausted";
+            return true;
+        }
+        if(solved == integration_parametric_rde_status::unsupported) return false;
+        integration_rational_rde_result rde{
+            solved == integration_parametric_rde_status::solved ?
+                integration_rde_status::no_polynomial_solution :
+                integration_rde_status::verification_failed, {}, {}};
+        for(auto &entry : basis){
+            if(entry.constants[0].is_zero()) continue;
+            for(auto &v : entry.numerator) v = v / entry.constants[0];
+            rde = {integration_rde_status::solved, std::move(entry.numerator),
+                std::move(entry.denominator)};
+            break;
+        }
         if(rde.status == integration_rde_status::solved){
             exact_expr candidate = integration_poly_expr(*this, rde.numerator,
                                                          variable) *
@@ -7000,7 +7158,7 @@ risch_result exact_context::integrate_elementary(
                 differentiate(candidate, variable) - expression, 100000));
             if(error != integer(0)){
                 result.status = risch_status::verification_failed;
-                result.diagnostic = "polynomial RDE solution failed verification";
+                result.diagnostic = "rational RDE solution failed verification";
                 return true;
             }
             result.status = risch_status::elementary;
@@ -7011,17 +7169,17 @@ risch_result exact_context::integrate_elementary(
         }
         if(rde.status == integration_rde_status::verification_failed){
             result.status = risch_status::verification_failed;
-            result.diagnostic = "polynomial RDE identity failed verification";
+            result.diagnostic = "rational RDE identity failed verification";
             return true;
         }
         result.status = risch_status::proven_nonelementary;
         result.elementary_part = integer(0);
         result.remainder = expression;
         result.diagnostic =
-            "polynomial hyperexponential RDE has no rational solution";
+            "rational hyperexponential RDE has no rational solution";
         return true;
     };
-    if(classify_polynomial_hyperexponential()) return result;
+    if(classify_rational_hyperexponential()) return result;
 
     const size_t invalid_degree = SIZE_MAX;
     std::unordered_map<uint32_t, size_t> degrees;

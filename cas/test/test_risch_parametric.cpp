@@ -188,6 +188,38 @@ int main(){
     }
     exact_expr high_inner = -context.integer(1) / x;
     exact_expr quadratic = context.power(x, context.integer(2)) + context.integer(1);
+    for(int k : {-4, -1, 1, 3}){
+        exact_expr a = context.integer(k) * context.differentiate(quadratic, x) / quadratic;
+        integration_poly an, ad;
+        assert(integration_parse_rational(a, x, an, ad));
+        assert(integration_parametric_rde_rational(an, {}, rational_basis,
+            65536, ad) == status::solved);
+        assert(rational_basis.size() == 1);
+        exact_expr expected = context.power(quadratic, context.integer(-k));
+        integration_poly en, ed;
+        assert(integration_parse_rational(expected, x, en, ed));
+        assert(integration_mul(rational_basis[0].numerator, ed) ==
+            integration_mul(en, rational_basis[0].denominator));
+    }
+    for(int k : {-1, 1}){
+        exact_expr a = context.integer(k) * context.differentiate(quadratic, x) /
+            (context.integer(2) * quadratic);
+        exact_expr y = (x + context.integer(2)) / quadratic;
+        exact_expr b = context.differentiate(y, x) + a * y;
+        integration_poly an, ad, bn, bd, yn, yd;
+        assert(integration_parse_rational(a, x, an, ad));
+        assert(integration_parse_rational(b, x, bn, bd));
+        assert(integration_parse_rational(y, x, yn, yd));
+        assert(integration_parametric_rde_rational(an, {{bn, bd}}, rational_basis,
+            65536, ad) == status::solved);
+        assert(rational_basis.size() == 1);
+        integration_poly rhs = integration_mul(yn, rational_basis[0].denominator);
+        for(auto &v : rhs) v = v * rational_basis[0].constants[0];
+        assert(integration_mul(rational_basis[0].numerator, yd) == rhs);
+        assert(integration_parametric_rde_rational(an, {}, rational_basis,
+            65536, ad) == status::solved);
+        assert(rational_basis.empty());
+    }
     for(const auto &a : {
             context.integer(1) / context.power(quadratic, context.integer(2)),
             context.integer(1) / (context.power(quadratic, context.integer(3)) *
@@ -213,13 +245,121 @@ int main(){
         assert(rational_basis.empty());
     }
     assert(integration_parametric_rde_rational({numeric_value(1)}, {}, rational_basis,
-        65536, {numeric_value(1), numeric_value(0), numeric_value(1)}) == status::unsupported);
+        65536, {numeric_value(1), numeric_value(0), numeric_value(1)}) == status::solved);
+    assert(rational_basis.empty());
+    std::vector<std::pair<integration_poly, int64_t>> resonances;
+    assert(integration_integer_residue_factors(
+        {numeric_value(0), numeric_value(-1), numeric_value(1)},
+        {numeric_value(-3), numeric_value(5)},
+        {numeric_value(-1), numeric_value(2)}, resonances, 65536) == status::solved);
+    assert(resonances.size() == 2);
+    assert(resonances[0].second == 2 && resonances[1].second == 3);
+    assert(resonances[0].first == integration_poly({numeric_value(-1), numeric_value(1)}));
+    assert(resonances[1].first == integration_poly({numeric_value(0), numeric_value(1)}));
+    assert(integration_parametric_rde_rational({numeric_value(-3), numeric_value(5)}, {},
+        rational_basis, 65536, {numeric_value(0), numeric_value(-1), numeric_value(1)}) ==
+        status::solved);
+    assert(rational_basis.size() == 1 && rational_basis[0].denominator.size() == 6);
+    resonances.clear();
+    assert(integration_integer_residue_factors(
+        {numeric_value(1), numeric_value(0), numeric_value(1)},
+        {numeric_value(1)}, {numeric_value(0), numeric_value(2)}, resonances, 4) ==
+        status::resource_limit);
+    assert(resonances.empty());
+    exact_expr algebraic_a = context.integer(1) / quadratic;
+    exact_expr algebraic_y = x / context.power(quadratic, context.integer(2));
+    integration_poly algebraic_an, algebraic_ad, algebraic_bn, algebraic_bd;
+    assert(integration_parse_rational(algebraic_a, x, algebraic_an, algebraic_ad));
+    assert(integration_parse_rational(context.differentiate(algebraic_y, x) +
+        algebraic_a * algebraic_y, x, algebraic_bn, algebraic_bd));
+    assert(integration_parametric_rde_rational(algebraic_an,
+        {{algebraic_bn, algebraic_bd}}, rational_basis, 65536, algebraic_ad) == status::solved);
+    assert(rational_basis.size() == 1 && !rational_basis[0].constants[0].is_zero());
     exact_expr quadratic_inner = context.integer(1) / quadratic;
     exact_expr quadratic_y = x / quadratic;
     exact_expr quadratic_b = context.differentiate(quadratic_y, x) +
         context.differentiate(quadratic_inner, x) * quadratic_y;
     assert(context.integrate_elementary(quadratic_b *
         context.exponential(quadratic_inner), x).status == risch_status::elementary);
+    for(const auto &inner : {context.integer(1) / x, quadratic_inner}){
+        assert(context.integrate_elementary(context.exponential(inner), x).status ==
+            risch_status::proven_nonelementary);
+        exact_expr integrable = context.differentiate(inner, x) * context.exponential(inner);
+        assert(context.integrate_elementary(integrable, x).status == risch_status::elementary);
+        risch_options tiny_rde;
+        tiny_rde.maximum_matrix_entries = 1;
+        assert(context.integrate_elementary(context.exponential(inner), x, tiny_rde).status ==
+            risch_status::resource_limit);
+        exact_expr positive = context.exponential(inner);
+        exact_expr negative = context.exponential(-context.integer(2) * inner);
+        exact_expr laurent_input = context.differentiate(inner, x) *
+            (positive + negative);
+        auto laurent_result = context.integrate_elementary(laurent_input, x);
+        assert(laurent_result.status == risch_status::elementary);
+        assert(laurent_result.remainder == context.integer(0));
+        exact_expr expected = positive - negative / context.integer(2);
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(laurent_result.elementary_part - expected, x), 100000));
+        error = context.simplify(context.substitute(error, negative,
+            context.power(positive, context.integer(-2))));
+        error = context.simplify(context.substitute(error, context.exponential(-inner),
+            context.power(positive, context.integer(-1))));
+        if(error != context.integer(0)){
+            fprintf(stderr, "Laurent primitive: %s\nexpected: %s\nerror: %s\n",
+                laurent_result.elementary_part.to_string().c_str(),
+                expected.to_string().c_str(), error.to_string().c_str());
+        }
+        assert(error == context.integer(0));
+    }
+    exact_expr rational_exp = context.exponential(context.integer(1) / x);
+    exact_expr twice_rational_exp = context.exponential(context.integer(2) / x);
+    exact_expr mixed_laurent = (rational_exp + context.power(x, context.integer(2)) *
+        twice_rational_exp) / context.power(x, context.integer(2));
+    auto mixed_result = context.integrate_elementary(mixed_laurent, x);
+    if(mixed_result.status != risch_status::proven_nonelementary)
+        fprintf(stderr, "Mixed Laurent status %d: %s; input %s\n",
+            (int)mixed_result.status, mixed_result.diagnostic.c_str(),
+            mixed_laurent.to_string().c_str());
+    assert(mixed_result.status == risch_status::proven_nonelementary);
+    assert(mixed_result.elementary_part != context.integer(0));
+    assert(mixed_result.remainder != context.integer(0));
+    for(const auto &g : {context.integer(1) / x, quadratic_inner}){
+        exact_expr first = context.exponential(g / context.integer(2));
+        exact_expr second = context.exponential(-g / context.integer(3));
+        exact_expr input = context.differentiate(g, x) * (first + second);
+        auto fractional = context.integrate_elementary(input, x);
+        assert(fractional.status == risch_status::elementary);
+        assert(fractional.remainder == context.integer(0));
+        // Compare in one exponential generator using exact integer powers.
+        exact_expr base = context.exponential(g / context.integer(6));
+        exact_expr error = context.differentiate(fractional.elementary_part, x) - input;
+        error = context.substitute(error, first, context.power(base, context.integer(3)));
+        error = context.substitute(error, second, context.power(base, context.integer(-2)));
+        error = context.substitute(error, context.exponential(-g / context.integer(6)),
+            context.power(base, context.integer(-1)));
+        error = context.simplify(context.expand(error, 100000));
+        assert(error == context.integer(0));
+    }
+    for(const auto &g : {context.power(x, context.integer(2)),
+            context.integer(1) / x, quadratic_inner}){
+        exact_expr t = context.exponential(g);
+        exact_expr dt = context.differentiate(g, x) * t;
+        for(const auto &input : {
+                dt / (context.integer(1) + t),
+                dt / context.power(context.integer(1) + t, context.integer(2)),
+                dt / (context.integer(1) + context.power(t, context.integer(2)))}){
+            auto substituted = context.integrate_elementary(input, x);
+            if(substituted.status != risch_status::elementary)
+                fprintf(stderr, "Exponential substitution status %d: %s; input %s\n",
+                    (int)substituted.status, substituted.diagnostic.c_str(),
+                    input.to_string().c_str());
+            assert(substituted.status == risch_status::elementary);
+            assert(substituted.remainder == context.integer(0));
+            exact_expr error = context.simplify(context.expand(
+                context.differentiate(substituted.elementary_part, x) - input, 100000));
+            assert(error == context.integer(0));
+        }
+    }
     // The -7/x term cancels D(x^7), leaving an RHS of degree five.
     assert(integration_parametric_rde_gauged(context,
         {numeric_value(1), numeric_value(-7)},
