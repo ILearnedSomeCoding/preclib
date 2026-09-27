@@ -4152,26 +4152,52 @@ struct integration_parametric_rational_basis{
     std::vector<numeric_value> constants;
 };
 
-// Polynomial a uses the ordinary pole-order bound. A single simple pole
-// additionally admits integer-residue cancellation, both at that pole and
+// Polynomial a uses the ordinary pole-order bound. Split simple poles
+// additionally admit integer-residue cancellation, both at the poles and
 // at infinity. Keep the entire kernel, including right-hand cancellations.
 static integration_parametric_rde_status integration_parametric_rde_rational(
     integration_poly a,
     std::vector<std::pair<integration_poly, integration_poly>> right,
     std::vector<integration_parametric_rational_basis> &basis,
     size_t maximum_matrix_entries = 65536,
-    integration_poly ad = {numeric_value(1)}){
+    integration_poly ad = {numeric_value(1)},
+    std::vector<integration_poly> pole_factors = {}){
     basis.clear();
     if(!integration_normalize_rational(a, ad))
         return integration_parametric_rde_status::verification_failed;
-    if(ad.size() > 2) return integration_parametric_rde_status::unsupported;
+    if(ad.size() == 2) pole_factors = {ad};
+    if(ad.size() > 1){
+        if(pole_factors.empty() || integration_gcd_poly(ad,
+            integration_derivative_poly(ad)).size() != 1)
+            return integration_parametric_rde_status::unsupported;
+        integration_poly product{numeric_value(1)};
+        for(const auto &factor : pole_factors){
+            if(factor.size() != 2 || factor.back() != numeric_value(1))
+                return integration_parametric_rde_status::unsupported;
+            product = integration_mul(product, factor);
+        }
+        if(product != ad) return integration_parametric_rde_status::unsupported;
+    }
     integration_poly polynomial_a, residue;
     if(!integration_divmod_poly(a, ad, polynomial_a, residue))
         return integration_parametric_rde_status::verification_failed;
-    int64_t integral_residue = 0;
-    bool resonant = ad.size() == 2 && integer_i64(residue[0], integral_residue);
-    if(ad.size() == 2 && residue[0].is_integer() && !resonant)
-        return integration_parametric_rde_status::resource_limit;
+    auto evaluate = [](const integration_poly &p, const numeric_value &x){
+        numeric_value value(0);
+        for(size_t i = p.size(); i-- > 0;) value = value * x + p[i];
+        return value;
+    };
+    integration_poly ad_derivative = integration_derivative_poly(ad);
+    std::vector<int64_t> positive_residues(pole_factors.size(), 0);
+    numeric_value residue_sum(0);
+    for(size_t i = 0; i < pole_factors.size(); ++i){
+        numeric_value root = numeric_value(0) - pole_factors[i][0];
+        numeric_value local = evaluate(residue, root) / evaluate(ad_derivative, root);
+        residue_sum = residue_sum + local;
+        int64_t integer = 0;
+        if(local.is_integer() && !integer_i64(local, integer))
+            return integration_parametric_rde_status::resource_limit;
+        if(integer > 0) positive_residues[i] = integer;
+    }
     integration_poly common{numeric_value(1)};
     int64_t degree_f = -1;
     for(auto &term : right){
@@ -4190,14 +4216,17 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     }
     integration_poly h = integration_gcd_poly(common,
         integration_derivative_poly(common));
-    if(resonant && integral_residue > 0){
+    for(size_t pole = 0; pole < pole_factors.size(); ++pole){
+        int64_t integral_residue = positive_residues[pole];
+        if(!integral_residue) continue;
+        const integration_poly &factor = pole_factors[pole];
         if((uint64_t)integral_residue > maximum_matrix_entries)
             return integration_parametric_rde_status::resource_limit;
         integration_poly remaining = h;
         size_t existing_order = 0;
         for(;;){
             integration_poly quotient, remainder;
-            if(!integration_divmod_poly(remaining, ad, quotient, remainder))
+            if(!integration_divmod_poly(remaining, factor, quotient, remainder))
                 return integration_parametric_rde_status::verification_failed;
             if(!integration_zero_poly(remainder)) break;
             remaining = std::move(quotient);
@@ -4206,17 +4235,24 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
         for(size_t i = existing_order; i < (uint64_t)integral_residue; ++i){
             if(h.size() >= maximum_matrix_entries)
                 return integration_parametric_rde_status::resource_limit;
-            h = integration_mul(h, ad);
+            h = integration_mul(h, factor);
         }
     }
-    if(ad.size() == 2){
-        integration_poly quotient, remainder;
-        if(!integration_divmod_poly(common, ad, quotient, remainder))
+    if(ad.size() > 1){
+        integration_poly quotient;
+        if(!integration_divide_poly(ad, integration_gcd_poly(common, ad), quotient))
             return integration_parametric_rde_status::verification_failed;
-        if(!integration_zero_poly(remainder)) common = integration_mul(common, ad);
+        if(common.size() > maximum_matrix_entries ||
+           quotient.size() > maximum_matrix_entries - common.size())
+            return integration_parametric_rde_status::resource_limit;
+        common = integration_mul(common, quotient);
     }
     int64_t polynomial_degree = integration_zero_poly(polynomial_a) ? degree_f + 1 :
         degree_f - (int64_t)polynomial_a.size() + 1;
+    int64_t integral_residue = 0;
+    bool resonant = integer_i64(residue_sum, integral_residue);
+    if(residue_sum.is_integer() && !resonant)
+        return integration_parametric_rde_status::resource_limit;
     if(resonant && integral_residue < 0 && integration_zero_poly(polynomial_a)){
         uint64_t exceptional_degree = 0 - (uint64_t)integral_residue;
         if(exceptional_degree > maximum_matrix_entries)
@@ -4309,6 +4345,26 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     if(ad.size() <= 2)
         return integration_parametric_rde_rational(an, std::move(right), basis,
             options.maximum_matrix_entries, ad);
+    std::vector<exact_expr> factored;
+    integration_factor_list(context.factor(integration_poly_expr(context, ad, variable)),
+        factored);
+    std::vector<integration_poly> linear_factors;
+    bool all_linear = true;
+    for(const auto &factor : factored){
+        if(factor.is_value()) continue;
+        integration_poly p;
+        if(!integration_parse_poly(factor, variable, p) || p.size() != 2){
+            all_linear = false; break;
+        }
+        numeric_value leading = p.back();
+        for(auto &v : p) v = v / leading;
+        linear_factors.push_back(std::move(p));
+    }
+    if(all_linear && !linear_factors.empty()){
+        auto status = integration_parametric_rde_rational(an, right, basis,
+            options.maximum_matrix_entries, ad, linear_factors);
+        if(status != integration_parametric_rde_status::unsupported) return status;
+    }
     integration_poly a0, residual;
     if(!integration_divmod_poly(an, ad, a0, residual))
         return integration_parametric_rde_status::verification_failed;
