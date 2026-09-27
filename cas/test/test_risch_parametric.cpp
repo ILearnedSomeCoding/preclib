@@ -440,6 +440,100 @@ int main(){
     }
     exact_expr lower_log = context.natural_logarithm(x);
     {
+        // Two distinct rational residues, represented without factoring the denominator.
+        integration_expr_poly d{context.integer(2) * context.power(x, context.integer(2)),
+            context.integer(3) * x, context.integer(1)};
+        integration_expr_poly r{context.integer(0), -context.integer(1) / x};
+        integration_expr_poly characteristic;
+        assert(integration_residue_characteristic_polynomial(context, r, d, x,
+            risch_options(), characteristic));
+        assert(characteristic.size() == 3 && characteristic[0] == context.integer(2) &&
+            characteristic[1] == context.integer(-3) && characteristic[2] == context.integer(1));
+        risch_options tiny;
+        tiny.maximum_matrix_entries = 1;
+        assert(!integration_residue_characteristic_polynomial(context, r, d, x,
+            tiny, characteristic));
+        assert(integration_residue_characteristic_polynomial(context, {x}, d, x,
+            risch_options(), characteristic));
+        assert(characteristic[0] == context.power(x, context.integer(2)) &&
+            characteristic[1] == -context.integer(2) * x);
+    }
+    {
+        exact_expr p = x + lower_log + context.integer(1);
+        exact_expr original = x / context.power(p, context.integer(2)) +
+            context.natural_logarithm(p);
+        exact_expr f = context.differentiate(original, x);
+        exact_expr candidate = integration_normal_hermite_primitive(context, f, x, risch_options());
+        assert(candidate.valid());
+        auto strict = context.integrate_elementary(f, x);
+        assert(strict.status == risch_status::elementary);
+        assert(context.integrate(f, x).operation() != exact_opcode::integral);
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context,
+            context.differentiate(candidate - original, x), lower_log,
+            error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+    }
+    {
+        exact_expr t = lower_log, p = x + t + context.integer(1);
+        exact_expr q = t + context.integer(2);
+        exact_expr input = (x + t) / (context.power(p, context.integer(3)) *
+            context.power(q, context.integer(2)));
+        exact_expr primitive, remainder;
+        assert(integration_normal_hermite_reduce(context, input, t, x,
+            risch_options(), primitive, remainder));
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context,
+            input - context.differentiate(primitive, x) - remainder, t, error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(integration_parse_expr_rational(context, remainder, t, error, denominator, 64));
+        integration_expr_poly partial(denominator.size() - 1, context.integer(0)), gcd;
+        for(size_t i = 1; i < denominator.size(); ++i)
+            partial[i - 1] = context.integer(i) * denominator[i];
+        assert(integration_expr_gcd_rational_coefficients(context, denominator, partial, x, 64, gcd));
+        assert(gcd.size() == 1 && gcd[0] == context.integer(1));
+        assert(!integration_normal_hermite_reduce(context,
+            context.integer(1) / context.exponential(x), context.exponential(x), x,
+            risch_options(), primitive, remainder));
+    }
+    for(const auto &t : {lower_log, context.exponential(x)}){
+        integration_expr_poly pole{x, context.integer(1)};
+        for(size_t m : {2u, 3u, 5u}){
+            integration_expr_poly n{context.integer(1), x}, b, r;
+            assert(integration_normal_pole_reduce_step(context, n, pole, m, t, x,
+                risch_options(), b, r));
+            exact_expr p = integration_expr_poly_expr(context, pole, t);
+            exact_expr f = integration_expr_poly_expr(context, n, t) /
+                context.power(p, context.integer(m));
+            exact_expr primitive = integration_expr_poly_expr(context, b, t) /
+                context.power(p, context.integer(m - 1));
+            exact_expr rest = integration_expr_poly_expr(context, r, t) /
+                context.power(p, context.integer(m - 1));
+            integration_expr_poly error, denominator;
+            assert(integration_parse_expr_rational(context,
+                f - context.differentiate(primitive, x) - rest, t, error, denominator, 64));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+        }
+        integration_expr_poly b, r;
+        assert(!integration_normal_pole_reduce_step(context,
+            {context.integer(1)}, pole, 1, t, x, risch_options(), b, r));
+    }
+    {
+        integration_expr_poly b, r;
+        assert(!integration_normal_pole_reduce_step(context, {context.integer(1)},
+            {context.integer(0), context.integer(1)}, 2, context.exponential(x), x,
+            risch_options(), b, r));
+    }
+    {
         integration_expr_poly normal, special, polynomial, quotient, remainder;
         exact_expr t = context.exponential(x);
         assert(integration_parse_expr_poly(context, context.expand(
