@@ -403,7 +403,11 @@ int main(){
             exact_expr difference = context.simplify(context.expand(
                 candidate - original, 100000));
             assert(!integration_depends_on(difference, x));
-            assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+            auto checked = context.integrate_elementary(f, x);
+            if(checked.status != risch_status::elementary)
+                fprintf(stderr, "primitive regression status %d: %s\ninput: %s\n",
+                    (int)checked.status, checked.diagnostic.c_str(), f.to_string().c_str());
+            assert(checked.status == risch_status::elementary);
             risch_options tiny;
             tiny.maximum_matrix_entries = 1;
             assert(!integration_joint_primitive_polynomial(context, coefficients,
@@ -435,10 +439,124 @@ int main(){
                     integration_mul(integration_derivative_poly(n), d),
                     integration_mul(n, integration_derivative_poly(d)))));
             }
-            assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+            auto checked = context.integrate_elementary(f, x);
+            if(checked.status != risch_status::elementary){
+                auto parametric = integration_parametric_primitive_polynomial(
+                    context, input, t, x, risch_options(), context.integer(0));
+                fprintf(stderr, "rational primitive regression status %d: %s\ninput: %s\nparametric: %s\n",
+                    (int)checked.status, checked.diagnostic.c_str(), f.to_string().c_str(),
+                    parametric.valid() ? parametric.to_string().c_str() : "invalid");
+            }
+            assert(checked.status == risch_status::elementary);
         }
     }
     exact_expr lower_log = context.natural_logarithm(x);
+    {
+        for(const auto &residual : {
+                context.integer(1) / (x + context.integer(1)),
+                context.integer(1) / (context.power(x, context.integer(5)) - x + context.integer(1))}){
+            integration_expr_poly input{residual, context.integer(1)};
+            exact_expr solved = integration_parametric_primitive_polynomial(context,
+                input, lower_log, x, risch_options(), context.integer(0));
+            assert(solved.valid());
+            integration_expr_poly error, denominator;
+            assert(integration_parse_expr_rational(context,
+                context.differentiate(solved, x) - lower_log - residual,
+                lower_log, error, denominator, 64, &x));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+        }
+    }
+    {
+        exact_expr next_log = context.natural_logarithm(x + context.integer(1));
+        exact_expr ratio_log = context.natural_logarithm(x / (x + context.integer(1)));
+        std::vector<integration_primitive_derivative_relation> relations;
+        assert(integration_primitive_derivative_relations(context, {lower_log, next_log},
+            x, risch_options(), relations) == status::solved);
+        assert(relations.empty());
+        std::vector<exact_expr> generators{lower_log, next_log, ratio_log};
+        assert(integration_primitive_derivative_relations(context, generators, x,
+            risch_options(), relations) == status::solved);
+        assert(relations.size() == 1);
+        for(const auto &relation : relations){
+            assert(relation.constants.size() == generators.size());
+            exact_expr error = -context.differentiate(
+                integration_poly_expr(context, relation.numerator, x) /
+                integration_poly_expr(context, relation.denominator, x), x);
+            for(size_t i = 0; i < generators.size(); ++i)
+                error = error + context.value(relation.constants[i]) *
+                    context.differentiate(generators[i], x);
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+        }
+        risch_options tiny;
+        tiny.maximum_matrix_entries = 1;
+        assert(integration_primitive_derivative_relations(context, generators, x,
+            tiny, relations) == status::resource_limit);
+        assert(relations.empty());
+        assert(integration_primitive_derivative_relations(context,
+            {lower_log, context.natural_logarithm(lower_log)}, x, risch_options(), relations) ==
+            status::unsupported);
+        assert(relations.empty());
+    }
+    {
+        exact_expr second_log = context.natural_logarithm(x + context.integer(1));
+        exact_expr original = context.power(x, context.integer(2)) * lower_log * second_log +
+            context.power(lower_log, context.integer(2)) / (x + context.integer(1)) +
+            context.power(second_log, context.integer(2)) / x;
+        for(const auto &a : {context.integer(0), -context.integer(2) / x}){
+            exact_expr rhs = context.differentiate(original, x) + a * original;
+            integration_expr_poly first;
+            assert(integration_parse_expr_poly(context, context.expand(rhs, 100000), lower_log, first));
+            integration_expr_poly input(9, context.integer(0));
+            for(size_t i = 0; i < first.size(); ++i){
+                integration_expr_poly second;
+                assert(integration_parse_expr_poly(context, first[i], second_log, second));
+                assert(i < 3 && second.size() <= 3);
+                for(size_t j = 0; j < second.size(); ++j) input[i + 3*j] = second[j];
+            }
+            exact_expr solved = integration_parametric_primitive_grid(context, input,
+                {lower_log, second_log}, {3,3}, x, risch_options(), a);
+            assert(solved.valid());
+            integration_expr_poly error;
+            assert(integration_parse_expr_poly(context, context.expand(
+                context.differentiate(solved, x) + a * solved - rhs, 100000), lower_log, error));
+            for(const auto &v : error){
+                integration_expr_poly second;
+                assert(integration_parse_expr_poly(context, v, second_log, second));
+                for(auto &coefficient : second){
+                    assert(integration_normalize_expr_coefficient(context, coefficient, x, 64));
+                    assert(coefficient == context.integer(0));
+                }
+            }
+        }
+    }
+    {
+        exact_expr original = context.power(x, context.integer(2)) *
+            context.power(lower_log, context.integer(2)) +
+            lower_log / (x + context.integer(1)) + context.integer(1) / x;
+        for(const auto &a : {context.integer(0), -context.integer(2) / x,
+                context.integer(2) * x}){
+            exact_expr rhs = context.differentiate(original, x) + a * original;
+            integration_expr_poly input, error;
+            assert(integration_parse_expr_poly(context, context.expand(rhs, 100000), lower_log, input));
+            exact_expr solved = integration_parametric_primitive_polynomial(
+                context, input, lower_log, x, risch_options(), a);
+            assert(solved.valid());
+            assert(integration_parse_expr_poly(context, context.expand(
+                context.differentiate(solved, x) + a * solved - rhs, 100000), lower_log, error));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+            risch_options tiny;
+            tiny.maximum_matrix_entries = 1;
+            assert(!integration_parametric_primitive_polynomial(
+                context, input, lower_log, x, tiny, a).valid());
+        }
+    }
     {
         exact_expr u = lower_log + x;
         exact_expr input = context.integer(6) * context.differentiate(u, x) /
@@ -481,6 +599,35 @@ int main(){
         catch(const std::invalid_argument &){ capture = true; }
         assert(capture);
         assert(context.differentiate(node, z) == context.integer(0));
+        assert(!integration_depends_on(node, z));
+        assert(integration_depends_on(node, x));
+        auto bound_integral = context.integrate_elementary(node, z);
+        assert(bound_integral.status == risch_status::elementary);
+        assert(context.differentiate(bound_integral.elementary_part, z) == node);
+        assert(context.differentiate(context.integrate(node, z), z) == node);
+    }
+    {
+        exact_context compact_context;
+        exact_expr cx = compact_context.symbol("x"), cz = compact_context.symbol("z");
+        exact_expr ct = compact_context.natural_logarithm(cx);
+        exact_expr node = compact_context.algebraic_log_sum(
+            compact_context.power(cz, compact_context.integer(3)) - compact_context.integer(2),
+            cz, ct - cz, ct, cx);
+        std::string before = node.to_string();
+        node = compact_context.compact(node);
+        cx = compact_context.symbol("x"); cz = compact_context.symbol("z");
+        ct = compact_context.natural_logarithm(cx);
+        assert(node.to_string() == before);
+        assert(!integration_depends_on(node, cz));
+        integration_expr_poly error, denominator;
+        exact_expr expected = compact_context.integer(6) /
+            (cx * (compact_context.power(ct, compact_context.integer(3)) - compact_context.integer(2)));
+        assert(integration_parse_expr_rational(compact_context,
+            compact_context.differentiate(node, cx) - expected, ct, error, denominator, 64, &cx));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(compact_context, v, cx, 64));
+            assert(v == compact_context.integer(0));
+        }
     }
     {
         exact_expr z = context.symbol("_test_residue_parameter");
@@ -741,9 +888,67 @@ int main(){
             partial[i - 1] = context.integer(i) * denominator[i];
         assert(integration_expr_gcd_rational_coefficients(context, denominator, partial, x, 64, gcd));
         assert(gcd.size() == 1 && gcd[0] == context.integer(1));
-        assert(!integration_normal_hermite_reduce(context,
+        assert(integration_normal_hermite_reduce(context,
             context.integer(1) / context.exponential(x), context.exponential(x), x,
             risch_options(), primitive, remainder));
+        assert(primitive == context.integer(0));
+        assert(remainder == context.integer(1) / context.exponential(x));
+    }
+    {
+        exact_expr t = context.exponential(x), p = t + context.integer(1);
+        for(size_t special_order : {2u, 3u}){
+            exact_expr input = context.integer(1) /
+                (context.power(t, context.integer(special_order)) *
+                 context.power(p, context.integer(2)));
+            exact_expr primitive, remainder;
+            assert(integration_normal_hermite_reduce(context, input, t, x,
+                risch_options(), primitive, remainder));
+            assert(primitive != context.integer(0));
+            integration_expr_poly error, denominator;
+            assert(integration_parse_expr_rational(context,
+                input - context.differentiate(primitive, x) - remainder,
+                t, error, denominator, 64, &x));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+            assert(integration_parse_expr_rational(context, remainder, t,
+                error, denominator, 64, &x));
+            integration_expr_poly normal, special;
+            assert(integration_differential_denominator_parts(context, denominator,
+                t, x, risch_options(), normal, special));
+            assert(special.size() == 2);
+            auto solved = context.integrate_elementary(input, x);
+            assert(solved.status == risch_status::elementary);
+            assert(solved.remainder == context.integer(0));
+            assert(integration_parse_expr_rational(context,
+                context.differentiate(solved.elementary_part, x) - input,
+                t, error, denominator, 64, &x));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+        }
+    }
+    {
+        exact_expr t = context.exponential(context.power(x, context.integer(2)));
+        exact_expr original = context.integer(1) /
+            context.power(t + context.integer(1), context.integer(2));
+        exact_expr input = context.differentiate(original, x) + t;
+        auto solved = context.integrate_elementary(input, x);
+        assert(solved.status == risch_status::proven_nonelementary);
+        assert(solved.elementary_part != context.integer(0));
+        assert(solved.remainder != context.integer(0));
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context,
+            input - context.differentiate(solved.elementary_part, x) - solved.remainder,
+            t, error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(context.integrate_elementary(solved.remainder, x).status ==
+            risch_status::proven_nonelementary);
     }
     for(const auto &t : {lower_log, context.exponential(x)}){
         integration_expr_poly pole{x, context.integer(1)};
@@ -953,6 +1158,20 @@ int main(){
         assert(nested.remainder == context.integer(0));
         exact_expr error = context.simplify(context.expand(
             context.differentiate(nested.elementary_part - original, x), 100000));
+        if(error != context.integer(0)){
+            integration_expr_poly numerator, denominator;
+            assert(integration_parse_expr_rational(context, error, lower_log,
+                numerator, denominator, 64, &x));
+            for(auto &coefficient : numerator){
+                assert(integration_normalize_expr_coefficient(context, coefficient, x, 64));
+                assert(coefficient == context.integer(0));
+            }
+            error = context.integer(0);
+        }
+        if(error != context.integer(0))
+            fprintf(stderr, "nested candidate: %s\noriginal: %s\nerror: %s\n",
+                nested.elementary_part.to_string().c_str(), original.to_string().c_str(),
+                error.to_string().c_str());
         assert(error == context.integer(0));
     }
     risch_options no_recursion;
