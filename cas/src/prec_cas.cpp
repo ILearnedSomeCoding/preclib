@@ -4167,15 +4167,29 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
         return integration_parametric_rde_status::verification_failed;
     if(ad.size() == 2) pole_factors = {ad};
     if(ad.size() > 1){
-        if(pole_factors.empty())
-            return integration_parametric_rde_status::unsupported;
-        integration_poly product{numeric_value(1)};
-        for(const auto &factor : pole_factors){
-            if(factor.size() != 2 || factor.back() != numeric_value(1))
+        if(pole_factors.empty()){
+            // rad(ad) divides gcd(ad,ad') exactly when every pole has order >= 2.
+            integration_poly repeated = integration_gcd_poly(ad,
+                integration_derivative_poly(ad)), radical, quotient;
+            if(!integration_divide_poly(ad, repeated, radical) ||
+               !integration_divide_poly(repeated, radical, quotient))
                 return integration_parametric_rde_status::unsupported;
-            product = integration_mul(product, factor);
+        }else{
+            integration_poly product{numeric_value(1)};
+            for(const auto &factor : pole_factors){
+                if(factor.size() < 2 || factor.back() != numeric_value(1) ||
+                   integration_gcd_poly(factor, integration_derivative_poly(factor)).size() != 1)
+                    return integration_parametric_rde_status::unsupported;
+                size_t multiplicity = std::count(pole_factors.begin(), pole_factors.end(), factor);
+                if(factor.size() > 2 && multiplicity == 1)
+                    return integration_parametric_rde_status::unsupported;
+                for(const auto &other : pole_factors)
+                    if(other != factor && integration_gcd_poly(factor, other).size() != 1)
+                        return integration_parametric_rde_status::unsupported;
+                product = integration_mul(product, factor);
+            }
+            if(product != ad) return integration_parametric_rde_status::unsupported;
         }
-        if(product != ad) return integration_parametric_rde_status::unsupported;
     }
     integration_poly polynomial_a, residue;
     if(!integration_divmod_poly(a, ad, polynomial_a, residue))
@@ -4348,6 +4362,9 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     if(ad.size() <= 2)
         return integration_parametric_rde_rational(an, std::move(right), basis,
             options.maximum_matrix_entries, ad);
+    auto direct = integration_parametric_rde_rational(an, right, basis,
+        options.maximum_matrix_entries, ad);
+    if(direct != integration_parametric_rde_status::unsupported) return direct;
     std::vector<exact_expr> factored;
     integration_factor_list(context.factor(integration_poly_expr(context, ad, variable)),
         factored);
@@ -4365,7 +4382,8 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
             }
         }
         integration_poly p;
-        if(!integration_parse_poly(base, variable, p) || p.size() != 2){
+        if(!integration_parse_poly(base, variable, p) || p.size() < 2 ||
+           (p.size() > 2 && multiplicity == 1)){
             all_linear = false; break;
         }
         numeric_value leading = p.back();

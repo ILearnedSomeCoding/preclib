@@ -187,6 +187,39 @@ int main(){
         }
     }
     exact_expr high_inner = -context.integer(1) / x;
+    exact_expr quadratic = context.power(x, context.integer(2)) + context.integer(1);
+    for(const auto &a : {
+            context.integer(1) / context.power(quadratic, context.integer(2)),
+            context.integer(1) / (context.power(quadratic, context.integer(3)) *
+                context.power(x, context.integer(2))),
+            context.integer(3) / (x - context.integer(1)) +
+                context.integer(1) / context.power(quadratic, context.integer(2))}){
+        exact_expr y = (context.power(x, context.integer(3)) + context.integer(2)) /
+            context.power(quadratic, context.integer(2));
+        exact_expr b = context.differentiate(y, x) + a * y;
+        integration_poly an, ad, bn, bd, yn, yd;
+        assert(integration_parse_rational(a, x, an, ad));
+        assert(integration_parse_rational(b, x, bn, bd));
+        assert(integration_parse_rational(y, x, yn, yd));
+        assert(integration_parametric_rde_gauged(context, an, ad, {{bn, bd}}, x,
+            rational_basis, risch_options()) == status::solved);
+        assert(rational_basis.size() == 1);
+        integration_poly lhs = integration_mul(rational_basis[0].numerator, yd);
+        integration_poly rhs = integration_mul(yn, rational_basis[0].denominator);
+        for(auto &v : rhs) v = v * rational_basis[0].constants[0];
+        assert(lhs == rhs);
+        assert(integration_parametric_rde_gauged(context, an, ad, {}, x,
+            rational_basis, risch_options()) == status::solved);
+        assert(rational_basis.empty());
+    }
+    assert(integration_parametric_rde_rational({numeric_value(1)}, {}, rational_basis,
+        65536, {numeric_value(1), numeric_value(0), numeric_value(1)}) == status::unsupported);
+    exact_expr quadratic_inner = context.integer(1) / quadratic;
+    exact_expr quadratic_y = x / quadratic;
+    exact_expr quadratic_b = context.differentiate(quadratic_y, x) +
+        context.differentiate(quadratic_inner, x) * quadratic_y;
+    assert(context.integrate_elementary(quadratic_b *
+        context.exponential(quadratic_inner), x).status == risch_status::elementary);
     // The -7/x term cancels D(x^7), leaving an RHS of degree five.
     assert(integration_parametric_rde_gauged(context,
         {numeric_value(1), numeric_value(-7)},
