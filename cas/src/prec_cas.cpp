@@ -4152,8 +4152,8 @@ struct integration_parametric_rational_basis{
     std::vector<numeric_value> constants;
 };
 
-// Polynomial a uses the ordinary pole-order bound. Split simple poles
-// additionally admit integer-residue cancellation, both at the poles and
+// Polynomial a and split higher-order poles use the ordinary pole-order bound.
+// Simple poles additionally admit integer-residue cancellation, at the poles and
 // at infinity. Keep the entire kernel, including right-hand cancellations.
 static integration_parametric_rde_status integration_parametric_rde_rational(
     integration_poly a,
@@ -4167,8 +4167,7 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
         return integration_parametric_rde_status::verification_failed;
     if(ad.size() == 2) pole_factors = {ad};
     if(ad.size() > 1){
-        if(pole_factors.empty() || integration_gcd_poly(ad,
-            integration_derivative_poly(ad)).size() != 1)
+        if(pole_factors.empty())
             return integration_parametric_rde_status::unsupported;
         integration_poly product{numeric_value(1)};
         for(const auto &factor : pole_factors){
@@ -4188,11 +4187,15 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     };
     integration_poly ad_derivative = integration_derivative_poly(ad);
     std::vector<int64_t> positive_residues(pole_factors.size(), 0);
-    numeric_value residue_sum(0);
+    // The coefficient of 1/x also includes simple parts of repeated poles.
+    numeric_value residue_sum = residue.size() == ad.size() - 1 ?
+        residue.back() : numeric_value(0);
     for(size_t i = 0; i < pole_factors.size(); ++i){
+        // At higher-order poles a*y dominates y', so no residue resonance occurs.
+        if(std::count(pole_factors.begin(), pole_factors.end(), pole_factors[i]) > 1)
+            continue;
         numeric_value root = numeric_value(0) - pole_factors[i][0];
         numeric_value local = evaluate(residue, root) / evaluate(ad_derivative, root);
-        residue_sum = residue_sum + local;
         int64_t integer = 0;
         if(local.is_integer() && !integer_i64(local, integer))
             return integration_parametric_rde_status::resource_limit;
@@ -4352,13 +4355,22 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     bool all_linear = true;
     for(const auto &factor : factored){
         if(factor.is_value()) continue;
+        exact_expr base = factor;
+        size_t multiplicity = 1;
+        if(factor.operation() == exact_opcode::power){
+            base = factor.operand(0);
+            if(!integration_exponent(factor.operand(1), multiplicity) ||
+               multiplicity > options.maximum_degree){
+                all_linear = false; break;
+            }
+        }
         integration_poly p;
-        if(!integration_parse_poly(factor, variable, p) || p.size() != 2){
+        if(!integration_parse_poly(base, variable, p) || p.size() != 2){
             all_linear = false; break;
         }
         numeric_value leading = p.back();
         for(auto &v : p) v = v / leading;
-        linear_factors.push_back(std::move(p));
+        for(size_t i = 0; i < multiplicity; ++i) linear_factors.push_back(p);
     }
     if(all_linear && !linear_factors.empty()){
         auto status = integration_parametric_rde_rational(an, right, basis,
