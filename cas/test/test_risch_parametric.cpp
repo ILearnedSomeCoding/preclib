@@ -75,6 +75,49 @@ int main(){
     }
     exact_context context;
     exact_expr x = context.symbol("x");
+    for(const auto &h : {x, context.power(x, context.integer(2)) + context.integer(1)}){
+        for(int power : {-2, 1, 3}){
+            exact_expr u = context.power(h, context.integer(power));
+            exact_expr a = context.differentiate(u, x) / u;
+            integration_poly an, ad;
+            assert(integration_parse_rational(a, x, an, ad));
+            assert(integration_parametric_rde_gauged(context, an, ad, {}, x,
+                rational_basis, risch_options()) == status::solved);
+            assert(rational_basis.size() == 1);
+            exact_expr y = (x + context.integer(3)) / (x + context.integer(2));
+            a = a + context.integer(1);
+            exact_expr b = context.differentiate(y, x) + a * y;
+            integration_poly bn, bd, yn, yd;
+            assert(integration_parse_rational(a, x, an, ad));
+            assert(integration_parse_rational(b, x, bn, bd));
+            assert(integration_parse_rational(y, x, yn, yd));
+            assert(integration_parametric_rde_gauged(context, an, ad, {{bn, bd}},
+                x, rational_basis, risch_options()) == status::solved);
+            assert(rational_basis.size() == 1);
+            integration_poly lhs = integration_mul(rational_basis[0].numerator, yd);
+            integration_poly rhs = integration_mul(yn, rational_basis[0].denominator);
+            for(auto &v : rhs) v = v * rational_basis[0].constants[0];
+            assert(lhs == rhs);
+            exact_expr inner = x + context.integer(power) * context.natural_logarithm(h);
+            exact_expr candidate = integration_hyperexponential_rational(context, b,
+                inner, x);
+            assert(candidate.valid());
+            assert(context.integrate_elementary(b * context.exponential(inner), x).status ==
+                risch_status::elementary);
+        }
+    }
+    assert(integration_parametric_rde_gauged(context, {numeric_value(1)},
+        {numeric_value(0), numeric_value(2)}, {}, x, rational_basis,
+        risch_options()) == status::unsupported);
+    assert(integration_parametric_rde_gauged(context, {numeric_value(1)},
+        {numeric_value(0), numeric_value(0), numeric_value(1)}, {}, x,
+        rational_basis, risch_options()) == status::unsupported);
+    risch_options gauge_budget;
+    gauge_budget.maximum_degree = 0;
+    assert(integration_parametric_rde_gauged(context, {numeric_value(1)},
+        {numeric_value(0), numeric_value(1)}, {}, x, rational_basis,
+        gauge_budget) == status::resource_limit);
+    assert(rational_basis.empty());
     for(const auto &argument : {x + context.integer(1),
             context.power(x, context.integer(2)) + context.integer(1),
             x / (x + context.integer(1))}){

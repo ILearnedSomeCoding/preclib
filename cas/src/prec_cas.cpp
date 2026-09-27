@@ -3297,7 +3297,7 @@ struct integration_parametric_rde_basis{
 };
 
 enum class integration_parametric_rde_status{
-    solved, resource_limit, verification_failed
+    solved, resource_limit, verification_failed, unsupported
 };
 
 // Full polynomial solution space over Q. For nonzero a, the leading term
@@ -4246,6 +4246,107 @@ static integration_parametric_rde_status integration_parametric_rde_rational(
     return integration_parametric_rde_status::solved;
 }
 
+// Rational gauge: a=a0+u'/u, z=u*y. Integer logarithmic residues may
+// create homogeneous poles; the invertible gauge handles them without
+// applying the polynomial-a denominator bound to the original equation.
+static integration_parametric_rde_status integration_parametric_rde_gauged(
+    exact_context &context, integration_poly an, integration_poly ad,
+    std::vector<std::pair<integration_poly, integration_poly>> right,
+    const exact_expr &variable,
+    std::vector<integration_parametric_rational_basis> &basis,
+    const risch_options &options){
+    basis.clear();
+    if(!integration_normalize_rational(an, ad))
+        return integration_parametric_rde_status::verification_failed;
+    if(an.size() - 1 > options.maximum_degree ||
+       ad.size() - 1 > options.maximum_degree)
+        return integration_parametric_rde_status::resource_limit;
+    integration_poly a0, residual;
+    if(!integration_divmod_poly(an, ad, a0, residual))
+        return integration_parametric_rde_status::verification_failed;
+    integration_poly un{numeric_value(1)}, ud{numeric_value(1)};
+    if(!integration_zero_poly(residual)){
+        exact_expr proper = integration_poly_expr(context, residual, variable) /
+            integration_poly_expr(context, ad, variable);
+        exact_expr primitive = integration_rational_antiderivative(context, proper, variable);
+        if(!primitive.valid()) return integration_parametric_rde_status::unsupported;
+        bool limited = false;
+        auto collect = [&](auto &&self, const exact_expr &part) -> bool{
+            if(part.is_value()) return !part.value().is_approximate();
+            if(part.operation() == exact_opcode::add){
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    if(!self(self, part.operand(i))) return false;
+                return true;
+            }
+            exact_expr logarithm = part;
+            numeric_value exponent(1);
+            if(part.operation() == exact_opcode::multiply){
+                bool found = false;
+                for(size_t i = 0; i < part.operand_count(); ++i){
+                    exact_expr factor = part.operand(i);
+                    if(factor.is_value()) exponent = exponent * factor.value();
+                    else if(!found && factor.operation() == exact_opcode::natural_logarithm){
+                        found = true;
+                        logarithm = factor;
+                    }else return false;
+                }
+                if(!found) return false;
+            }
+            int64_t power;
+            if(logarithm.operation() != exact_opcode::natural_logarithm ||
+               !integer_i64(exponent, power)) return false;
+            if(power > (int64_t)options.maximum_degree ||
+               power < -(int64_t)options.maximum_degree){ limited = true; return false; }
+            exact_expr argument = logarithm.operand(0);
+            if(argument.operation() == exact_opcode::absolute_value)
+                argument = argument.operand(0);
+            exact_expr factor = context.power(argument, context.integer(power));
+            integration_poly n, d;
+            if(!integration_parse_rational(factor, variable, n, d,
+                options.maximum_degree, options.maximum_degree)) return false;
+            if(un.size() - 1 + n.size() - 1 > options.maximum_degree ||
+               ud.size() - 1 + d.size() - 1 > options.maximum_degree){
+                limited = true; return false;
+            }
+            un = integration_mul(un, n);
+            ud = integration_mul(ud, d);
+            return true;
+        };
+        if(!collect(collect, primitive)) return limited ?
+            integration_parametric_rde_status::resource_limit :
+            integration_parametric_rde_status::unsupported;
+        if(!integration_normalize_rational(un, ud) || integration_zero_poly(un))
+            return integration_parametric_rde_status::unsupported;
+        integration_poly derivative = integration_sub(
+            integration_mul(integration_derivative_poly(un), ud),
+            integration_mul(un, integration_derivative_poly(ud)));
+        if(integration_mul(derivative, ad) !=
+           integration_mul(residual, integration_mul(un, ud)))
+            return integration_parametric_rde_status::verification_failed;
+    }
+    for(auto &term : right){
+        if(!integration_normalize_rational(term.first, term.second))
+            return integration_parametric_rde_status::verification_failed;
+        if(term.first.size() - 1 + un.size() - 1 > options.maximum_degree ||
+           term.second.size() - 1 + ud.size() - 1 > options.maximum_degree)
+            return integration_parametric_rde_status::resource_limit;
+        term.first = integration_mul(term.first, un);
+        term.second = integration_mul(term.second, ud);
+    }
+    auto status = integration_parametric_rde_rational(a0, std::move(right), basis,
+        options.maximum_matrix_entries);
+    if(status != integration_parametric_rde_status::solved) return status;
+    for(auto &entry : basis){
+        entry.numerator = integration_mul(entry.numerator, ud);
+        entry.denominator = integration_mul(entry.denominator, un);
+        if(!integration_normalize_rational(entry.numerator, entry.denominator)){
+            basis.clear();
+            return integration_parametric_rde_status::verification_failed;
+        }
+    }
+    return status;
+}
+
 struct integration_rational_rde_result{
     integration_rde_status status;
     integration_poly numerator;
@@ -4284,9 +4385,25 @@ static exact_expr integration_hyperexponential_rational(
     exact_context &context, const exact_expr &cofactor,
     const exact_expr &inner, const exact_expr &variable){
     integration_poly numerator, denominator, inner_polynomial;
-    if(!integration_parse_rational(cofactor, variable, numerator, denominator) ||
-       !integration_parse_poly(inner, variable, inner_polynomial))
+    if(!integration_parse_rational(cofactor, variable, numerator, denominator))
         return exact_expr();
+    if(!integration_parse_poly(inner, variable, inner_polynomial)){
+        integration_poly an, ad;
+        if(!integration_parse_rational(context.differentiate(inner, variable),
+            variable, an, ad)) return exact_expr();
+        std::vector<integration_parametric_rational_basis> basis;
+        if(integration_parametric_rde_gauged(context, an, ad,
+            {{numerator, denominator}}, variable, basis, risch_options()) !=
+            integration_parametric_rde_status::solved) return exact_expr();
+        for(auto &entry : basis){
+            if(entry.constants[0].is_zero()) continue;
+            for(auto &v : entry.numerator) v = v / entry.constants[0];
+            return integration_poly_expr(context, entry.numerator, variable) /
+                integration_poly_expr(context, entry.denominator, variable) *
+                context.exponential(inner);
+        }
+        return exact_expr();
+    }
     integration_poly logarithmic_derivative =
         integration_derivative_poly(inner_polynomial);
     if(integration_zero_poly(logarithmic_derivative)) return exact_expr();
