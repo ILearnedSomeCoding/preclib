@@ -439,6 +439,83 @@ int main(){
         }
     }
     exact_expr lower_log = context.natural_logarithm(x);
+    {
+        integration_expr_poly normal, special, polynomial, quotient, remainder;
+        exact_expr t = context.exponential(x);
+        assert(integration_parse_expr_poly(context, context.expand(
+            context.power(t, context.integer(3)) *
+            context.power(t + context.integer(1), context.integer(2)), 100000), t, polynomial));
+        assert(integration_differential_denominator_parts(context, polynomial, t, x,
+            risch_options(), normal, special));
+        assert(normal.size() == 2 && normal[0] == context.integer(1) &&
+            normal[1] == context.integer(1));
+        assert(special.size() == 2 && special[0] == context.integer(0) &&
+            special[1] == context.integer(1));
+        assert(integration_parse_expr_poly(context, context.expand(
+            context.power(lower_log + x, context.integer(3)), 100000), lower_log, polynomial));
+        assert(integration_differential_denominator_parts(context, polynomial, lower_log, x,
+            risch_options(), normal, special));
+        assert(normal.size() == 2 && normal[0] == x && normal[1] == context.integer(1));
+        assert(special.size() == 1 && special[0] == context.integer(1));
+        assert(integration_expr_divmod_rational_coefficients(context,
+            {context.integer(1)}, {x, context.integer(1)}, x, 64, quotient, remainder));
+        assert(quotient.size() == 1 && quotient[0] == context.integer(0));
+        assert(remainder.size() == 1 && remainder[0] == context.integer(1));
+        integration_expr_poly inverse;
+        assert(integration_expr_inverse_mod_rational_coefficients(context,
+            {context.integer(0), context.integer(1)},
+            {context.integer(1), context.integer(0), context.integer(1)}, x, 64, inverse));
+        assert(inverse.size() == 2 && inverse[0] == context.integer(0) &&
+            inverse[1] == context.integer(-1));
+        assert(integration_expr_inverse_mod_rational_coefficients(context,
+            {context.integer(1) / x}, {x, context.integer(1)}, x, 64, inverse));
+        assert(inverse.size() == 1 && inverse[0] == x);
+        assert(!integration_expr_inverse_mod_rational_coefficients(context,
+            {x, context.integer(1)}, {x, context.integer(1)}, x, 64, inverse));
+        assert(!integration_differential_denominator_parts(context,
+            {context.integer(0)}, lower_log, x, risch_options(), normal, special));
+    }
+    for(const auto &t : {lower_log,
+            context.natural_logarithm(x / (x + context.integer(1)))}){
+        exact_expr q = x + t + context.integer(1);
+        for(const auto &original : {
+                x / q,
+                context.power(x + t, context.integer(2)) / context.power(q, context.integer(2)),
+                x / ((x + context.integer(2)) * q)}){
+            exact_expr f = context.differentiate(original, x);
+            exact_expr candidate = integration_primitive_rational_derivative(
+                context, f, x, risch_options());
+            if(!candidate.valid())
+                fprintf(stderr, "Primitive rational ansatz failed: %s\n", f.to_string().c_str());
+            assert(candidate.valid());
+            assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+            exact_expr ordinary = context.integrate(f, x);
+            assert(ordinary.operation() != exact_opcode::integral);
+            for(const auto &primitive : {candidate, ordinary}){
+                exact_expr error = context.differentiate(primitive - original, x);
+                integration_expr_poly coefficients, denominator;
+                assert(integration_parse_expr_rational(context, error, t, coefficients, denominator, 64));
+                for(const auto &coefficient : coefficients){
+                    integration_poly n, d;
+                    assert(integration_parse_rational(coefficient, x, n, d));
+                    assert(integration_normalize_rational(n, d));
+                    assert(integration_zero_poly(n));
+                }
+            }
+            risch_options tiny;
+            tiny.maximum_matrix_entries = 1;
+            assert(!integration_primitive_rational_derivative(context, f, x, tiny).valid());
+        }
+    }
+    integration_expr_poly divided;
+    assert(integration_expr_divide_rational_coefficients(context,
+        {context.power(x, context.integer(2)) - context.integer(1),
+            context.integer(2) * x, context.integer(1)},
+        {x - context.integer(1), context.integer(1)}, x, 64, divided));
+    assert(divided.size() == 2 && divided[0] == x + context.integer(1) &&
+        divided[1] == context.integer(1));
+    assert(!integration_expr_divide_rational_coefficients(context,
+        {context.integer(1)}, {x, context.integer(1)}, x, 64, divided));
     exact_expr shifted_log = context.natural_logarithm(x + context.integer(1));
     exact_expr second_shifted_log = context.natural_logarithm(x + context.integer(2));
     for(const auto &original : {
