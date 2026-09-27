@@ -6726,6 +6726,199 @@ static bool integration_algebraic_log_candidate(
     return true;
 }
 
+// Constant coefficients are coupled across every nonrational power-basis coordinate.
+static integration_parametric_rde_status integration_algebraic_log_combination(
+    exact_context &context, const integration_expr_poly &input,
+    const std::vector<integration_expr_poly> &arguments, const integration_expr_poly &modulus,
+    const integration_expr_poly &dz, const exact_expr &variable, const risch_options &options,
+    std::vector<numeric_value> &constants, integration_expr_poly &remainder){
+    using status = integration_parametric_rde_status;
+    if(modulus.size() < 3 || arguments.empty()) return status::unsupported;
+    size_t rank = modulus.size()-1, columns = arguments.size();
+    if(columns >= options.maximum_matrix_entries) return status::resource_limit;
+    std::vector<integration_expr_poly> derivatives;
+    for(const auto &argument : arguments){
+        integration_expr_poly derivative;
+        if(!integration_algebraic_log_derivative(context, argument, modulus, dz,
+            variable, options, derivative)) return status::unsupported;
+        derivatives.push_back(std::move(derivative));
+    }
+    std::vector<std::vector<numeric_value>> matrix;
+    for(size_t row = 1; row < rank; ++row){
+        std::vector<integration_poly> numerators, denominators, cleared;
+        integration_poly common{numeric_value(1)};
+        for(size_t column = 0; column <= columns; ++column){
+            const auto &vector = column < columns ? derivatives[column] : input;
+            exact_expr coefficient = row < vector.size() ? vector[row] : context.integer(0);
+            integration_poly n, d, quotient;
+            if(!integration_parse_rational(coefficient, variable, n, d,
+                    options.maximum_degree, options.maximum_degree) ||
+               !integration_normalize_rational(n, d) ||
+               !integration_divide_poly(d, integration_gcd_poly(common, d), quotient)) return status::unsupported;
+            if(common.size()-1+quotient.size()-1 > options.maximum_degree) return status::resource_limit;
+            common = integration_mul(common, quotient);
+            numerators.push_back(std::move(n)); denominators.push_back(std::move(d));
+        }
+        size_t rows = 1;
+        for(size_t column = 0; column <= columns; ++column){
+            integration_poly quotient;
+            if(!integration_divide_poly(common, denominators[column], quotient)) return status::verification_failed;
+            auto polynomial = integration_mul(numerators[column], quotient);
+            if(polynomial.size()-1 > options.maximum_degree) return status::resource_limit;
+            rows = std::max(rows, polynomial.size()); cleared.push_back(std::move(polynomial));
+        }
+        size_t limit = options.maximum_matrix_entries/(columns+1);
+        if(matrix.size() > limit || rows > limit-matrix.size()) return status::resource_limit;
+        size_t offset = matrix.size();
+        matrix.resize(offset+rows, std::vector<numeric_value>(columns+1, numeric_value(0)));
+        for(size_t column = 0; column <= columns; ++column)
+            for(size_t i = 0; i < cleared[column].size(); ++i) matrix[offset+i][column] = cleared[column][i];
+    }
+    std::vector<numeric_value> solution;
+    std::vector<std::vector<numeric_value>> kernel;
+    if(!integration_solve_linear(matrix, columns, solution, &kernel)) return status::unsupported;
+    integration_expr_poly residual(rank, context.integer(0));
+    for(size_t row = 0; row < rank; ++row){
+        residual[row] = row < input.size() ? input[row] : context.integer(0);
+        for(size_t column = 0; column < columns; ++column)
+            if(row < derivatives[column].size())
+                residual[row] = residual[row]-context.value(solution[column])*derivatives[column][row];
+        if(!integration_normalize_expr_coefficient(context, residual[row], variable, options.maximum_degree) ||
+           (row && residual[row] != context.integer(0))) return status::verification_failed;
+    }
+    constants = std::move(solution); remainder = std::move(residual);
+    return status::solved;
+}
+
+// One finite-point Hermite step in a power basis with regular connection at p.
+// Pole orders here are rational-coordinate orders, not ramified curve valuations.
+static integration_parametric_rde_status integration_algebraic_normal_pole_step(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, integration_poly pole, size_t order,
+    const exact_expr &variable, const risch_options &options,
+    integration_expr_poly &exact_part, integration_expr_poly &remainder){
+    using status = integration_parametric_rde_status;
+    integration_trim(pole);
+    if(input.empty() || pole.size() < 2 || order < 2) return status::unsupported;
+    size_t degree = pole.size()-1;
+    if(order > options.maximum_degree/degree) return status::resource_limit;
+    integration_residue_algebra local{pole};
+    integration_poly inverse;
+    if(!local.inverse(integration_derivative_poly(pole), inverse)) return status::unsupported;
+    std::vector<integration_expr_poly> connection;
+    if(!integration_algebraic_connection_matrix(context, modulus, variable, options, connection))
+        return status::unsupported;
+    for(const auto &row : connection) for(const auto &coefficient : row){
+        integration_poly n, d;
+        if(!integration_parse_rational(coefficient, variable, n, d,
+                options.maximum_degree, options.maximum_degree) ||
+           !integration_normalize_rational(n, d) || integration_gcd_poly(pole,d).size() != 1)
+            return status::unsupported;
+    }
+    integration_expr_poly dz, q, reduced;
+    if(!integration_algebraic_implicit_derivation(context, modulus, variable, options, dz) ||
+       !integration_expr_divmod_rational_coefficients(context, input, modulus, variable,
+            options.maximum_degree, q, reduced)) return status::unsupported;
+    exact_expr p = integration_poly_expr(context,pole,variable);
+    exact_expr highest = context.power(p,context.integer(order));
+    exact_expr lower = context.power(p,context.integer(order-1));
+    integration_expr_poly candidate(modulus.size()-1,context.integer(0));
+    for(size_t i = 0; i < reduced.size(); ++i){
+        integration_poly n,d,denominator_inverse;
+        if(!integration_parse_rational(reduced[i]*highest,variable,n,d,
+                options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(n,d) || !local.inverse(d,denominator_inverse))
+            return status::unsupported;
+        auto leading = local.multiply(n,denominator_inverse);
+        auto b = local.multiply(leading,inverse);
+        if(b.empty()) return status::verification_failed;
+        for(auto &v : b) v = -v/numeric_value(order-1);
+        candidate[i] = integration_poly_expr(context,b,variable)/lower;
+    }
+    integration_expr_poly derivative;
+    if(!integration_algebraic_quotient_derivative(context,candidate,modulus,dz,
+            variable,options,derivative)) return status::verification_failed;
+    integration_expr_poly residual(modulus.size()-1,context.integer(0));
+    for(size_t i = 0; i < residual.size(); ++i){
+        residual[i] = (i < reduced.size() ? reduced[i] : context.integer(0)) -
+            (i < derivative.size() ? derivative[i] : context.integer(0));
+        integration_poly n,d;
+        if(!integration_normalize_expr_coefficient(context,residual[i],variable,options.maximum_degree) ||
+           !integration_parse_rational(residual[i]*lower,variable,n,d,
+                options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(n,d) || integration_gcd_poly(pole,d).size() != 1)
+            return status::verification_failed;
+    }
+    exact_part = std::move(candidate); remainder = std::move(residual);
+    return status::solved;
+}
+
+static integration_parametric_rde_status integration_algebraic_normal_reduce(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options, integration_expr_poly &exact_part,
+    integration_expr_poly &remainder){
+    using status = integration_parametric_rde_status;
+    std::vector<integration_expr_poly> connection;
+    if(!integration_algebraic_connection_matrix(context,modulus,variable,options,connection)) return status::unsupported;
+    integration_expr_poly q,reduced,dz;
+    if(!integration_algebraic_implicit_derivation(context,modulus,variable,options,dz) ||
+       !integration_expr_divmod_rational_coefficients(context,input,modulus,variable,
+            options.maximum_degree,q,reduced)) return status::unsupported;
+    integration_poly common{numeric_value(1)};
+    for(const auto &coefficient : reduced){
+        integration_poly n,d,quotient;
+        if(!integration_parse_rational(coefficient,variable,n,d,options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(n,d) ||
+           !integration_divide_poly(d,integration_gcd_poly(common,d),quotient)) return status::unsupported;
+        if(common.size()-1+quotient.size()-1 > options.maximum_degree) return status::resource_limit;
+        common = integration_mul(common,quotient);
+    }
+    integration_poly repeated = integration_gcd_poly(common,integration_derivative_poly(common)), layer;
+    if(!integration_divide_poly(common,repeated,layer)) return status::verification_failed;
+    integration_expr_poly total(modulus.size()-1,context.integer(0)), residual = reduced;
+    for(size_t order = 1; layer.size() > 1; ++order){
+        if(order > options.maximum_degree) return status::resource_limit;
+        integration_poly next = integration_gcd_poly(layer,repeated), factor, rest;
+        if(!integration_divide_poly(layer,next,factor) || !integration_divide_poly(repeated,next,rest))
+            return status::verification_failed;
+        layer = std::move(next); repeated = std::move(rest);
+        if(order < 2 || factor.size() < 2) continue;
+        // Remove every factor at which the chosen connection has a pole.
+        for(const auto &row : connection) for(const auto &coefficient : row){
+            integration_poly n,d,normal;
+            if(!integration_parse_rational(coefficient,variable,n,d,options.maximum_degree,options.maximum_degree) ||
+               !integration_normalize_rational(n,d) ||
+               !integration_divide_poly(factor,integration_gcd_poly(factor,d),normal)) return status::unsupported;
+            factor = std::move(normal);
+        }
+        if(factor.size() < 2) continue;
+        for(size_t multiplicity = order; multiplicity > 1; --multiplicity){
+            integration_expr_poly exact,next_residual;
+            auto step = integration_algebraic_normal_pole_step(context,residual,modulus,factor,
+                multiplicity,variable,options,exact,next_residual);
+            if(step != status::solved) return step;
+            total = integration_expr_add(context,total,exact);
+            residual = std::move(next_residual);
+        }
+    }
+    integration_expr_poly derivative;
+    if(!integration_algebraic_quotient_derivative(context,total,modulus,dz,
+            variable,options,derivative)) return status::verification_failed;
+    residual.resize(modulus.size()-1,context.integer(0));
+    total.resize(modulus.size()-1,context.integer(0));
+    for(size_t i = 0; i < residual.size(); ++i){
+        exact_expr error = (i < derivative.size() ? derivative[i] : context.integer(0)) + residual[i] -
+            (i < reduced.size() ? reduced[i] : context.integer(0));
+        if(!integration_normalize_expr_coefficient(context,error,variable,options.maximum_degree) ||
+           error != context.integer(0)) return status::verification_failed;
+        if(!integration_normalize_expr_coefficient(context,total[i],variable,options.maximum_degree))
+            return status::verification_failed;
+    }
+    exact_part = std::move(total); remainder = std::move(residual);
+    return status::solved;
+}
+
 struct integration_primitive_derivative_relation{
     std::vector<numeric_value> constants;
     integration_poly numerator, denominator;
@@ -9373,8 +9566,13 @@ risch_result exact_context::integrate_elementary(
                 }
             }
             if(denominator && integration_depends_on(part.operand(0), variable)){
-                if(denominator > degree_budget || (rank && radicand != part.operand(0))){
+                if(denominator > degree_budget){
                     invalid = true; return;
+                }
+                if(rank && radicand != part.operand(0)){
+                    exact_expr difference = radicand-part.operand(0);
+                    if(!integration_normalize_expr_coefficient(*this,difference,variable,degree_budget) ||
+                       difference != integer(0)){ invalid = true; return; }
                 }
                 size_t factor = rank ? denominator/std::gcd(rank, denominator) : 1;
                 if(rank && rank > degree_budget/factor){ invalid = true; return; }
@@ -9414,6 +9612,13 @@ risch_result exact_context::integrate_elementary(
             return true;
         }
         if(reduced != integration_parametric_rde_status::solved) return false;
+        integration_expr_poly normal_exact,normal_rest;
+        auto normal = integration_algebraic_normal_reduce(*this,residual,modulus,variable,
+            options,normal_exact,normal_rest);
+        if(normal == integration_parametric_rde_status::solved){
+            exact = integration_expr_add(*this,exact,normal_exact);
+            residual = std::move(normal_rest);
+        }
         exact_expr root = rank == 2 ? square_root(radicand) :
             power(radicand, value(numeric_value(1)/numeric_value(rank)));
         exact_expr candidate = integration_expr_poly_expr(*this, exact, root);
@@ -9430,6 +9635,47 @@ risch_result exact_context::integrate_elementary(
                     integration_expr_poly_expr(*this, argument, root));
                 residual = std::move(rest);
                 break;
+            }
+            bool nonrational = false;
+            for(size_t i = 1; i < residual.size(); ++i) nonrational |= residual[i] != integer(0);
+            if(nonrational){
+                std::vector<integration_expr_poly> arguments;
+                auto add_argument = [&](const integration_expr_poly &argument){
+                    integration_expr_poly q, normalized, derivative;
+                    if(!integration_expr_divmod_rational_coefficients(*this, argument, modulus,
+                            variable, degree_budget, q, normalized) || normalized.size() < 2 ||
+                       std::find(arguments.begin(), arguments.end(), normalized) != arguments.end() ||
+                       !integration_algebraic_log_derivative(*this, normalized, modulus, dz,
+                            variable, options, derivative)) return;
+                    bool useful = false;
+                    for(size_t i = 1; i < derivative.size(); ++i) useful |= derivative[i] != integer(0);
+                    if(useful) arguments.push_back(std::move(normalized));
+                };
+                add_argument(denominator); add_argument(numerator);
+                std::unordered_set<uint32_t> argument_seen;
+                auto collect_arguments = [&](auto &&self, const exact_expr &part) -> void{
+                    if(!argument_seen.insert(part.id()).second ||
+                       arguments.size() >= options.maximum_matrix_entries/(rank+1)) return;
+                    if(integration_depends_on(part, parameter)){
+                        integration_expr_poly n, d;
+                        if(integration_parse_expr_rational(*this, part, parameter, n, d,
+                            degree_budget, &variable)){
+                            add_argument(n); add_argument(d);
+                        }
+                    }
+                    for(size_t i = 0; i < part.operand_count(); ++i) self(self, part.operand(i));
+                };
+                collect_arguments(collect_arguments, transformed);
+                std::vector<numeric_value> constants;
+                integration_expr_poly rest;
+                auto logarithmic = integration_algebraic_log_combination(*this, residual, arguments,
+                    modulus, dz, variable, options, constants, rest);
+                if(logarithmic == integration_parametric_rde_status::solved){
+                    for(size_t i = 0; i < constants.size(); ++i)
+                        if(!constants[i].is_zero()) candidate = candidate+value(constants[i])*
+                            natural_logarithm(integration_expr_poly_expr(*this, arguments[i], root));
+                    residual = std::move(rest);
+                }
             }
         }
         if(residual[0] != integer(0)){

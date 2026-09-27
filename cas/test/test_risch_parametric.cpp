@@ -452,6 +452,86 @@ int main(){
     }
     exact_expr lower_log = context.natural_logarithm(x);
     {
+        integration_expr_poly modulus{-x,context.integer(1),context.integer(1)},exact,residual;
+        exact_expr coefficient = context.integer(1)/context.power(x-context.integer(2),context.integer(3)) +
+            context.integer(1)/context.power(x-context.integer(3),context.integer(2));
+        assert(integration_algebraic_normal_reduce(context,{context.integer(0),coefficient},
+            modulus,x,risch_options(),exact,residual) == status::solved);
+        assert(exact[1] != context.integer(0));
+        integration_expr_poly scalar_exact,scalar_rest;
+        assert(integration_algebraic_normal_reduce(context,{coefficient},modulus,x,
+            risch_options(),scalar_exact,scalar_rest) == status::solved);
+        assert(scalar_exact.size() == 2 && scalar_exact[1] == context.integer(0));
+        integration_poly normal_poles{numeric_value(6),numeric_value(-5),numeric_value(1)};
+        for(const auto &v : residual){
+            integration_poly n,d;
+            assert(integration_parse_rational(v,x,n,d));
+            assert(integration_normalize_rational(n,d));
+            assert(integration_gcd_poly(normal_poles,
+                integration_gcd_poly(d,integration_derivative_poly(d))).size() == 1);
+        }
+        exact_expr r = x*x*x-x,root = context.square_root(r);
+        exact_expr original = root/(x+context.integer(2));
+        auto solved = context.integrate_elementary(context.differentiate(original,x)+context.integer(1)/root,x);
+        assert(solved.status == risch_status::unsupported);
+        assert(solved.elementary_part != context.integer(0));
+        assert(solved.remainder != context.integer(0));
+    }
+    {
+        integration_expr_poly modulus{-x,context.integer(1),context.integer(1)};
+        integration_expr_poly input{context.integer(0),context.integer(1)/context.power(x-context.integer(2),context.integer(3))};
+        integration_expr_poly exact,residual,dz,derivative;
+        assert(integration_algebraic_normal_pole_step(context,input,modulus,
+            {numeric_value(-2),numeric_value(1)},3,x,risch_options(),exact,residual) == status::solved);
+        exact_expr error = exact[1]+context.integer(1)/(context.integer(2)*context.power(x-context.integer(2),context.integer(2)));
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        assert(integration_algebraic_implicit_derivation(context,modulus,x,risch_options(),dz));
+        assert(integration_algebraic_quotient_derivative(context,exact,modulus,dz,x,risch_options(),derivative));
+        for(size_t i = 0; i < input.size(); ++i){
+            error = input[i]-derivative[i]-residual[i];
+            assert(integration_normalize_expr_coefficient(context,error,x,64));
+            assert(error == context.integer(0));
+        }
+        integration_expr_poly second,rest;
+        assert(integration_algebraic_normal_pole_step(context,residual,modulus,
+            {numeric_value(-2),numeric_value(1)},2,x,risch_options(),second,rest) == status::solved);
+        assert(integration_algebraic_normal_pole_step(context,input,modulus,
+            {numeric_value(1),numeric_value(4)},3,x,risch_options(),exact,residual) == status::unsupported);
+        assert(integration_algebraic_normal_pole_step(context,input,modulus,
+            {numeric_value(4),numeric_value(-4),numeric_value(1)},3,x,risch_options(),exact,residual) == status::unsupported);
+        risch_options tiny; tiny.maximum_degree = 2;
+        assert(integration_algebraic_normal_pole_step(context,input,modulus,
+            {numeric_value(-2),numeric_value(1)},3,x,tiny,exact,residual) == status::resource_limit);
+    }
+    {
+        integration_expr_poly modulus{-x*x*x+x, context.integer(0), context.integer(1)}, dz, first, second;
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        std::vector<integration_expr_poly> arguments{
+            {context.integer(1), context.integer(1)}, {context.integer(2), context.integer(1)}};
+        assert(integration_algebraic_log_derivative(context, arguments[0], modulus, dz, x, risch_options(), first));
+        assert(integration_algebraic_log_derivative(context, arguments[1], modulus, dz, x, risch_options(), second));
+        for(auto &v : second) v = context.integer(2)*v;
+        auto input = integration_expr_add(context, first, second);
+        std::vector<numeric_value> constants;
+        integration_expr_poly residual;
+        assert(integration_algebraic_log_combination(context, input, arguments, modulus, dz,
+            x, risch_options(), constants, residual) == status::solved);
+        assert(constants.size() == 2 && constants[0] == numeric_value(1) && constants[1] == numeric_value(2));
+        for(const auto &v : residual) assert(v == context.integer(0));
+        arguments.push_back(arguments[0]);
+        assert(integration_algebraic_log_combination(context, input, arguments, modulus, dz,
+            x, risch_options(), constants, residual) == status::solved);
+        risch_options tiny; tiny.maximum_matrix_entries = 1;
+        assert(integration_algebraic_log_combination(context, input, arguments, modulus, dz,
+            x, tiny, constants, residual) == status::resource_limit);
+        exact_expr r = x*x*x-x, root = context.square_root(r);
+        exact_expr f = context.differentiate(r,x)/(context.integer(2)*root)*
+            (context.integer(1)/(context.integer(1)+root)+context.integer(2)/(context.integer(2)+root));
+        auto solved = context.integrate_elementary(f,x);
+        assert(solved.status == risch_status::elementary && solved.remainder == context.integer(0));
+    }
+    {
         exact_expr r = x*x*x-x, root = context.square_root(r);
         exact_expr f = context.differentiate(r, x)/(context.integer(2)*root*(context.integer(1)+root));
         auto solved = context.integrate_elementary(f, x);
