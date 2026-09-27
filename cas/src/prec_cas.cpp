@@ -4331,6 +4331,138 @@ static bool integration_expr_inverse_mod_rational_coefficients(
     return true;
 }
 
+// Extend D(x)=1 to the separable quotient Q(x)[z]/P by implicit differentiation.
+static bool integration_algebraic_implicit_derivation(
+    exact_context &context, integration_expr_poly modulus,
+    const exact_expr &variable, const risch_options &options, integration_expr_poly &dz){
+    if(modulus.size() < 2 || modulus.size() - 1 > options.maximum_degree ||
+       modulus.size() > options.maximum_nodes) return false;
+    for(auto &v : modulus)
+        if(!integration_normalize_expr_coefficient(context, v, variable, options.maximum_degree)) return false;
+    integration_expr_trim(context, modulus);
+    if(modulus.size() < 2) return false;
+    integration_expr_poly px, pz(modulus.size() - 1, context.integer(0)), inverse, q, derivative;
+    for(size_t i = 0; i < modulus.size(); ++i){
+        exact_expr v = context.differentiate(modulus[i], variable);
+        if(!integration_normalize_expr_coefficient(context, v, variable, options.maximum_degree)) return false;
+        px.push_back(v);
+        if(i) pz[i - 1] = context.integer(i) * modulus[i];
+    }
+    if(!integration_expr_inverse_mod_rational_coefficients(context, pz, modulus, variable,
+        options.maximum_degree, inverse)) return false;
+    auto numerator = integration_expr_mul(context, px, inverse);
+    for(auto &v : numerator) v = -v;
+    if(!integration_expr_divmod_rational_coefficients(context, numerator, modulus, variable,
+        options.maximum_degree, q, derivative)) return false;
+    integration_expr_poly certificate;
+    if(!integration_expr_divmod_rational_coefficients(context,
+        integration_expr_add(context, px, integration_expr_mul(context, pz, derivative)),
+        modulus, variable, options.maximum_degree, q, certificate) ||
+       certificate.size() != 1 || certificate[0] != context.integer(0)) return false;
+    dz = std::move(derivative);
+    return true;
+}
+
+static bool integration_algebraic_quotient_derivative(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const integration_expr_poly &dz,
+    const exact_expr &variable, const risch_options &options, integration_expr_poly &result){
+    if(input.empty() || dz.empty() || modulus.size() < 2 ||
+       input.size() - 1 > options.maximum_degree || modulus.size() - 1 > options.maximum_degree ||
+       dz.size() >= modulus.size()) return false;
+    integration_expr_poly q, reduced;
+    if(!integration_expr_divmod_rational_coefficients(context, input, modulus, variable,
+        options.maximum_degree, q, reduced)) return false;
+    integration_expr_poly dx, partial(reduced.size() > 1 ? reduced.size() - 1 : 1, context.integer(0));
+    for(size_t i = 0; i < reduced.size(); ++i){
+        exact_expr v = context.differentiate(reduced[i], variable);
+        if(!integration_normalize_expr_coefficient(context, v, variable, options.maximum_degree)) return false;
+        dx.push_back(v);
+        if(i) partial[i - 1] = context.integer(i) * reduced[i];
+    }
+    integration_expr_poly derivative;
+    if(!integration_expr_divmod_rational_coefficients(context,
+        integration_expr_add(context, dx, integration_expr_mul(context, partial, dz)),
+        modulus, variable, options.maximum_degree, q, derivative)) return false;
+    result = std::move(derivative);
+    return true;
+}
+
+// Columns are D(1), D(z), ... in the power basis: D(v) = v' + connection*v.
+static bool integration_algebraic_connection_matrix(
+    exact_context &context, const integration_expr_poly &modulus,
+    const exact_expr &variable, const risch_options &options,
+    std::vector<integration_expr_poly> &result){
+    if(modulus.size() < 2) return false;
+    const size_t rank = modulus.size() - 1;
+    if(rank > options.maximum_degree || rank > options.maximum_matrix_entries / rank) return false;
+    exact_expr leading = modulus.back();
+    if(!integration_normalize_expr_coefficient(context, leading, variable, options.maximum_degree) ||
+       leading == context.integer(0)) return false;
+    integration_expr_poly dz;
+    if(!integration_algebraic_implicit_derivation(context, modulus, variable, options, dz)) return false;
+    std::vector<integration_expr_poly> matrix(rank, integration_expr_poly(rank, context.integer(0)));
+    for(size_t column = 1; column < rank; ++column){
+        integration_expr_poly basis(column + 1, context.integer(0)), derivative;
+        basis.back() = context.integer(1);
+        if(!integration_algebraic_quotient_derivative(context, basis, modulus, dz,
+                variable, options, derivative)) return false;
+        for(size_t row = 0; row < derivative.size(); ++row) matrix[row][column] = derivative[row];
+    }
+    result = std::move(matrix);
+    return true;
+}
+
+// Logarithmic derivatives require a unit even when the quotient is reducible.
+static bool integration_algebraic_log_derivative(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const integration_expr_poly &dz,
+    const exact_expr &variable, const risch_options &options, integration_expr_poly &result){
+    integration_expr_poly inverse, derivative, q, candidate, check;
+    if(!integration_expr_inverse_mod_rational_coefficients(context, input, modulus, variable,
+            options.maximum_degree, inverse) ||
+       !integration_algebraic_quotient_derivative(context, input, modulus, dz,
+            variable, options, derivative) ||
+       !integration_expr_divmod_rational_coefficients(context,
+            integration_expr_mul(context, derivative, inverse), modulus, variable,
+            options.maximum_degree, q, candidate)) return false;
+    integration_expr_poly negative = derivative;
+    for(auto &coefficient : negative) coefficient = -coefficient;
+    check = integration_expr_add(context, integration_expr_mul(context, input, candidate), negative);
+    if(!integration_expr_divmod_rational_coefficients(context, check, modulus, variable,
+            options.maximum_degree, q, check) || check.size() != 1 ||
+       check[0] != context.integer(0)) return false;
+    result = std::move(candidate);
+    return true;
+}
+
+// Parse one selected algebraic generator into a reduced quotient-algebra element.
+// The caller supplies its defining relation; only unit denominators are accepted.
+static bool integration_parse_algebraic_quotient(
+    exact_context &context, const exact_expr &expression, const exact_expr &generator,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options, integration_expr_poly &result){
+    if(modulus.size() < 2 || modulus.size() - 1 > options.maximum_degree ||
+       generator == variable || expression.reachable_node_count() > options.maximum_nodes) return false;
+    integration_expr_poly n, d, inverse, q, reduced;
+    if(!integration_parse_expr_rational(context, expression, generator, n, d,
+            options.maximum_degree, &variable) ||
+       !integration_expr_inverse_mod_rational_coefficients(context, d, modulus, variable,
+            options.maximum_degree, inverse) ||
+       !integration_expr_divmod_rational_coefficients(context,
+            integration_expr_mul(context, n, inverse), modulus, variable,
+            options.maximum_degree, q, reduced)) return false;
+    // Verify the original denominator identity independently of its inverse.
+    integration_expr_poly error = integration_expr_mul(context, d, reduced);
+    error.resize(std::max(error.size(), n.size()), context.integer(0));
+    for(size_t i = 0; i < n.size(); ++i) error[i] = error[i] - n[i];
+    if(!integration_expr_divmod_rational_coefficients(context, error, modulus, variable,
+            options.maximum_degree, q, error) || error.size() != 1 ||
+       error[0] != context.integer(0)) return false;
+    result = std::move(reduced);
+    return true;
+}
+
 // Exact constant-extension arithmetic. A reducible modulus is allowed, but
 // division fails on nonunits instead of pretending the quotient is a field.
 struct integration_residue_algebra{
@@ -4587,6 +4719,44 @@ static bool integration_algebraic_fraction_trace(
 }
 
 using integration_algebraic_function_poly = std::vector<integration_algebraic_fraction>;
+
+// Full derivation on Q(z)(x)[t], with z constant and D(t) supplied as a polynomial.
+static bool integration_algebraic_function_poly_derivative(
+    const integration_residue_algebra &algebra,
+    const integration_algebraic_function_poly &input,
+    const integration_algebraic_function_poly &generator_derivative,
+    size_t maximum_degree, integration_algebraic_function_poly &result){
+    if(input.empty() || generator_derivative.empty() || input.size() - 1 > maximum_degree ||
+       generator_derivative.size() - 1 > maximum_degree) return false;
+    if(input.size() > 1 && input.size() - 2 > maximum_degree -
+        (generator_derivative.size() - 1)) return false;
+    size_t size = input.size();
+    if(input.size() > 1) size = std::max(size, input.size() + generator_derivative.size() - 2);
+    integration_algebraic_function_poly derivative(size);
+    for(size_t i = 0; i < input.size(); ++i){
+        integration_algebraic_fraction coefficient, next;
+        if(!integration_algebraic_fraction_derivative(algebra, input[i], maximum_degree, coefficient) ||
+           !integration_algebraic_fraction_combine(algebra, derivative[i], coefficient,
+            false, maximum_degree, next)) return false;
+        derivative[i] = std::move(next);
+        if(!i) continue;
+        integration_algebraic_fraction weight{{{numeric_value(i)}}, {{numeric_value(1)}}}, scaled;
+        if(!integration_algebraic_fraction_combine(algebra, input[i], weight,
+            true, maximum_degree, scaled)) return false;
+        for(size_t j = 0; j < generator_derivative.size(); ++j){
+            integration_algebraic_fraction term, sum;
+            if(!integration_algebraic_fraction_combine(algebra, scaled, generator_derivative[j],
+                true, maximum_degree, term) ||
+               !integration_algebraic_fraction_combine(algebra, derivative[i - 1 + j], term,
+                false, maximum_degree, sum)) return false;
+            derivative[i - 1 + j] = std::move(sum);
+        }
+    }
+    while(derivative.size() > 1 && derivative.back().numerator.size() == 1 &&
+        integration_zero_poly(derivative.back().numerator[0])) derivative.pop_back();
+    result = std::move(derivative);
+    return true;
+}
 
 // Trace of N(t)/W(t) from Q(z)(x,t) to Q(x,t). The multiplication
 // matrices are normalized in Q(x)[t], not merely in the base field Q(x).
@@ -4894,6 +5064,49 @@ static bool integration_residue_characteristic_polynomial(
     return true;
 }
 
+static bool integration_algebraic_quotient_trace(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options, exact_expr &result){
+    if(input.empty() || modulus.size() < 2 || input.size() - 1 > options.maximum_degree ||
+       modulus.size() - 1 > options.maximum_degree)
+        return false;
+    // The basis dimension must equal the actual degree, not the vector capacity.
+    exact_expr leading = modulus.back();
+    if(!integration_normalize_expr_coefficient(context, leading, variable, options.maximum_degree) ||
+       leading == context.integer(0)) return false;
+    integration_expr_poly q, reduced, characteristic;
+    if(!integration_expr_divmod_rational_coefficients(context, input, modulus, variable,
+            options.maximum_degree, q, reduced) ||
+       !integration_residue_characteristic_polynomial(context, reduced, modulus,
+            variable, options, characteristic)) return false;
+    exact_expr trace = -characteristic[characteristic.size() - 2];
+    if(!integration_normalize_expr_coefficient(context, trace, variable, options.maximum_degree)) return false;
+    result = trace;
+    return true;
+}
+
+// The normalized trace projects onto Q(x); its kernel remains an algebraic problem.
+static bool integration_algebraic_trace_split(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options, exact_expr &rational_part, integration_expr_poly &remainder){
+    exact_expr trace;
+    if(!integration_algebraic_quotient_trace(context, input, modulus, variable, options, trace)) return false;
+    exact_expr base = trace / context.integer(modulus.size() - 1);
+    if(!integration_normalize_expr_coefficient(context, base, variable, options.maximum_degree)) return false;
+    integration_expr_poly q, residual;
+    if(!integration_expr_divmod_rational_coefficients(context, input, modulus, variable,
+            options.maximum_degree, q, residual)) return false;
+    residual[0] = residual[0] - base;
+    exact_expr check;
+    if(!integration_algebraic_quotient_trace(context, residual, modulus, variable, options, check) ||
+       check != context.integer(0)) return false;
+    rational_part = base;
+    remainder = std::move(residual);
+    return true;
+}
+
 // One differential Hermite step: n/p^m = D(b/p^(m-1)) + r/p^(m-1).
 static bool integration_normal_pole_reduce_step(
     exact_context &context, const integration_expr_poly &numerator,
@@ -5143,6 +5356,16 @@ static bool integration_algebraic_residue_factor(
     };
     integration_algebraic_function_poly denominator, numerator, derivative;
     if(!convert(d, denominator) || !convert(n, numerator) || !convert(dp, derivative)) return false;
+    integration_expr_poly dt;
+    integration_algebraic_function_poly algebraic_dt, derived;
+    if(!integration_parse_expr_poly(context, context.expand(context.differentiate(generator, variable),
+        100000), generator, dt) || !convert(dt, algebraic_dt) ||
+       !integration_algebraic_function_poly_derivative(algebra, denominator, algebraic_dt,
+        degree, derived)) return false;
+    if(derived.size() != derivative.size()) return false;
+    for(size_t i = 0; i < derived.size(); ++i)
+        if(derived[i].numerator != derivative[i].numerator ||
+           derived[i].denominator != derivative[i].denominator) return false;
     numerator.resize(std::max(numerator.size(), derivative.size()));
     integration_algebraic_fraction minus_z{{{numeric_value(0), numeric_value(-1)}}, {{numeric_value(1)}}};
     for(size_t i = 0; i < derivative.size(); ++i){

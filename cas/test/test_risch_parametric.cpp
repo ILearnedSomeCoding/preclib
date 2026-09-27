@@ -452,6 +452,173 @@ int main(){
     }
     exact_expr lower_log = context.natural_logarithm(x);
     {
+        for(size_t degree : {2u, 3u, 4u}){
+            integration_expr_poly modulus(degree + 1, context.integer(0));
+            modulus[0] = -x-context.integer(1); modulus.back() = context.integer(1);
+            std::vector<integration_expr_poly> matrix;
+            assert(integration_algebraic_connection_matrix(context, modulus, x, risch_options(), matrix));
+            integration_expr_poly input, dz, derivative;
+            for(size_t i = 0; i < degree; ++i) input.push_back(context.integer(i+1)/(x+context.integer(i+2)));
+            assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+            assert(integration_algebraic_quotient_derivative(context, input, modulus, dz,
+                x, risch_options(), derivative));
+            for(size_t row = 0; row < degree; ++row){
+                exact_expr expected = context.differentiate(input[row], x);
+                for(size_t column = 0; column < degree; ++column)
+                    expected = expected + matrix[row][column]*input[column];
+                exact_expr error = expected - (row < derivative.size() ? derivative[row] : context.integer(0));
+                assert(integration_normalize_expr_coefficient(context, error, x, 64));
+                assert(error == context.integer(0));
+            }
+            risch_options tiny; tiny.maximum_matrix_entries = degree*degree-1;
+            assert(!integration_algebraic_connection_matrix(context, modulus, x, tiny, matrix));
+            modulus.push_back(context.integer(0));
+            assert(!integration_algebraic_connection_matrix(context, modulus, x, risch_options(), matrix));
+        }
+    }
+    {
+        integration_expr_poly modulus{-x, context.integer(0), context.integer(1)}, dz, value;
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        assert(integration_algebraic_log_derivative(context,
+            {context.integer(0), context.integer(1)}, modulus, dz, x, risch_options(), value));
+        assert(value.size() == 1);
+        exact_expr error = value[0] - context.integer(1)/(context.integer(2)*x);
+        assert(integration_normalize_expr_coefficient(context, error, x, 64));
+        assert(error == context.integer(0));
+        assert(integration_algebraic_log_derivative(context,
+            {context.integer(1), context.integer(1)}, modulus, dz, x, risch_options(), value));
+        assert(value.size() == 2);
+        error = value[0] - context.integer(1)/(context.integer(2)*(x-context.integer(1)));
+        assert(integration_normalize_expr_coefficient(context, error, x, 64));
+        assert(error == context.integer(0));
+        error = value[1] - context.integer(1)/(context.integer(2)*x*(context.integer(1)-x));
+        assert(integration_normalize_expr_coefficient(context, error, x, 64));
+        assert(error == context.integer(0));
+        integration_expr_poly reducible{-x*x, context.integer(0), context.integer(1)};
+        assert(integration_algebraic_implicit_derivation(context, reducible, x, risch_options(), dz));
+        assert(!integration_algebraic_log_derivative(context,
+            {-x, context.integer(1)}, reducible, dz, x, risch_options(), value));
+        assert(!integration_algebraic_log_derivative(context,
+            {context.integer(0)}, modulus, dz, x, risch_options(), value));
+    }
+    {
+        exact_expr z = context.symbol("_test_algebraic_trace_root");
+        for(size_t degree : {2u, 3u}){
+            integration_expr_poly modulus(degree + 1, context.integer(0));
+            modulus[0] = -x; modulus.back() = context.integer(1);
+            integration_expr_poly value, dz, derivative, remainder;
+            assert(integration_parse_algebraic_quotient(context,
+                context.integer(1) / (context.integer(1) + z), z, modulus,
+                x, risch_options(), value));
+            exact_expr trace, base, derivative_trace;
+            assert(integration_algebraic_quotient_trace(context, value, modulus, x, risch_options(), trace));
+            exact_expr expected = context.integer(degree) /
+                (context.integer(1) + context.integer(degree == 2 ? -1 : 1)*x);
+            exact_expr error = trace - expected;
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+            assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+            assert(integration_algebraic_quotient_derivative(context, value, modulus, dz,
+                x, risch_options(), derivative));
+            assert(integration_algebraic_quotient_trace(context, derivative, modulus,
+                x, risch_options(), derivative_trace));
+            error = context.differentiate(trace, x) - derivative_trace;
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+            assert(integration_algebraic_trace_split(context, value, modulus, x, risch_options(), base, remainder));
+            remainder[0] = remainder[0] + base;
+            for(size_t i = 0; i < value.size(); ++i){
+                error = remainder[i] - value[i];
+                assert(integration_normalize_expr_coefficient(context, error, x, 64));
+                assert(error == context.integer(0));
+            }
+            risch_options tiny;
+            tiny.maximum_matrix_entries = 1;
+            assert(!integration_algebraic_quotient_trace(context, value, modulus, x, tiny, trace));
+            integration_expr_poly noncanonical = modulus;
+            noncanonical.push_back(context.integer(0));
+            assert(!integration_algebraic_quotient_trace(context, value, noncanonical,
+                x, risch_options(), trace));
+            assert(!integration_algebraic_trace_split(context, value, noncanonical,
+                x, risch_options(), base, remainder));
+            tiny = risch_options();
+            tiny.maximum_degree = degree - 1;
+            assert(!integration_algebraic_quotient_trace(context, value, modulus, x, tiny, trace));
+        }
+    }
+    {
+        exact_expr root = context.square_root(x);
+        integration_expr_poly modulus{-x, context.integer(0), context.integer(1)}, value, dz, derivative;
+        exact_expr expression = context.integer(1) / (context.integer(1) + root);
+        assert(integration_parse_algebraic_quotient(context, expression, root, modulus,
+            x, risch_options(), value));
+        assert(value.size() == 2);
+        for(size_t i = 0; i < 2; ++i){
+            exact_expr error = value[i] - context.integer(i ? -1 : 1) / (context.integer(1) - x);
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+        }
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        assert(integration_algebraic_quotient_derivative(context, value, modulus, dz,
+            x, risch_options(), derivative));
+        integration_expr_poly expected;
+        assert(integration_parse_algebraic_quotient(context,
+            -context.integer(1) / (context.integer(2) * root *
+             context.power(context.integer(1) + root, context.integer(2))), root,
+            modulus, x, risch_options(), expected));
+        assert(derivative == expected);
+        assert(!integration_parse_algebraic_quotient(context,
+            context.integer(1) / (root - x), root,
+            {-context.power(x, context.integer(2)), context.integer(0), context.integer(1)},
+            x, risch_options(), value));
+        risch_options tiny;
+        tiny.maximum_nodes = 1;
+        assert(!integration_parse_algebraic_quotient(context, expression, root, modulus,
+            x, tiny, value));
+    }
+    {
+        for(const auto &radicand : {x, x + context.integer(1),
+                context.power(x, context.integer(3)) - x}){
+            integration_expr_poly modulus{-radicand, context.integer(0), context.integer(1)}, dz, derivative;
+            assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+            assert(dz.size() == 2 && dz[0] == context.integer(0));
+            exact_expr error = dz[1] - context.differentiate(radicand, x) /
+                (context.integer(2) * radicand);
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+            assert(integration_algebraic_quotient_derivative(context,
+                {context.integer(0), context.integer(0), context.integer(1)}, modulus, dz,
+                x, risch_options(), derivative));
+            assert(derivative.size() == 1);
+            error = derivative[0] - context.differentiate(radicand, x);
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+            integration_expr_poly inverse;
+            assert(integration_expr_inverse_mod_rational_coefficients(context,
+                {context.integer(0), context.integer(1)}, modulus, x, 64, inverse));
+            assert(integration_algebraic_quotient_derivative(context, inverse, modulus, dz,
+                x, risch_options(), derivative));
+            assert(derivative.size() == 2);
+            error = derivative[1] + context.differentiate(radicand, x) /
+                (context.integer(2) * context.power(radicand, context.integer(2)));
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+        }
+        integration_expr_poly modulus{-x - context.integer(1), context.integer(0),
+            context.integer(0), context.integer(1)}, dz, derivative;
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        assert(integration_algebraic_quotient_derivative(context,
+            {context.integer(0), context.integer(0), context.integer(0), context.integer(1)},
+            modulus, dz, x, risch_options(), derivative));
+        assert(derivative.size() == 1 && derivative[0] == context.integer(1));
+        assert(!integration_algebraic_implicit_derivation(context,
+            {context.power(x, context.integer(2)), -context.integer(2)*x, context.integer(1)},
+            x, risch_options(), dz));
+        risch_options tiny;
+        tiny.maximum_degree = 1;
+        assert(!integration_algebraic_implicit_derivation(context, modulus, x, tiny, dz));
+    }
+    {
         for(const auto &residual : {
                 context.integer(1) / (x + context.integer(1)),
                 context.integer(1) / (context.power(x, context.integer(5)) - x + context.integer(1))}){
@@ -660,6 +827,40 @@ int main(){
         }
         assert(!integration_algebraic_expression_trace(context, expression, minimal, x,
             lower_log, x, risch_options(), trace));
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(1) / numeric_value(4),
+            numeric_value(0), numeric_value(1)}};
+        integration_algebraic_fraction ratio{
+            {{numeric_value(0), numeric_value(1)}, {numeric_value(1)}},
+            {{numeric_value(0), numeric_value(-1)}, {numeric_value(1)}}};
+        integration_algebraic_fraction z{{{numeric_value(0), numeric_value(1)}}, {{numeric_value(1)}}};
+        integration_algebraic_function_poly polynomial{integration_algebraic_fraction(), z, ratio};
+        for(const auto &generator : {lower_log, context.exponential(x)}){
+            integration_algebraic_function_poly dt;
+            if(generator == lower_log)
+                dt.push_back({{{numeric_value(1)}}, {{numeric_value(0)}, {numeric_value(1)}}});
+            else dt = {integration_algebraic_fraction(),
+                {{{numeric_value(1)}}, {{numeric_value(1)}}}};
+            integration_algebraic_function_poly derived;
+            assert(integration_algebraic_function_poly_derivative(algebra, polynomial, dt, 64, derived));
+            exact_expr trace, derivative_trace;
+            integration_algebraic_function_poly one{{{{numeric_value(1)}}, {{numeric_value(1)}}}};
+            assert(integration_algebraic_function_trace(context, algebra, polynomial, one,
+                generator, x, risch_options(), trace));
+            assert(integration_algebraic_function_trace(context, algebra, derived, one,
+                generator, x, risch_options(), derivative_trace));
+            integration_expr_poly error, divisor;
+            assert(integration_parse_expr_rational(context,
+                context.differentiate(trace, x) - derivative_trace, generator, error, divisor, 64, &x));
+            for(auto &coefficient : error){
+                assert(integration_normalize_expr_coefficient(context, coefficient, x, 64));
+                assert(coefficient == context.integer(0));
+            }
+            assert(!integration_algebraic_function_poly_derivative(algebra, polynomial, dt, 1, derived));
+        }
+        integration_algebraic_function_poly derived;
+        assert(!integration_algebraic_function_poly_derivative(algebra, polynomial, {}, 64, derived));
     }
     {
         integration_residue_algebra algebra{{numeric_value(1) / numeric_value(4),
