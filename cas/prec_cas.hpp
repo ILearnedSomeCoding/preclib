@@ -49,7 +49,8 @@ enum class exact_opcode : uint8_t{
     derivative = 34,
     integral = 35,
     rule = 36,
-    log_root_sum = 37
+    log_root_sum = 37,
+    algebraic_log_sum = 38
 };
 
 const char *exact_opcode_name(exact_opcode operation);
@@ -247,6 +248,10 @@ public:
     exact_expr log_root_sum(const exact_expr &numerator,
                             const exact_expr &denominator,
                             const exact_expr &variable);
+    // Sum z*log(argument) over the roots of a square-free constant polynomial.
+    exact_expr algebraic_log_sum(const exact_expr &minimal_polynomial,
+                                 const exact_expr &parameter, const exact_expr &argument,
+                                 const exact_expr &generator, const exact_expr &variable);
     exact_expr pi();
     exact_expr e();
     exact_expr i();

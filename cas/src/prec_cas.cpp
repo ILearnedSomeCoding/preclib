@@ -20,6 +20,8 @@
 #include<utility>
 
 namespace{
+static exact_expr integration_algebraic_log_derivative(
+    exact_context &, const exact_expr &, const exact_expr &);
 using cas_ntheory::split_small_square_factor_u64;
 using cas_ntheory::perfect_cube_root;
 using cas_ntheory::perfect_nth_root;
@@ -221,6 +223,7 @@ const char *exact_opcode_name(exact_opcode operation){
     case exact_opcode::integral: return "integrate";
     case exact_opcode::rule: return "rule";
     case exact_opcode::log_root_sum: return "LogRootSum";
+    case exact_opcode::algebraic_log_sum: return "AlgebraicLogSum";
     }
     return "unknown";
 }
@@ -1971,6 +1974,16 @@ std::string exact_storage::print(uint32_t id, unsigned parent_precedence) const{
         const uint32_t *args = children(current);
         result = std::string(exact_opcode_name(current.op)) + "(" +
                  print(args[0]) + ", " + print(args[1]) + ")";
+    }else if(current.op == exact_opcode::algebraic_log_sum){
+        if(current.operand_count != 5)
+            throw std::logic_error("AlgebraicLogSum node must have five operands");
+        const uint32_t *args = children(current);
+        result = "AlgebraicLogSum(";
+        for(size_t i = 0; i < 5; ++i){
+            if(i) result += ", ";
+            result += print(args[i]);
+        }
+        result += ")";
     }else if(current.op == exact_opcode::log_root_sum){
         if(current.operand_count != 3)
             throw std::logic_error("LogRootSum node must have three operands");
@@ -2570,6 +2583,10 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
             else
                 result = exact_expr(storage_, storage_->intern_compound(
                     exact_opcode::derivative, {id, variable.root_}));
+        }else if(node.op == exact_opcode::algebraic_log_sum && args.size() == 5){
+            result = integration_algebraic_log_derivative(*this, exact_expr(storage_, id), variable);
+            if(!result.valid()) result = exact_expr(storage_, storage_->intern_compound(
+                exact_opcode::derivative, {id, variable.root_}));
         }else if(node.op == exact_opcode::log_root_sum && args.size() == 3){
             exact_expr numerator(storage_, args[0]);
             exact_expr denominator(storage_, args[1]);
@@ -4468,7 +4485,250 @@ static bool integration_algebraic_fraction_derivative(
     return true;
 }
 
+// Trace to Q(x), rationalizing an algebraic denominator by a multiplication matrix.
+static bool integration_algebraic_fraction_trace(
+    exact_context &context, const integration_residue_algebra &algebra,
+    const integration_algebraic_fraction &input, const exact_expr &variable,
+    const risch_options &options, exact_expr &result,
+    integration_expr_poly *coordinates = nullptr){
+    if(algebra.modulus.size() < 2) return false;
+    size_t n = algebra.modulus.size() - 1;
+    if(n > options.maximum_degree || n > options.maximum_matrix_entries / n ||
+       n * n > options.maximum_matrix_entries / 4) return false;
+    integration_algebraic_fraction value = input;
+    if(!integration_algebraic_fraction_normalize(algebra, value, options.maximum_degree)) return false;
+    using matrix = std::vector<std::vector<exact_expr>>;
+    auto multiplication_matrix = [&](const integration_residue_poly &p){
+        matrix m(n, std::vector<exact_expr>(n, context.integer(0)));
+        for(size_t j = 0; j < n; ++j){
+            integration_poly basis(j + 1, numeric_value(0)); basis[j] = numeric_value(1);
+            std::vector<integration_poly> entries(n, integration_poly(p.size(), numeric_value(0)));
+            for(size_t k = 0; k < p.size(); ++k){
+                auto product = algebra.multiply(p[k], basis);
+                for(size_t i = 0; i < product.size(); ++i) entries[i][k] = product[i];
+            }
+            for(size_t i = 0; i < n; ++i) m[i][j] = integration_poly_expr(context, entries[i], variable);
+        }
+        return m;
+    };
+    matrix a = multiplication_matrix(value.denominator), b = multiplication_matrix(value.numerator);
+    const matrix original_a = a, original_b = b;
+    auto normalize = [&](exact_expr &v){
+        return integration_normalize_expr_coefficient(context, v, variable, options.maximum_degree);
+    };
+    for(size_t column = 0; column < n; ++column){
+        size_t pivot = column;
+        while(pivot < n && a[pivot][column] == context.integer(0)) ++pivot;
+        if(pivot == n) return false;
+        std::swap(a[pivot], a[column]); std::swap(b[pivot], b[column]);
+        exact_expr leading = a[column][column];
+        for(size_t j = 0; j < n; ++j){
+            a[column][j] = a[column][j] / leading;
+            b[column][j] = b[column][j] / leading;
+            if(!normalize(a[column][j]) || !normalize(b[column][j])) return false;
+        }
+        for(size_t i = 0; i < n; ++i){
+            if(i == column) continue;
+            exact_expr scale = a[i][column];
+            for(size_t j = 0; j < n; ++j){
+                a[i][j] = a[i][j] - scale * a[column][j];
+                b[i][j] = b[i][j] - scale * b[column][j];
+                if(!normalize(a[i][j]) || !normalize(b[i][j])) return false;
+            }
+        }
+    }
+    for(size_t i = 0; i < n; ++i) for(size_t j = 0; j < n; ++j){
+        exact_expr error = -original_b[i][j];
+        for(size_t k = 0; k < n; ++k) error = error + original_a[i][k] * b[k][j];
+        if(!normalize(error) || error != context.integer(0)) return false;
+    }
+    exact_expr trace = context.integer(0);
+    for(size_t i = 0; i < n; ++i) trace = trace + b[i][i];
+    if(!normalize(trace)) return false;
+    if(coordinates){
+        coordinates->resize(n);
+        for(size_t i = 0; i < n; ++i) (*coordinates)[i] = b[i][0];
+    }
+    result = trace;
+    return true;
+}
+
 using integration_algebraic_function_poly = std::vector<integration_algebraic_fraction>;
+
+// Trace of N(t)/W(t) from Q(z)(x,t) to Q(x,t). The multiplication
+// matrices are normalized in Q(x)[t], not merely in the base field Q(x).
+static bool integration_algebraic_function_trace(
+    exact_context &context, const integration_residue_algebra &algebra,
+    const integration_algebraic_function_poly &numerator,
+    const integration_algebraic_function_poly &denominator,
+    const exact_expr &generator, const exact_expr &variable,
+    const risch_options &options, exact_expr &result){
+    if(numerator.empty() || denominator.empty() || algebra.modulus.size() < 2 ||
+       numerator.size() - 1 > options.maximum_degree ||
+       denominator.size() - 1 > options.maximum_degree) return false;
+    size_t n = algebra.modulus.size() - 1;
+    if(n > options.maximum_degree || n > options.maximum_matrix_entries / n ||
+       n * n > options.maximum_matrix_entries / 4) return false;
+    auto normalize = [&](exact_expr &expression) -> bool{
+        integration_expr_poly pn, pd, common, reduced;
+        if(!integration_parse_expr_rational(context, expression, generator, pn, pd,
+                options.maximum_degree, &variable) ||
+           !integration_expr_gcd_rational_coefficients(context, pn, pd, variable,
+                options.maximum_degree, common) ||
+           !integration_expr_divide_rational_coefficients(context, pn, common, variable,
+                options.maximum_degree, reduced)) return false;
+        pn = std::move(reduced);
+        if(!integration_expr_divide_rational_coefficients(context, pd, common, variable,
+                options.maximum_degree, reduced)) return false;
+        expression = integration_expr_poly_expr(context, pn, generator) /
+            integration_expr_poly_expr(context, reduced, generator);
+        return true;
+    };
+    using matrix = std::vector<std::vector<exact_expr>>;
+    auto multiplication_matrix = [&](const integration_algebraic_function_poly &p, matrix &m) -> bool{
+        std::vector<integration_expr_poly> coordinates;
+        for(const auto &coefficient : p){
+            exact_expr trace;
+            integration_expr_poly c;
+            if(!integration_algebraic_fraction_trace(context, algebra, coefficient, variable,
+                options, trace, &c)) return false;
+            coordinates.push_back(std::move(c));
+        }
+        m.assign(n, std::vector<exact_expr>(n, context.integer(0)));
+        for(size_t column = 0; column < n; ++column){
+            integration_poly basis(column + 1, numeric_value(0)); basis[column] = numeric_value(1);
+            std::vector<integration_expr_poly> entries(n,
+                integration_expr_poly(p.size(), context.integer(0)));
+            for(size_t k = 0; k < p.size(); ++k) for(size_t j = 0; j < n; ++j){
+                integration_poly monomial(j + 1, numeric_value(0)); monomial[j] = numeric_value(1);
+                auto product = algebra.multiply(monomial, basis);
+                for(size_t i = 0; i < product.size(); ++i)
+                    entries[i][k] = entries[i][k] + coordinates[k][j] * context.value(product[i]);
+            }
+            for(size_t i = 0; i < n; ++i){
+                m[i][column] = integration_expr_poly_expr(context, entries[i], generator);
+                if(!normalize(m[i][column])) return false;
+            }
+        }
+        return true;
+    };
+    matrix a, b;
+    if(!multiplication_matrix(denominator, a) || !multiplication_matrix(numerator, b)) return false;
+    const matrix original_a = a, original_b = b;
+    for(size_t column = 0; column < n; ++column){
+        size_t pivot = column;
+        while(pivot < n && a[pivot][column] == context.integer(0)) ++pivot;
+        if(pivot == n) return false;
+        std::swap(a[pivot], a[column]); std::swap(b[pivot], b[column]);
+        exact_expr leading = a[column][column];
+        for(size_t j = 0; j < n; ++j){
+            a[column][j] = a[column][j] / leading; b[column][j] = b[column][j] / leading;
+            if(!normalize(a[column][j]) || !normalize(b[column][j])) return false;
+        }
+        for(size_t i = 0; i < n; ++i){
+            if(i == column) continue;
+            exact_expr scale = a[i][column];
+            for(size_t j = 0; j < n; ++j){
+                a[i][j] = a[i][j] - scale * a[column][j];
+                b[i][j] = b[i][j] - scale * b[column][j];
+                if(!normalize(a[i][j]) || !normalize(b[i][j])) return false;
+            }
+        }
+    }
+    for(size_t i = 0; i < n; ++i) for(size_t j = 0; j < n; ++j){
+        exact_expr error = -original_b[i][j];
+        for(size_t k = 0; k < n; ++k) error = error + original_a[i][k] * b[k][j];
+        if(!normalize(error) || error != context.integer(0)) return false;
+    }
+    exact_expr trace = context.integer(0);
+    for(size_t i = 0; i < n; ++i) trace = trace + b[i][i];
+    if(!normalize(trace)) return false;
+    result = trace;
+    return true;
+}
+
+// Convert a rational expression in z, t and x into the constant-extension
+// representation before taking its exact trace. No numerical roots are used.
+static bool integration_algebraic_expression_trace(
+    exact_context &context, const exact_expr &expression, const integration_poly &minimal,
+    const exact_expr &parameter, const exact_expr &generator, const exact_expr &variable,
+    const risch_options &options, exact_expr &result){
+    if(parameter == generator || parameter == variable || generator == variable ||
+       minimal.size() < 2 || minimal.size() - 1 > options.maximum_degree) return false;
+    size_t degree = options.maximum_degree;
+    integration_expr_poly zn, zd;
+    if(!integration_parse_expr_rational(context, expression, parameter, zn, zd, degree)) return false;
+    using fraction = std::pair<integration_expr_poly, integration_expr_poly>;
+    std::vector<fraction> fractions;
+    integration_expr_poly common{context.integer(1)};
+    auto normalize = [&](integration_expr_poly &p){
+        for(auto &v : p)
+            if(!integration_normalize_expr_coefficient(context, v, variable, degree)) return false;
+        integration_expr_trim(context, p);
+        return true;
+    };
+    auto multiply = [&](const integration_expr_poly &a, const integration_expr_poly &b,
+                        integration_expr_poly &output){
+        if(a.size() - 1 > degree || b.size() - 1 > degree - (a.size() - 1)) return false;
+        output = integration_expr_mul(context, a, b);
+        return normalize(output);
+    };
+    for(const auto *p : {&zn, &zd}) for(const auto &coefficient : *p){
+        integration_expr_poly n, d, next;
+        if(!integration_parse_expr_rational(context, coefficient, generator, n, d, degree, &variable) ||
+           !multiply(common, d, next)) return false;
+        common = std::move(next);
+        fractions.push_back({std::move(n), std::move(d)});
+    }
+    integration_residue_algebra algebra{minimal};
+    size_t offset = 0;
+    auto convert = [&](const integration_expr_poly &p, integration_algebraic_function_poly &output){
+        output.assign(1, integration_algebraic_fraction());
+        integration_poly power{numeric_value(1)};
+        for(size_t j = 0; j < p.size(); ++j, ++offset){
+            integration_expr_poly scale, scaled;
+            if(!integration_expr_divide_rational_coefficients(context, common, fractions[offset].second,
+                variable, degree, scale) || !multiply(fractions[offset].first, scale, scaled)) return false;
+            output.resize(std::max(output.size(), scaled.size()));
+            for(size_t k = 0; k < scaled.size(); ++k){
+                integration_poly cn, cd;
+                if(!integration_parse_rational(scaled[k], variable, cn, cd, degree, degree) ||
+                   !integration_normalize_rational(cn, cd)) return false;
+                integration_algebraic_fraction term, next;
+                term.numerator.clear(); term.denominator.clear();
+                for(const auto &v : cn){
+                    integration_poly c = power;
+                    for(auto &entry : c) entry = entry * v;
+                    term.numerator.push_back(std::move(c));
+                }
+                for(const auto &v : cd) term.denominator.push_back({v});
+                if(!integration_algebraic_fraction_combine(algebra, output[k], term, false, degree, next)) return false;
+                output[k] = std::move(next);
+            }
+            power = algebra.multiply(power, {numeric_value(0), numeric_value(1)});
+        }
+        return true;
+    };
+    integration_algebraic_function_poly n, d;
+    if(!convert(zn, n) || !convert(zd, d)) return false;
+    return integration_algebraic_function_trace(context, algebra, n, d,
+        generator, variable, options, result);
+}
+
+static exact_expr integration_algebraic_log_derivative(
+    exact_context &context, const exact_expr &node, const exact_expr &variable){
+    if(node.operation() != exact_opcode::algebraic_log_sum || node.operand_count() != 5) return exact_expr();
+    exact_expr parameter = node.operand(1), argument = node.operand(2);
+    if(variable == parameter) return context.integer(0);
+    integration_poly minimal;
+    if(!integration_parse_poly(node.operand(0), parameter, minimal)) return exact_expr();
+    exact_expr derivative = context.differentiate(argument, variable);
+    if(derivative == context.integer(0)) return context.integer(0);
+    exact_expr result;
+    if(!integration_algebraic_expression_trace(context, parameter * derivative / argument,
+        minimal, parameter, node.operand(3), node.operand(4), risch_options(), result)) return exact_expr();
+    return result;
+}
 
 static bool integration_algebraic_function_poly_divmod(
     const integration_residue_algebra &algebra, integration_algebraic_function_poly a,
@@ -5010,6 +5270,90 @@ static exact_expr integration_quadratic_residue_logs(
         second * context.natural_logarithm(factor_expression(second));
 }
 
+// General constant algebraic residue groups, represented by compact log sums.
+static bool integration_algebraic_residue_logs(
+    exact_context &context, const exact_expr &input, const exact_expr &generator,
+    const exact_expr &variable, const risch_options &options,
+    exact_expr &logarithmic_part, exact_expr &polynomial_part){
+    size_t degree = options.maximum_degree;
+    integration_expr_poly n, d, common, reduced, dp, inverse, q, residue, characteristic;
+    if(!integration_parse_expr_rational(context, input, generator, n, d, degree, &variable) ||
+       !integration_expr_gcd_rational_coefficients(context, n, d, variable, degree, common) ||
+       !integration_expr_divide_rational_coefficients(context, n, common, variable, degree, reduced)) return false;
+    n = std::move(reduced);
+    if(!integration_expr_divide_rational_coefficients(context, d, common, variable, degree, reduced)) return false;
+    d = std::move(reduced);
+    if(d.size() < 2 || !integration_parse_expr_poly(context, context.expand(context.differentiate(
+        integration_expr_poly_expr(context, d, generator), variable), 100000), generator, dp) ||
+       !integration_expr_inverse_mod_rational_coefficients(context, dp, d, variable, degree, inverse) ||
+       !integration_expr_divmod_rational_coefficients(context,
+        integration_expr_mul(context, n, inverse), d, variable, degree, q, residue) ||
+       !integration_residue_characteristic_polynomial(context, residue, d, variable, options, characteristic)) return false;
+    integration_poly constants;
+    for(const auto &v : characteristic){
+        integration_poly cn, cd;
+        if(!integration_parse_rational(v, variable, cn, cd, degree, degree) ||
+           !integration_normalize_rational(cn, cd) || cn.size() != 1 || cd.size() != 1) return false;
+        constants.push_back(cn[0] / cd[0]);
+    }
+    std::unordered_set<uint32_t> symbols;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(part.operation() == exact_opcode::symbol) symbols.insert(part.id());
+        for(size_t i = 0; i < part.operand_count(); ++i) self(self, part.operand(i));
+    };
+    collect(collect, input); collect(collect, generator); symbols.insert(variable.id());
+    size_t suffix = 0;
+    exact_expr z;
+    do{ z = context.symbol("_risch_root_" + std::to_string(suffix++)); }
+    while(symbols.count(z.id()));
+    std::vector<exact_expr> factors;
+    integration_factor_list(context.factor(integration_poly_expr(context, constants, z)), factors);
+    std::vector<integration_poly> used;
+    exact_expr logs = context.integer(0);
+    for(auto f : factors){
+        if(f.operation() == exact_opcode::power){
+            int64_t exponent;
+            if(!integration_signed_exponent(f.operand(1), exponent) || exponent < 1) return false;
+            f = f.operand(0);
+        }
+        integration_poly minimal, radical;
+        if(!integration_parse_poly(f, z, minimal, degree, degree)) return false;
+        if(minimal.size() == 1) continue;
+        auto repeated = integration_gcd_poly(minimal, integration_derivative_poly(minimal));
+        if(!integration_divide_poly(minimal, repeated, radical)) return false;
+        minimal = std::move(radical);
+        numeric_value leading = minimal.back();
+        for(auto &v : minimal) v = v / leading;
+        if(std::find(used.begin(), used.end(), minimal) != used.end()) continue;
+        used.push_back(minimal);
+        integration_algebraic_function_poly factor;
+        if(!integration_algebraic_residue_factor(context, input, generator, variable,
+            minimal, options, factor)) return false;
+        integration_expr_poly coefficients;
+        for(const auto &coefficient : factor){
+            integration_expr_poly numerator, denominator;
+            for(const auto &v : coefficient.numerator) numerator.push_back(integration_poly_expr(context, v, z));
+            for(const auto &v : coefficient.denominator) denominator.push_back(integration_poly_expr(context, v, z));
+            coefficients.push_back(integration_expr_poly_expr(context, numerator, variable) /
+                integration_expr_poly_expr(context, denominator, variable));
+        }
+        exact_expr argument = integration_expr_poly_expr(context, coefficients, generator);
+        try{
+            logs = logs + context.algebraic_log_sum(integration_poly_expr(context, minimal, z),
+                z, argument, generator, variable);
+        }catch(const std::invalid_argument &){ return false; }
+    }
+    if(used.empty()) return false;
+    integration_expr_poly residual_n, residual_d, polynomial;
+    if(!integration_parse_expr_rational(context, input - context.differentiate(logs, variable),
+        generator, residual_n, residual_d, degree, &variable) ||
+       !integration_expr_divide_rational_coefficients(context, residual_n, residual_d,
+        variable, degree, polynomial)) return false;
+    logarithmic_part = logs;
+    polynomial_part = integration_expr_poly_expr(context, polynomial, generator);
+    return true;
+}
+
 // Recurse only after removing a nonzero certified derivative or logarithmic part.
 static exact_expr integration_normal_hermite_primitive(
     exact_context &context, const exact_expr &input, const exact_expr &variable,
@@ -5044,6 +5388,13 @@ static exact_expr integration_normal_hermite_primitive(
         exact_expr quadratic_logs = integration_quadratic_residue_logs(
             context, rest, generator, variable, options);
         if(quadratic_logs.valid()) return derivative_part + quadratic_logs;
+        exact_expr algebraic_logs, algebraic_polynomial;
+        if(integration_algebraic_residue_logs(context, rest, generator, variable, options,
+            algebraic_logs, algebraic_polynomial)){
+            derivative_part = derivative_part + algebraic_logs;
+            rest = algebraic_polynomial;
+            if(rest == context.integer(0)) return derivative_part;
+        }
         // Constant residues give a logarithmic derivative; do not treat a
         // variable-dependent residue as a logarithm coefficient.
         integration_expr_poly rn, rd, dp, inverse, quotient, residue;
@@ -6433,6 +6784,32 @@ static exact_expr integration_polynomial_function_by_parts(
 }
 
 } // namespace
+
+exact_expr exact_context::algebraic_log_sum(
+    const exact_expr &minimal_polynomial, const exact_expr &parameter, const exact_expr &argument,
+    const exact_expr &generator, const exact_expr &variable){
+    for(const auto &part : {minimal_polynomial, parameter, argument, generator, variable})
+        if(!part.valid() || part.storage_ != storage_)
+            throw std::invalid_argument("AlgebraicLogSum operands must belong to one context");
+    if(parameter.operation() != exact_opcode::symbol || variable.operation() != exact_opcode::symbol ||
+       parameter == variable || parameter == generator || variable == generator ||
+       integration_depends_on(generator, parameter) || argument == integer(0))
+        throw std::invalid_argument("invalid AlgebraicLogSum variables or argument");
+    integration_poly minimal;
+    if(!integration_parse_poly(minimal_polynomial, parameter, minimal) || minimal.size() < 2 ||
+       integration_gcd_poly(minimal, integration_derivative_poly(minimal)).size() != 1)
+        throw std::invalid_argument("AlgebraicLogSum requires a square-free rational constant polynomial");
+    numeric_value leading = minimal.back();
+    for(auto &v : minimal) v = v / leading;
+    exact_expr normalized = integration_poly_expr(*this, minimal, parameter);
+    exact_expr trace;
+    if(!integration_algebraic_expression_trace(*this,
+        parameter * differentiate(argument, variable) / argument, minimal, parameter,
+        generator, variable, risch_options(), trace))
+        throw std::invalid_argument("AlgebraicLogSum argument is outside the supported rational tower");
+    return exact_expr(storage_, storage_->intern_compound(exact_opcode::algebraic_log_sum,
+        {normalized.root_, parameter.root_, argument.root_, generator.root_, variable.root_}));
+}
 
 exact_expr exact_context::log_root_sum(const exact_expr &numerator,
                                        const exact_expr &denominator,
@@ -11707,7 +12084,8 @@ public:
         else if(source.op == exact_opcode::partial_gamma ||
                 source.op == exact_opcode::derivative ||
                 source.op == exact_opcode::integral ||
-                source.op == exact_opcode::log_root_sum)
+                source.op == exact_opcode::log_root_sum ||
+                source.op == exact_opcode::algebraic_log_sum)
             result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
@@ -11827,7 +12205,8 @@ public:
         }else if(source.op == exact_opcode::partial_gamma ||
                  source.op == exact_opcode::derivative ||
                  source.op == exact_opcode::integral ||
-                 source.op == exact_opcode::log_root_sum){
+                 source.op == exact_opcode::log_root_sum ||
+                 source.op == exact_opcode::algebraic_log_sum){
             for(uint32_t &child : children) child = expand(child);
             result = storage_.intern_compound(source.op, children);
         }else if(source.op == exact_opcode::bounded_sum){
@@ -12039,7 +12418,8 @@ public:
         else if(source.op == exact_opcode::partial_gamma ||
                 source.op == exact_opcode::derivative ||
                 source.op == exact_opcode::integral ||
-                source.op == exact_opcode::log_root_sum)
+                source.op == exact_opcode::log_root_sum ||
+                source.op == exact_opcode::algebraic_log_sum)
             result = storage_.intern_compound(source.op, children);
         else if(source.op == exact_opcode::bounded_sum)
             result = storage_.make_sum(children[0], children[1],
@@ -12098,6 +12478,14 @@ public:
                 body = rewrite(body);
             }
             result = storage_.make_sum(variable, lower, upper, body);
+        }else if(source.op == exact_opcode::algebraic_log_sum){
+            if(source.operand_count != 5) throw std::logic_error("invalid AlgebraicLogSum node");
+            if(target_ == args[1]) return expression;
+            if(contains(expression, target_) && contains(replacement_, args[1]))
+                throw std::invalid_argument("substitution would capture an algebraic root parameter");
+            std::vector<uint32_t> children(args, args + 5);
+            for(size_t i = 2; i < 5; ++i) children[i] = rewrite(children[i]);
+            result = storage_.intern_compound(source.op, children);
         }else if(source.op == exact_opcode::rule){
             if(source.operand_count != 2)
                 throw std::logic_error("rule node must have two operands");
@@ -12121,7 +12509,8 @@ public:
             else if(source.op == exact_opcode::partial_gamma ||
                     source.op == exact_opcode::derivative ||
                     source.op == exact_opcode::integral ||
-                    source.op == exact_opcode::log_root_sum)
+                    source.op == exact_opcode::log_root_sum ||
+                    source.op == exact_opcode::algebraic_log_sum)
                 result = storage_.intern_compound(source.op, children);
             else if(source.op == exact_opcode::expression_list ||
                     source.op == exact_opcode::rule)

@@ -439,6 +439,122 @@ int main(){
         }
     }
     exact_expr lower_log = context.natural_logarithm(x);
+    {
+        exact_expr u = lower_log + x;
+        exact_expr input = context.integer(6) * context.differentiate(u, x) /
+            (context.power(u, context.integer(3)) - context.integer(2));
+        exact_expr logs, polynomial;
+        assert(integration_algebraic_residue_logs(context, input, lower_log, x,
+            risch_options(), logs, polynomial));
+        assert(polynomial == context.integer(0));
+        assert(logs.operation() == exact_opcode::algebraic_log_sum);
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context, context.differentiate(logs, x) - input,
+            lower_log, error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(context.integrate_elementary(input, x).status == risch_status::elementary);
+    }
+    {
+        exact_expr z = context.symbol("_test_logsum_root");
+        exact_expr minimal = context.power(z, context.integer(3)) - context.integer(2);
+        exact_expr node = context.algebraic_log_sum(minimal, z, lower_log - z, lower_log, x);
+        assert(node.operation() == exact_opcode::algebraic_log_sum);
+        assert(node.to_string().find("AlgebraicLogSum(") == 0);
+        exact_expr expected = context.integer(6) /
+            (x * (context.power(lower_log, context.integer(3)) - context.integer(2)));
+        integration_expr_poly error, denominator;
+        for(const auto &value : {node, context.simplify(node), context.expand(node, 1000)}){
+            assert(value.operation() == exact_opcode::algebraic_log_sum);
+            assert(integration_parse_expr_rational(context, context.differentiate(value, x) - expected,
+                lower_log, error, denominator, 64, &x));
+            for(auto &v : error){
+                assert(integration_normalize_expr_coefficient(context, v, x, 64));
+                assert(v == context.integer(0));
+            }
+        }
+        assert(context.substitute(node, z, context.integer(7)) == node);
+        bool capture = false;
+        try{ (void)context.substitute(node, x, x + z); }
+        catch(const std::invalid_argument &){ capture = true; }
+        assert(capture);
+        assert(context.differentiate(node, z) == context.integer(0));
+    }
+    {
+        exact_expr z = context.symbol("_test_residue_parameter");
+        exact_expr u = lower_log + x, trace;
+        integration_poly minimal{numeric_value(1) / numeric_value(4), numeric_value(0), numeric_value(1)};
+        exact_expr expression = z * (context.integer(1) + context.integer(1) / x) /
+            (u + context.integer(2) * z);
+        assert(integration_algebraic_expression_trace(context, expression, minimal, z,
+            lower_log, x, risch_options(), trace));
+        exact_expr expected = (context.integer(1) + context.integer(1) / x) /
+            (context.power(u, context.integer(2)) + context.integer(1));
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context, trace - expected, lower_log,
+            error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(integration_algebraic_expression_trace(context,
+            context.integer(1) / (lower_log - z),
+            {numeric_value(-2), numeric_value(0), numeric_value(0), numeric_value(1)},
+            z, lower_log, x, risch_options(), trace));
+        expected = context.integer(3) * context.power(lower_log, context.integer(2)) /
+            (context.power(lower_log, context.integer(3)) - context.integer(2));
+        assert(integration_parse_expr_rational(context, trace - expected, lower_log,
+            error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(!integration_algebraic_expression_trace(context, expression, minimal, x,
+            lower_log, x, risch_options(), trace));
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(1) / numeric_value(4),
+            numeric_value(0), numeric_value(1)}};
+        integration_algebraic_function_poly denominator{
+            {{{numeric_value(0), numeric_value(2)}, {numeric_value(1)}}, {{numeric_value(1)}}},
+            {{{numeric_value(1)}}, {{numeric_value(1)}}}};
+        integration_algebraic_function_poly numerator{
+            {{{numeric_value(0), numeric_value(1)}, {numeric_value(0), numeric_value(1)}},
+                {{numeric_value(0)}, {numeric_value(1)}}}};
+        exact_expr trace;
+        assert(integration_algebraic_function_trace(context, algebra, numerator, denominator,
+            lower_log, x, risch_options(), trace));
+        exact_expr u = lower_log + x;
+        exact_expr expected = (context.integer(1) + context.integer(1) / x) /
+            (context.power(u, context.integer(2)) + context.integer(1));
+        integration_expr_poly error, divisor;
+        assert(integration_parse_expr_rational(context, trace - expected, lower_log,
+            error, divisor, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(!integration_algebraic_function_trace(context, algebra, numerator,
+            {integration_algebraic_fraction()}, lower_log, x, risch_options(), trace));
+        integration_residue_algebra cubic{{numeric_value(-2), numeric_value(0),
+            numeric_value(0), numeric_value(1)}};
+        integration_algebraic_function_poly cubic_denominator{
+            {{{numeric_value(0), numeric_value(-1)}}, {{numeric_value(1)}}},
+            {{{numeric_value(1)}}, {{numeric_value(1)}}}};
+        assert(integration_algebraic_function_trace(context, cubic,
+            {{{{numeric_value(1)}}, {{numeric_value(1)}}}}, cubic_denominator,
+            lower_log, x, risch_options(), trace));
+        expected = context.integer(3) * context.power(lower_log, context.integer(2)) /
+            (context.power(lower_log, context.integer(3)) - context.integer(2));
+        assert(integration_parse_expr_rational(context, trace - expected, lower_log,
+            error, divisor, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+    }
     for(int constant : {1, -2}){
         exact_expr u = x + lower_log;
         exact_expr input = context.differentiate(u, x) /
@@ -494,6 +610,25 @@ int main(){
             {{numeric_value(0), numeric_value(-1)}, {numeric_value(1)}}};
         integration_algebraic_fraction inverse, product, derivative;
         assert(integration_algebraic_fraction_normalize(algebra, f, 64));
+        exact_expr trace;
+        assert(integration_algebraic_fraction_trace(context, algebra, f, x, risch_options(), trace));
+        exact_expr error = trace - context.integer(2) *
+            (context.power(x, context.integer(2)) - context.integer(1)) /
+            (context.power(x, context.integer(2)) + context.integer(1));
+        assert(integration_normalize_expr_coefficient(context, error, x, 64));
+        assert(error == context.integer(0));
+        risch_options tiny_trace;
+        tiny_trace.maximum_matrix_entries = 1;
+        assert(!integration_algebraic_fraction_trace(context, algebra, f, x, tiny_trace, trace));
+        integration_residue_algebra cubic{{numeric_value(-2), numeric_value(0),
+            numeric_value(0), numeric_value(1)}};
+        integration_algebraic_fraction z{{{numeric_value(0), numeric_value(1)}}, {{numeric_value(1)}}};
+        assert(integration_algebraic_fraction_trace(context, cubic, z, x, risch_options(), trace));
+        assert(trace == context.integer(0));
+        integration_algebraic_fraction cube{{{numeric_value(0), numeric_value(0),
+            numeric_value(0), numeric_value(1)}}, {{numeric_value(1)}}};
+        assert(integration_algebraic_fraction_trace(context, cubic, cube, x, risch_options(), trace));
+        assert(trace == context.integer(6));
         assert(integration_algebraic_fraction_inverse(algebra, f, 64, inverse));
         assert(integration_algebraic_fraction_combine(algebra, f, inverse, true, 64, product));
         assert(product.numerator == integration_residue_poly({{numeric_value(1)}}));
