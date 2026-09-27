@@ -452,6 +452,147 @@ int main(){
     }
     exact_expr lower_log = context.natural_logarithm(x);
     {
+        exact_expr r = x*x*x-x, root = context.square_root(r);
+        exact_expr f = context.differentiate(r, x)/(context.integer(2)*root*(context.integer(1)+root));
+        auto solved = context.integrate_elementary(f, x);
+        assert(solved.status == risch_status::elementary);
+        assert(solved.remainder == context.integer(0));
+        integration_expr_poly modulus{-r, context.integer(0), context.integer(1)}, error;
+        exact_expr z = context.symbol("_test_algebraic_log_verify");
+        exact_expr differential = context.differentiate(solved.elementary_part, x)-f;
+        std::vector<exact_expr> roots;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::square_root) roots.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i) self(self, part.operand(i));
+        };
+        collect(collect, differential);
+        for(const auto &part : roots){
+            exact_expr relation_error = part.operand(0)-r;
+            assert(integration_normalize_expr_coefficient(context, relation_error, x, 64));
+            assert(relation_error == context.integer(0));
+            differential = context.substitute(differential, part, z);
+        }
+        assert(integration_parse_algebraic_quotient(context,
+            differential, z, modulus,
+            x, risch_options(), error));
+        for(const auto &v : error) assert(v == context.integer(0));
+        integration_expr_poly dz, logarithmic, remainder;
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        assert(integration_algebraic_log_derivative(context,
+            {context.integer(1), context.integer(1)}, modulus, dz, x, risch_options(), logarithmic));
+        for(auto &v : logarithmic) v = x*v;
+        exact_expr constant;
+        assert(!integration_algebraic_log_candidate(context, logarithmic,
+            {context.integer(1), context.integer(1)}, modulus, dz, x,
+            risch_options(), constant, remainder));
+    }
+    {
+        exact_expr r = x*x*x-x;
+        exact_expr square = context.square_root(r);
+        exact_expr cube = context.power(r, context.value(numeric_value(1)/numeric_value(3)));
+        exact_expr expected = context.integer(1)/(square+cube);
+        exact_expr f = context.differentiate(expected, x);
+        auto solved = context.integrate_elementary(f, x);
+        assert(solved.status == risch_status::elementary);
+        assert(solved.remainder == context.integer(0));
+        exact_expr ordinary = context.integrate(f, x);
+        std::unordered_set<uint32_t> seen;
+        auto has_integral = [&](auto &&self, const exact_expr &part) -> bool{
+            if(!seen.insert(part.id()).second) return false;
+            if(part.operation() == exact_opcode::integral) return true;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(self(self, part.operand(i))) return true;
+            return false;
+        };
+        assert(!has_integral(has_integral, ordinary));
+    }
+    {
+        exact_expr r = x*x*x-x;
+        for(size_t degree : {2u, 3u}){
+            exact_expr root = degree == 2 ? context.square_root(r) :
+                context.power(r, context.value(numeric_value(1)/numeric_value(degree)));
+            exact_expr expected = root/(x+context.integer(2));
+            exact_expr f = expected*(context.differentiate(r, x)/(context.integer(degree)*r) -
+                context.integer(1)/(x+context.integer(2)));
+            auto solved = context.integrate_elementary(f, x);
+            assert(solved.status == risch_status::elementary);
+            assert(solved.remainder == context.integer(0));
+            integration_expr_poly modulus(degree+1, context.integer(0)), difference;
+            modulus[0] = -r; modulus.back() = context.integer(1);
+            assert(integration_parse_algebraic_quotient(context, solved.elementary_part-expected,
+                root, modulus, x, risch_options(), difference));
+            for(const auto &v : difference) assert(v == context.integer(0));
+            exact_expr ordinary = context.integrate(f, x);
+            assert(ordinary.operation() != exact_opcode::integral);
+            exact_expr normalized_root = context.simplify(root);
+            modulus[0] = -context.simplify(r);
+            assert(integration_parse_algebraic_quotient(context,
+                ordinary-context.simplify(expected), normalized_root, modulus,
+                x, risch_options(), difference));
+            for(const auto &v : difference) assert(v == context.integer(0));
+        }
+    }
+    {
+        using status = integration_parametric_rde_status;
+        for(size_t degree : {2u, 3u}){
+            integration_expr_poly modulus(degree+1, context.integer(0));
+            modulus[0] = -(x*x*x-x); modulus.back() = context.integer(1);
+            integration_expr_poly known(degree, context.integer(0)), dz, derivative, exact, residual;
+            known[1] = context.integer(1)/(x+context.integer(2));
+            assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+            assert(integration_algebraic_quotient_derivative(context, known, modulus, dz,
+                x, risch_options(), derivative));
+            assert(integration_binomial_exact_reduce(context, derivative, modulus,
+                x, risch_options(), exact, residual) == status::solved);
+            for(const auto &v : residual) assert(v == context.integer(0));
+            exact_expr error = exact[1]-known[1];
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+        }
+        integration_expr_poly modulus{-x, context.integer(0), context.integer(1)}, exact, residual;
+        assert(integration_binomial_exact_reduce(context, {context.integer(0), context.integer(1)/x},
+            modulus, x, risch_options(), exact, residual) == status::solved);
+        assert(exact[1] == context.integer(2));
+        assert(residual[0] == context.integer(0) && residual[1] == context.integer(0));
+        assert(integration_binomial_exact_reduce(context, {context.integer(1)/x},
+            modulus, x, risch_options(), exact, residual) == status::solved);
+        assert(residual[0] == context.integer(1)/x);
+        modulus[1] = context.integer(1);
+        assert(integration_binomial_exact_reduce(context, {context.integer(1)},
+            modulus, x, risch_options(), exact, residual) == status::unsupported);
+    }
+    {
+        using status = integration_parametric_rde_status;
+        integration_expr_poly modulus{-x, context.integer(1), context.integer(1)}, dz;
+        assert(integration_algebraic_implicit_derivation(context, modulus, x, risch_options(), dz));
+        integration_expr_poly known{x/(x-context.integer(1)), context.integer(1)/(x-context.integer(1))};
+        integration_expr_poly a{context.integer(1), context.integer(1)}, derivative, q, right, solution;
+        assert(integration_algebraic_quotient_derivative(context, known, modulus, dz,
+            x, risch_options(), derivative));
+        assert(integration_expr_divmod_rational_coefficients(context,
+            integration_expr_add(context, derivative, integration_expr_mul(context, a, known)),
+            modulus, x, 64, q, right));
+        std::vector<integration_expr_poly> homogeneous;
+        assert(integration_algebraic_rde_ansatz(context, modulus, a, right,
+            {numeric_value(-1), numeric_value(1)}, 1, x, risch_options(), solution, homogeneous) == status::solved);
+        for(size_t i = 0; i < known.size(); ++i){
+            exact_expr error = solution[i]-known[i];
+            assert(integration_normalize_expr_coefficient(context, error, x, 64));
+            assert(error == context.integer(0));
+        }
+        assert(homogeneous.empty());
+        assert(integration_algebraic_rde_ansatz(context, modulus, {context.integer(0)},
+            {context.integer(1)}, {numeric_value(1)}, 1, x, risch_options(), solution, homogeneous) == status::solved);
+        assert(homogeneous.size() == 1);
+        assert(integration_algebraic_rde_ansatz(context, modulus, {context.integer(0)},
+            {context.integer(1)/x}, {numeric_value(1)}, 2, x, risch_options(), solution, homogeneous) == status::unsupported);
+        risch_options tiny; tiny.maximum_matrix_entries = 1;
+        assert(integration_algebraic_rde_ansatz(context, modulus, a, right,
+            {numeric_value(1)}, 1, x, tiny, solution, homogeneous) == status::resource_limit);
+    }
+    {
         for(size_t degree : {2u, 3u, 4u}){
             integration_expr_poly modulus(degree + 1, context.integer(0));
             modulus[0] = -x-context.integer(1); modulus.back() = context.integer(1);
