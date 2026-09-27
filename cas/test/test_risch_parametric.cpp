@@ -439,6 +439,114 @@ int main(){
         }
     }
     exact_expr lower_log = context.natural_logarithm(x);
+    for(int constant : {1, -2}){
+        exact_expr u = x + lower_log;
+        exact_expr input = context.differentiate(u, x) /
+            (context.power(u, context.integer(2)) + context.integer(constant));
+        exact_expr candidate = integration_quadratic_residue_logs(context, input,
+            lower_log, x, risch_options());
+        assert(candidate.valid());
+        assert(context.integrate_elementary(input, x).status == risch_status::elementary);
+    }
+    {
+        exact_expr u = x + lower_log;
+        exact_expr input = context.differentiate(u, x) /
+            (context.power(u, context.integer(2)) + context.integer(1));
+        integration_poly minimal{numeric_value(1) / numeric_value(4), numeric_value(0), numeric_value(1)};
+        integration_algebraic_function_poly factor;
+        assert(integration_algebraic_residue_factor(context, input, lower_log, x,
+            minimal, risch_options(), factor));
+        assert(factor.size() == 2);
+        assert(factor[0].numerator == integration_residue_poly({{numeric_value(0), numeric_value(2)},
+            {numeric_value(1)}}));
+        assert(factor[0].denominator == integration_residue_poly({{numeric_value(1)}}));
+        assert(!integration_algebraic_residue_factor(context, input, lower_log, x,
+            {numeric_value(1), numeric_value(0), numeric_value(1)}, risch_options(), factor));
+        assert(!integration_algebraic_residue_factor(context, x * input, lower_log, x,
+            minimal, risch_options(), factor));
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(1) / numeric_value(4),
+            numeric_value(0), numeric_value(1)}};
+        auto coefficient = [](integration_residue_poly n){
+            return integration_algebraic_fraction{std::move(n), {{numeric_value(1)}}};
+        };
+        integration_algebraic_function_poly d{
+            coefficient({{numeric_value(1)}, {numeric_value(0)}, {numeric_value(1)}}),
+            coefficient({{numeric_value(0)}, {numeric_value(2)}}), coefficient({{numeric_value(1)}})};
+        integration_algebraic_function_poly difference{
+            coefficient({{numeric_value(1)}, {numeric_value(0), numeric_value(-2)}}),
+            coefficient({{numeric_value(0), numeric_value(-2)}})};
+        for(auto &v : d) v.denominator = {{numeric_value(1)}, {numeric_value(1)}};
+        integration_algebraic_function_poly gcd;
+        assert(integration_algebraic_function_poly_gcd(algebra, d, difference, 64, gcd));
+        assert(gcd.size() == 2);
+        assert(gcd[0].numerator == integration_residue_poly({{numeric_value(0), numeric_value(2)},
+            {numeric_value(1)}}));
+        assert(gcd[0].denominator == integration_residue_poly({{numeric_value(1)}}));
+        assert(gcd[1].numerator == integration_residue_poly({{numeric_value(1)}}));
+        assert(!integration_algebraic_function_poly_gcd(algebra, d, difference, 0, gcd));
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(1), numeric_value(0), numeric_value(1)}};
+        integration_algebraic_fraction f{
+            {{numeric_value(0), numeric_value(1)}, {numeric_value(1)}},
+            {{numeric_value(0), numeric_value(-1)}, {numeric_value(1)}}};
+        integration_algebraic_fraction inverse, product, derivative;
+        assert(integration_algebraic_fraction_normalize(algebra, f, 64));
+        assert(integration_algebraic_fraction_inverse(algebra, f, 64, inverse));
+        assert(integration_algebraic_fraction_combine(algebra, f, inverse, true, 64, product));
+        assert(product.numerator == integration_residue_poly({{numeric_value(1)}}));
+        assert(product.denominator == integration_residue_poly({{numeric_value(1)}}));
+        assert(integration_algebraic_fraction_derivative(algebra, f, 64, derivative));
+        assert(derivative.numerator == integration_residue_poly({{numeric_value(0), numeric_value(-2)}}));
+        assert(derivative.denominator == integration_residue_poly({{numeric_value(-1)},
+            {numeric_value(0), numeric_value(-2)}, {numeric_value(1)}}));
+        integration_algebraic_fraction minus_f = f;
+        for(auto &coefficient : minus_f.numerator) for(auto &v : coefficient) v = -v;
+        assert(integration_algebraic_fraction_combine(algebra, f, minus_f, false, 64, product));
+        assert(product.numerator == integration_residue_poly({{numeric_value(0)}}));
+        assert(product.denominator == integration_residue_poly({{numeric_value(1)}}));
+        assert(!integration_algebraic_fraction_inverse(algebra, product, 64, inverse));
+        assert(!integration_algebraic_fraction_derivative(algebra, f, 1, derivative));
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(1) / numeric_value(4),
+            numeric_value(0), numeric_value(1)}};
+        integration_poly inverse;
+        assert(algebra.inverse({numeric_value(0), numeric_value(1)}, inverse));
+        assert(inverse == integration_poly({numeric_value(0), numeric_value(-4)}));
+        integration_residue_poly gcd;
+        assert(integration_residue_poly_gcd(algebra,
+            {{numeric_value(1)}, {numeric_value(0)}, {numeric_value(1)}},
+            {{numeric_value(1)}, {numeric_value(0), numeric_value(-2)}}, 64, gcd));
+        assert(gcd == integration_residue_poly({{numeric_value(0), numeric_value(2)},
+            {numeric_value(1)}}));
+        integration_residue_algebra reducible{{numeric_value(-1), numeric_value(0), numeric_value(1)}};
+        assert(!reducible.inverse({numeric_value(-1), numeric_value(1)}, inverse));
+        assert(!algebra.inverse({numeric_value(0)}, inverse));
+        assert(!integration_residue_poly_gcd(algebra,
+            {{numeric_value(1)}, {numeric_value(1)}}, {{numeric_value(1)}}, 0, gcd));
+    }
+    {
+        exact_expr p = lower_log + x, q = lower_log + context.integer(2) * x;
+        exact_expr original = context.natural_logarithm(p) -
+            context.natural_logarithm(q) / context.integer(2);
+        exact_expr f = context.differentiate(original, x), logs, polynomial;
+        assert(integration_rational_residue_logs(context, f, lower_log, x,
+            risch_options(), logs, polynomial));
+        assert(polynomial == context.integer(0));
+        assert(context.integrate_elementary(f, x).status == risch_status::elementary);
+        integration_expr_poly error, denominator;
+        assert(integration_parse_expr_rational(context, context.differentiate(logs - original, x),
+            lower_log, error, denominator, 64, &x));
+        for(auto &v : error){
+            assert(integration_normalize_expr_coefficient(context, v, x, 64));
+            assert(v == context.integer(0));
+        }
+        assert(!integration_rational_residue_logs(context, x * f, lower_log, x,
+            risch_options(), logs, polynomial));
+    }
     {
         // Two distinct rational residues, represented without factoring the denominator.
         integration_expr_poly d{context.integer(2) * context.power(x, context.integer(2)),
