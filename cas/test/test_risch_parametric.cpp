@@ -452,14 +452,132 @@ int main(){
     }
     exact_expr lower_log = context.natural_logarithm(x);
     {
+        integration_expr_poly normalized;
+        exact_expr scale,r = x*x*(x+context.integer(1));
+        assert(integration_binomial_normalize_generator(context,
+            {-r,context.integer(0),context.integer(1)},x,risch_options(),normalized,scale) == status::solved);
+        exact_expr error = scale-x;
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        error = normalized[0]+x+context.integer(1);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        assert(integration_binomial_normalize_generator(context,
+            {-context.integer(1)/x,context.integer(0),context.integer(1)},x,risch_options(),normalized,scale) == status::solved);
+        error = scale-context.integer(1)/x;
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        assert(normalized[0] == -x);
+        exact_expr root = context.square_root(r);
+        auto solved = context.integrate_elementary(root/(context.integer(2)*x*(x+context.integer(1))),x);
+        assert(solved.status == risch_status::elementary && solved.remainder == context.integer(0));
+        integration_expr_poly difference;
+        assert(integration_parse_algebraic_quotient(context,solved.elementary_part-root/x,
+            root,{-r,context.integer(0),context.integer(1)},x,risch_options(),difference));
+        for(const auto &v : difference) assert(v == context.integer(0));
+    }
+    {
+        integration_expr_poly modulus{-x,context.integer(0),context.integer(1)},exact,residual;
+        assert(integration_algebraic_infinity_reduce(context,{context.integer(0),context.integer(1)},
+            modulus,x,risch_options(),exact,residual) == status::solved);
+        exact_expr error = exact[1]-context.integer(2)*x/context.integer(3);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        for(const auto &v : residual) assert(v == context.integer(0));
+        modulus[0] = -x*x*x+x;
+        assert(integration_algebraic_infinity_reduce(context,{context.integer(0),context.integer(1)},
+            modulus,x,risch_options(),exact,residual) == status::solved);
+        error = exact[1]-context.integer(2)*x/context.integer(5);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        error = residual[1]+context.integer(2)/(context.integer(5)*(x*x-context.integer(1)));
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        risch_options tiny; tiny.maximum_matrix_entries = 1;
+        assert(integration_algebraic_infinity_reduce(context,{context.integer(0),context.integer(1)},
+            modulus,x,tiny,exact,residual) == status::resource_limit);
+    }
+    {
+        integration_residue_algebra algebra{{numeric_value(0),numeric_value(-1),numeric_value(1)}};
+        std::vector<std::vector<integration_poly>> matrix{
+            {{numeric_value(0),numeric_value(1)},{numeric_value(1),numeric_value(-1)},{numeric_value(3),numeric_value(-1)}},
+            {{numeric_value(1),numeric_value(-1)},{numeric_value(0),numeric_value(1)},{numeric_value(2),numeric_value(1)}}};
+        std::vector<integration_poly> solution;
+        assert(integration_residue_linear_solve(algebra,matrix,65536,solution) == status::solved);
+        assert(solution == std::vector<integration_poly>({{numeric_value(2)},{numeric_value(3)}}));
+        assert(integration_residue_linear_solve(algebra,matrix,5,solution) == status::resource_limit);
+        matrix[1] = matrix[0];
+        assert(integration_residue_linear_solve(algebra,matrix,65536,solution) == status::unsupported);
+        algebra.modulus = {numeric_value(0),numeric_value(2),numeric_value(-3),numeric_value(1)};
+        numeric_value half = numeric_value(1)/numeric_value(2);
+        integration_poly e0{numeric_value(1),-numeric_value(3)*half,half};
+        integration_poly e1{numeric_value(0),numeric_value(2),numeric_value(-1)};
+        integration_poly e2{numeric_value(0),-half,half};
+        matrix = {{e0,e1,e2},{e2,e0,e1},{e1,e2,e0}};
+        for(auto &row : matrix){
+            integration_poly rhs{numeric_value(0)};
+            for(size_t column = 0; column < 3; ++column)
+                rhs = algebra.reduce(integration_add(rhs,algebra.multiply(row[column],{numeric_value(column+2)})));
+            row.push_back(rhs);
+        }
+        assert(integration_residue_linear_solve(algebra,matrix,65536,solution) == status::solved);
+        assert(solution == std::vector<integration_poly>({{numeric_value(2)},{numeric_value(3)},{numeric_value(4)}}));
+    }
+    {
+        exact_expr r = x*x*x-x;
+        integration_expr_poly modulus{-r,context.integer(0),context.integer(1)},exact,residual;
+        exact_expr coefficient = context.differentiate(r,x)/(context.integer(2)*r*x) -
+            context.integer(1)/(x*x)+context.integer(1)/r;
+        assert(integration_algebraic_finite_reduce(context,{context.integer(0),coefficient},
+            modulus,x,risch_options(),exact,residual) == status::solved);
+        exact_expr error = exact[1]-context.integer(1)/x;
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        error = residual[1]-context.integer(1)/r;
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        modulus[0] = -x*x;
+        assert(integration_algebraic_finite_reduce(context,
+            {context.integer(0),context.integer(1)/(x*x)},modulus,x,risch_options(),exact,residual) == status::solved);
+        for(const auto &v : exact) assert(v == context.integer(0));
+        error = residual[1]-context.integer(1)/(x*x);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+    }
+    {
+        integration_expr_poly modulus{-x,context.integer(1),context.integer(1)},exact,residual;
+        exact_expr p = context.integer(4)*x+context.integer(1);
+        assert(integration_algebraic_regular_singular_pole_step(context,
+            {context.integer(0),context.integer(1)/(p*p)},modulus,
+            {numeric_value(1),numeric_value(4)},2,x,risch_options(),exact,residual) == status::solved);
+        exact_expr error = exact[0]+context.integer(1)/(context.integer(8)*p);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        error = exact[1]+context.integer(1)/(context.integer(2)*p);
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        integration_expr_poly radical{-x,context.integer(0),context.integer(1)};
+        assert(integration_algebraic_regular_singular_pole_step(context,
+            {context.integer(0),context.integer(1)/(x*x)},radical,
+            {numeric_value(0),numeric_value(1)},2,x,risch_options(),exact,residual) == status::solved);
+        error = exact[1]+context.integer(2)/x;
+        assert(integration_normalize_expr_coefficient(context,error,x,64));
+        assert(error == context.integer(0));
+        for(const auto &v : residual) assert(v == context.integer(0));
+        radical[0] = -x*x;
+        assert(integration_algebraic_regular_singular_pole_step(context,
+            {context.integer(0),context.integer(1)/(x*x)},radical,
+            {numeric_value(0),numeric_value(1)},2,x,risch_options(),exact,residual) == status::unsupported);
+    }
+    {
         integration_expr_poly modulus{-x,context.integer(1),context.integer(1)},exact,residual;
         exact_expr coefficient = context.integer(1)/context.power(x-context.integer(2),context.integer(3)) +
             context.integer(1)/context.power(x-context.integer(3),context.integer(2));
-        assert(integration_algebraic_normal_reduce(context,{context.integer(0),coefficient},
+        assert(integration_algebraic_finite_reduce(context,{context.integer(0),coefficient},
             modulus,x,risch_options(),exact,residual) == status::solved);
         assert(exact[1] != context.integer(0));
         integration_expr_poly scalar_exact,scalar_rest;
-        assert(integration_algebraic_normal_reduce(context,{coefficient},modulus,x,
+        assert(integration_algebraic_finite_reduce(context,{coefficient},modulus,x,
             risch_options(),scalar_exact,scalar_rest) == status::solved);
         assert(scalar_exact.size() == 2 && scalar_exact[1] == context.integer(0));
         integration_poly normal_poles{numeric_value(6),numeric_value(-5),numeric_value(1)};

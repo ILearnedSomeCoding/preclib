@@ -6622,6 +6622,66 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
     return status;
 }
 
+// Rescale z=h*w so w^n has a polynomial, n-th-power-free radicand.
+// The selected root remains z/h; this does not choose a new principal branch.
+static integration_parametric_rde_status integration_binomial_normalize_generator(
+    exact_context &context, const integration_expr_poly &modulus,
+    const exact_expr &variable, const risch_options &options,
+    integration_expr_poly &normalized, exact_expr &scale){
+    using status = integration_parametric_rde_status;
+    if(modulus.size() < 3) return status::unsupported;
+    size_t rank = modulus.size()-1;
+    if(rank > options.maximum_degree) return status::resource_limit;
+    exact_expr leading = modulus.back();
+    if(!integration_normalize_expr_coefficient(context,leading,variable,options.maximum_degree) ||
+       leading == context.integer(0)) return status::unsupported;
+    for(size_t i = 1; i < rank; ++i){
+        exact_expr v = modulus[i];
+        if(!integration_normalize_expr_coefficient(context,v,variable,options.maximum_degree) ||
+           v != context.integer(0)) return status::unsupported;
+    }
+    integration_poly n,d;
+    if(!integration_parse_rational(-modulus[0]/modulus.back(),variable,n,d,
+            options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(n,d) || integration_zero_poly(n)) return status::unsupported;
+    integration_poly hn{numeric_value(1)},hd{numeric_value(1)};
+    auto extract = [&](const integration_poly &polynomial,bool denominator,integration_poly &h){
+        auto repeated = integration_gcd_poly(polynomial,integration_derivative_poly(polynomial));
+        integration_poly layer;
+        if(!integration_divide_poly(polynomial,repeated,layer)) return false;
+        for(size_t order = 1; layer.size() > 1; ++order){
+            auto next = integration_gcd_poly(layer,repeated);
+            integration_poly factor,rest;
+            if(!integration_divide_poly(layer,next,factor) || !integration_divide_poly(repeated,next,rest)) return false;
+            layer = std::move(next); repeated = std::move(rest);
+            size_t exponent = order/rank+(denominator && order%rank ? 1 : 0);
+            if(!exponent || factor.size() < 2) continue;
+            if(exponent > options.maximum_degree/(factor.size()-1) ||
+               h.size()-1+(factor.size()-1)*exponent > options.maximum_degree/rank) return false;
+            h = integration_mul(h,integration_pow_poly(factor,exponent));
+        }
+        return true;
+    };
+    if(!extract(n,false,hn) || !extract(d,true,hd)) return status::resource_limit;
+    exact_expr h = integration_poly_expr(context,hn,variable)/integration_poly_expr(context,hd,variable);
+    exact_expr radicand = -modulus[0]/modulus.back()/context.power(h,context.integer(rank));
+    if(!integration_normalize_expr_coefficient(context,radicand,variable,options.maximum_degree)) return status::resource_limit;
+    integration_poly nn,dd;
+    if(!integration_parse_rational(radicand,variable,nn,dd,options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(nn,dd) || dd.size() != 1) return status::verification_failed;
+    auto repeated = nn;
+    for(size_t i = 1; i < rank; ++i)
+        repeated = integration_gcd_poly(repeated,integration_derivative_poly(repeated));
+    if(repeated.size() > 1) return status::verification_failed;
+    exact_expr certificate = context.power(h,context.integer(rank))*radicand+modulus[0]/modulus.back();
+    if(!integration_normalize_expr_coefficient(context,certificate,variable,options.maximum_degree) ||
+       certificate != context.integer(0)) return status::verification_failed;
+    integration_expr_poly result(rank+1,context.integer(0));
+    result[0] = -radicand; result.back() = context.integer(1);
+    normalized = std::move(result); scale = h;
+    return status::solved;
+}
+
 // In z^n=R(x), D(z^i)=i*R'/(n*R)*z^i. Reduce exact differentials
 // coordinatewise; unsolved coordinates remain residuals, never negative proofs.
 static integration_parametric_rde_status integration_binomial_exact_reduce(
@@ -6853,7 +6913,139 @@ static integration_parametric_rde_status integration_algebraic_normal_pole_step(
     return status::solved;
 }
 
-static integration_parametric_rde_status integration_algebraic_normal_reduce(
+static integration_parametric_rde_status integration_residue_linear_solve(
+    const integration_residue_algebra &algebra,
+    std::vector<std::vector<integration_poly>> matrix,
+    size_t maximum_matrix_entries, std::vector<integration_poly> &solution){
+    using status = integration_parametric_rde_status;
+    const size_t rank = matrix.size();
+    if(!rank || algebra.modulus.size() < 2) return status::unsupported;
+    if(rank > maximum_matrix_entries/(rank+1)) return status::resource_limit;
+    for(auto &row : matrix){
+        if(row.size() != rank+1) return status::unsupported;
+        for(auto &entry : row){
+            if(entry.empty()) return status::unsupported;
+            entry = algebra.reduce(entry);
+            if(entry.empty()) return status::unsupported;
+        }
+    }
+    const auto original = matrix;
+    integration_poly inverse;
+    for(size_t column = 0; column < rank; ++column){
+        size_t pivot = column;
+        while(pivot < rank && !algebra.inverse(matrix[pivot][column],inverse)) ++pivot;
+        if(pivot == rank){
+            // Over Q, at most deg(p) scalar choices lose a required residue component.
+            for(size_t other = column+1; other < rank; ++other){
+                auto current = integration_gcd_poly(matrix[column][column],algebra.modulus);
+                auto target = integration_gcd_poly(current,matrix[other][column]);
+                if(target.size() == current.size()) continue;
+                size_t scale = 1;
+                for(; scale <= algebra.modulus.size(); ++scale){
+                    auto candidate = algebra.reduce(integration_add(matrix[column][column],
+                        algebra.multiply({numeric_value(scale)},matrix[other][column])));
+                    if(integration_gcd_poly(candidate,algebra.modulus) == target) break;
+                }
+                if(scale > algebra.modulus.size()) return status::verification_failed;
+                for(size_t j = column; j <= rank; ++j)
+                    matrix[column][j] = algebra.reduce(integration_add(matrix[column][j],
+                        algebra.multiply({numeric_value(scale)},matrix[other][j])));
+                if(algebra.inverse(matrix[column][column],inverse)) break;
+            }
+            if(!algebra.inverse(matrix[column][column],inverse)) return status::unsupported;
+            pivot = column;
+        }
+        if(pivot != column) std::swap(matrix[pivot],matrix[column]);
+        for(size_t j = column; j <= rank; ++j) matrix[column][j] = algebra.multiply(matrix[column][j],inverse);
+        for(size_t row = 0; row < rank; ++row){
+            if(row == column) continue;
+            auto scale = matrix[row][column];
+            for(size_t j = column; j <= rank; ++j)
+                matrix[row][j] = algebra.reduce(integration_sub(matrix[row][j],algebra.multiply(scale,matrix[column][j])));
+        }
+    }
+    std::vector<integration_poly> candidate;
+    for(size_t row = 0; row < rank; ++row) candidate.push_back(matrix[row][rank]);
+    for(size_t row = 0; row < rank; ++row){
+        integration_poly check{numeric_value(0)};
+        for(size_t column = 0; column < rank; ++column)
+            check = algebra.reduce(integration_add(check,algebra.multiply(original[row][column],candidate[column])));
+        if(check != original[row][rank]) return status::verification_failed;
+    }
+    solution = std::move(candidate);
+    return status::solved;
+}
+
+// Leading operator at a Fuchsian point: p*A - (m-1)*p'*I, modulo p.
+// A noninvertible leading matrix is preserved as an unresolved local problem.
+static integration_parametric_rde_status integration_algebraic_regular_singular_pole_step(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, integration_poly pole, size_t order,
+    const exact_expr &variable, const risch_options &options,
+    integration_expr_poly &exact_part, integration_expr_poly &remainder){
+    using status = integration_parametric_rde_status;
+    integration_trim(pole);
+    if(input.empty() || pole.size() < 2 || order < 2 || modulus.size() < 2) return status::unsupported;
+    size_t rank = modulus.size()-1;
+    if(order > options.maximum_degree/(pole.size()-1) ||
+       rank > options.maximum_matrix_entries/(rank+1)) return status::resource_limit;
+    integration_residue_algebra local{pole};
+    integration_poly inverse;
+    auto dp = integration_derivative_poly(pole);
+    if(!local.inverse(dp,inverse)) return status::unsupported;
+    std::vector<integration_expr_poly> connection;
+    if(!integration_algebraic_connection_matrix(context,modulus,variable,options,connection)) return status::unsupported;
+    integration_expr_poly dz,q,reduced;
+    if(!integration_algebraic_implicit_derivation(context,modulus,variable,options,dz) ||
+       !integration_expr_divmod_rational_coefficients(context,input,modulus,variable,
+            options.maximum_degree,q,reduced)) return status::unsupported;
+    auto residue = [&](const exact_expr &expression,integration_poly &result){
+        integration_poly n,d,di;
+        if(!integration_parse_rational(expression,variable,n,d,options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(n,d) || !local.inverse(d,di)) return false;
+        result = local.multiply(n,di);
+        return !result.empty();
+    };
+    exact_expr p = integration_poly_expr(context,pole,variable);
+    exact_expr highest = context.power(p,context.integer(order));
+    exact_expr lower = context.power(p,context.integer(order-1));
+    std::vector<std::vector<integration_poly>> matrix(rank,
+        std::vector<integration_poly>(rank+1,{numeric_value(0)}));
+    for(size_t row = 0; row < rank; ++row){
+        for(size_t column = 0; column < rank; ++column){
+            if(!residue(p*connection[row][column],matrix[row][column])) return status::unsupported;
+            if(row == column){
+                auto diagonal = dp;
+                for(auto &v : diagonal) v = v*numeric_value(order-1);
+                matrix[row][column] = local.reduce(integration_sub(matrix[row][column],diagonal));
+            }
+        }
+        if(!residue((row < reduced.size() ? reduced[row] : context.integer(0))*highest,
+            matrix[row][rank])) return status::unsupported;
+    }
+    std::vector<integration_poly> coefficients;
+    auto solved = integration_residue_linear_solve(local,std::move(matrix),options.maximum_matrix_entries,coefficients);
+    if(solved != status::solved) return solved;
+    integration_expr_poly candidate(rank,context.integer(0));
+    for(size_t row = 0; row < rank; ++row){
+        candidate[row] = integration_poly_expr(context,coefficients[row],variable)/lower;
+    }
+    integration_expr_poly derivative;
+    if(!integration_algebraic_quotient_derivative(context,candidate,modulus,dz,
+        variable,options,derivative)) return status::verification_failed;
+    integration_expr_poly residual(rank,context.integer(0));
+    for(size_t row = 0; row < rank; ++row){
+        residual[row] = (row < reduced.size() ? reduced[row] : context.integer(0)) -
+            (row < derivative.size() ? derivative[row] : context.integer(0));
+        integration_poly check;
+        if(!integration_normalize_expr_coefficient(context,residual[row],variable,options.maximum_degree) ||
+           !residue(residual[row]*lower,check)) return status::verification_failed;
+    }
+    exact_part = std::move(candidate); remainder = std::move(residual);
+    return status::solved;
+}
+
+static integration_parametric_rde_status integration_algebraic_finite_reduce(
     exact_context &context, const integration_expr_poly &input,
     const integration_expr_poly &modulus, const exact_expr &variable,
     const risch_options &options, integration_expr_poly &exact_part,
@@ -6884,19 +7076,21 @@ static integration_parametric_rde_status integration_algebraic_normal_reduce(
             return status::verification_failed;
         layer = std::move(next); repeated = std::move(rest);
         if(order < 2 || factor.size() < 2) continue;
-        // Remove every factor at which the chosen connection has a pole.
+        // Retain simple connection poles; exclude higher-order singularities.
         for(const auto &row : connection) for(const auto &coefficient : row){
             integration_poly n,d,normal;
             if(!integration_parse_rational(coefficient,variable,n,d,options.maximum_degree,options.maximum_degree) ||
                !integration_normalize_rational(n,d) ||
-               !integration_divide_poly(factor,integration_gcd_poly(factor,d),normal)) return status::unsupported;
+               !integration_divide_poly(factor,integration_gcd_poly(factor,
+                    integration_gcd_poly(d,integration_derivative_poly(d))),normal)) return status::unsupported;
             factor = std::move(normal);
         }
         if(factor.size() < 2) continue;
         for(size_t multiplicity = order; multiplicity > 1; --multiplicity){
             integration_expr_poly exact,next_residual;
-            auto step = integration_algebraic_normal_pole_step(context,residual,modulus,factor,
+            auto step = integration_algebraic_regular_singular_pole_step(context,residual,modulus,factor,
                 multiplicity,variable,options,exact,next_residual);
+            if(step == status::unsupported) break;
             if(step != status::solved) return step;
             total = integration_expr_add(context,total,exact);
             residual = std::move(next_residual);
@@ -6916,6 +7110,81 @@ static integration_parametric_rde_status integration_algebraic_normal_reduce(
             return status::verification_failed;
     }
     exact_part = std::move(total); remainder = std::move(residual);
+    return status::solved;
+}
+
+// Pull back f(x) dx by x=1/t, reduce at t=0, and certify after pulling back again.
+static integration_parametric_rde_status integration_algebraic_infinity_reduce(
+    exact_context &context, const integration_expr_poly &input,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options, integration_expr_poly &exact_part,
+    integration_expr_poly &remainder){
+    using status = integration_parametric_rde_status;
+    if(input.empty() || modulus.size() < 2) return status::unsupported;
+    exact_expr parameter;
+    for(size_t suffix = 0;; ++suffix){
+        parameter = context.symbol("_risch_infinity_t_"+std::to_string(suffix));
+        bool collision = parameter == variable;
+        for(const auto &v : input) collision |= integration_depends_on(v,parameter);
+        for(const auto &v : modulus) collision |= integration_depends_on(v,parameter);
+        if(!collision) break;
+    }
+    integration_expr_poly q,reduced,transformed_modulus,transformed;
+    if(!integration_expr_divmod_rational_coefficients(context,input,modulus,variable,
+        options.maximum_degree,q,reduced)) return status::unsupported;
+    exact_expr reciprocal = context.integer(1)/parameter;
+    for(const auto &v : modulus){
+        auto coefficient = context.substitute(v,variable,reciprocal);
+        if(!integration_normalize_expr_coefficient(context,coefficient,parameter,options.maximum_degree)) return status::unsupported;
+        transformed_modulus.push_back(coefficient);
+    }
+    for(const auto &v : reduced){
+        auto coefficient = -context.substitute(v,variable,reciprocal)/(parameter*parameter);
+        if(!integration_normalize_expr_coefficient(context,coefficient,parameter,options.maximum_degree)) return status::unsupported;
+        transformed.push_back(coefficient);
+    }
+    integration_expr_poly total(modulus.size()-1,context.integer(0));
+    while(true){
+        size_t order = 0;
+        for(const auto &v : transformed){
+            integration_poly n,d;
+            if(!integration_parse_rational(v,parameter,n,d,options.maximum_degree,options.maximum_degree) ||
+               !integration_normalize_rational(n,d)) return status::unsupported;
+            size_t valuation = 0;
+            while(valuation < d.size() && d[valuation].is_zero()) ++valuation;
+            order = std::max(order,valuation);
+        }
+        if(order < 2) break;
+        integration_expr_poly exact,rest;
+        auto step = integration_algebraic_regular_singular_pole_step(context,transformed,transformed_modulus,
+            {numeric_value(0),numeric_value(1)},order,parameter,options,exact,rest);
+        if(step == status::unsupported) break;
+        if(step != status::solved) return step;
+        total = integration_expr_add(context,total,exact);
+        transformed = std::move(rest);
+    }
+    total.resize(modulus.size()-1,context.integer(0));
+    transformed.resize(modulus.size()-1,context.integer(0));
+    integration_expr_poly candidate,residual;
+    exact_expr back = context.integer(1)/variable;
+    for(size_t i = 0; i < total.size(); ++i){
+        auto exact = context.substitute(total[i],parameter,back);
+        auto rest = -context.substitute(transformed[i],parameter,back)/(variable*variable);
+        if(!integration_normalize_expr_coefficient(context,exact,variable,options.maximum_degree) ||
+           !integration_normalize_expr_coefficient(context,rest,variable,options.maximum_degree)) return status::verification_failed;
+        candidate.push_back(exact); residual.push_back(rest);
+    }
+    integration_expr_poly dz,derivative;
+    if(!integration_algebraic_implicit_derivation(context,modulus,variable,options,dz) ||
+       !integration_algebraic_quotient_derivative(context,candidate,modulus,dz,
+            variable,options,derivative)) return status::verification_failed;
+    for(size_t i = 0; i < residual.size(); ++i){
+        exact_expr error = (i < derivative.size() ? derivative[i] : context.integer(0)) + residual[i] -
+            (i < reduced.size() ? reduced[i] : context.integer(0));
+        if(!integration_normalize_expr_coefficient(context,error,variable,options.maximum_degree) ||
+           error != context.integer(0)) return status::verification_failed;
+    }
+    exact_part = std::move(candidate); remainder = std::move(residual);
     return status::solved;
 }
 
@@ -9602,6 +9871,15 @@ risch_result exact_context::integrate_elementary(
         }
         integration_expr_poly modulus(rank+1, integer(0)), input, exact, residual;
         modulus[0] = -radicand; modulus.back() = integer(1);
+        exact_expr generator_scale = integer(1);
+        integration_expr_poly normalized_modulus;
+        exact_expr rescaling;
+        if(integration_binomial_normalize_generator(*this,modulus,variable,options,
+            normalized_modulus,rescaling) == integration_parametric_rde_status::solved){
+            transformed = substitute(transformed,parameter,rescaling*parameter);
+            modulus = std::move(normalized_modulus);
+            generator_scale = rescaling;
+        }
         if(!integration_parse_algebraic_quotient(*this, transformed, parameter, modulus,
             variable, options, input)) return false;
         auto reduced = integration_binomial_exact_reduce(*this, input, modulus, variable,
@@ -9613,14 +9891,22 @@ risch_result exact_context::integrate_elementary(
         }
         if(reduced != integration_parametric_rde_status::solved) return false;
         integration_expr_poly normal_exact,normal_rest;
-        auto normal = integration_algebraic_normal_reduce(*this,residual,modulus,variable,
+        auto normal = integration_algebraic_finite_reduce(*this,residual,modulus,variable,
             options,normal_exact,normal_rest);
         if(normal == integration_parametric_rde_status::solved){
             exact = integration_expr_add(*this,exact,normal_exact);
             residual = std::move(normal_rest);
         }
+        integration_expr_poly infinity_exact,infinity_rest;
+        auto infinity = integration_algebraic_infinity_reduce(*this,residual,modulus,variable,
+            options,infinity_exact,infinity_rest);
+        if(infinity == integration_parametric_rde_status::solved){
+            exact = integration_expr_add(*this,exact,infinity_exact);
+            residual = std::move(infinity_rest);
+        }
         exact_expr root = rank == 2 ? square_root(radicand) :
             power(radicand, value(numeric_value(1)/numeric_value(rank)));
+        root = root/generator_scale;
         exact_expr candidate = integration_expr_poly_expr(*this, exact, root);
         integration_expr_poly numerator, denominator, dz;
         if(integration_parse_expr_rational(*this, transformed, parameter, numerator, denominator,
