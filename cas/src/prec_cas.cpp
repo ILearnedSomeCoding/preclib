@@ -6682,6 +6682,57 @@ static integration_parametric_rde_status integration_binomial_normalize_generato
     return status::solved;
 }
 
+// For R in Q[x], the squarefree multiplicities and leading coefficient decide
+// whether R is a p-th power in Q(x). Apply Capelli's binomial criterion, including
+// its -4 fourth-power exception, before treating Q(x)[z]/(z^n-R) as a field.
+static bool integration_binomial_irreducible_certificate(
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    size_t maximum_degree){
+    if(modulus.size() < 3) return false;
+    const size_t rank = modulus.size()-1;
+    integration_poly numerator,denominator;
+    if(!integration_parse_rational(-modulus[0]/modulus.back(),variable,
+            numerator,denominator,maximum_degree,maximum_degree) ||
+       !integration_normalize_rational(numerator,denominator) || denominator.size() != 1)
+        return false;
+    auto repeated = integration_gcd_poly(numerator,integration_derivative_poly(numerator));
+    integration_poly layer;
+    if(!integration_divide_poly(numerator,repeated,layer)) return false;
+    std::vector<size_t> orders;
+    for(size_t order = 1; layer.size() > 1; ++order){
+        auto next = integration_gcd_poly(layer,repeated);
+        integration_poly factor,rest;
+        if(!integration_divide_poly(layer,next,factor) ||
+           !integration_divide_poly(repeated,next,rest)) return false;
+        if(factor.size() > 1) orders.push_back(order);
+        layer = std::move(next);
+        repeated = std::move(rest);
+    }
+    auto rational_power = [&](size_t degree){
+        if(std::any_of(orders.begin(),orders.end(),
+            [degree](size_t order){ return order%degree != 0; })) return false;
+        numeric_value root,coefficient = numerator.back();
+        if(coefficient.is_negative()){
+            if(degree%2 == 0) return false;
+            coefficient = -coefficient;
+        }
+        return exact_nth_root(coefficient,degree,root);
+    };
+    size_t remaining = rank;
+    for(size_t prime = 2; prime <= remaining/prime; ++prime){
+        if(remaining%prime) continue;
+        if(rational_power(prime)) return false;
+        do { remaining /= prime; } while(remaining%prime == 0);
+    }
+    if(remaining > 1 && rational_power(remaining)) return false;
+    if(rank%4 == 0 && std::all_of(orders.begin(),orders.end(),
+        [](size_t order){ return order%4 == 0; })){
+        numeric_value root;
+        if(exact_nth_root(numerator.back()/numeric_value(-4),4,root)) return false;
+    }
+    return true;
+}
+
 // In z^n=R(x), D(z^i)=i*R'/(n*R)*z^i. Reduce exact differentials
 // coordinatewise; unsolved coordinates remain residuals, never negative proofs.
 static integration_parametric_rde_status integration_binomial_exact_reduce(
@@ -9880,6 +9931,7 @@ risch_result exact_context::integrate_elementary(
             modulus = std::move(normalized_modulus);
             generator_scale = rescaling;
         }
+        if(!integration_binomial_irreducible_certificate(modulus,variable,degree_budget)) return false;
         if(!integration_parse_algebraic_quotient(*this, transformed, parameter, modulus,
             variable, options, input)) return false;
         auto reduced = integration_binomial_exact_reduce(*this, input, modulus, variable,

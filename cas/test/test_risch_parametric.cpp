@@ -462,12 +462,39 @@ int main(){
         error = normalized[0]+x+context.integer(1);
         assert(integration_normalize_expr_coefficient(context,error,x,64));
         assert(error == context.integer(0));
+        assert(integration_binomial_irreducible_certificate(normalized,x,64));
         assert(integration_binomial_normalize_generator(context,
             {-context.integer(1)/x,context.integer(0),context.integer(1)},x,risch_options(),normalized,scale) == status::solved);
         error = scale-context.integer(1)/x;
         assert(integration_normalize_expr_coefficient(context,error,x,64));
         assert(error == context.integer(0));
         assert(normalized[0] == -x);
+        assert(integration_binomial_irreducible_certificate(normalized,x,64));
+        assert(integration_binomial_irreducible_certificate(
+            {-x,context.integer(0),context.integer(0),context.integer(0),context.integer(1)},x,64));
+        integration_expr_poly sixth(7,context.integer(0));
+        sixth[0] = -x*x*(x+context.integer(1))*(x+context.integer(1))*(x+context.integer(1));
+        sixth[6] = context.integer(1);
+        assert(integration_binomial_irreducible_certificate(sixth,x,64));
+        assert(integration_binomial_irreducible_certificate(
+            {-context.integer(2)*x*x,context.integer(0),context.integer(0),
+             context.integer(0),context.integer(1)},x,64));
+        assert(!integration_binomial_irreducible_certificate(
+            {-x*x,context.integer(0),context.integer(0),context.integer(0),context.integer(1)},x,64));
+        assert(!integration_binomial_irreducible_certificate(
+            {-context.integer(9)*x*x/context.integer(4),context.integer(0),
+             context.integer(0),context.integer(0),context.integer(1)},x,64));
+        assert(integration_binomial_irreducible_certificate(
+            {context.integer(9)*x*x/context.integer(4),context.integer(0),
+             context.integer(0),context.integer(0),context.integer(1)},x,64));
+        assert(!integration_binomial_irreducible_certificate(
+            {context.integer(8)*context.power(x,context.integer(3)),context.integer(0),
+             context.integer(0),context.integer(1)},x,64));
+        assert(!integration_binomial_irreducible_certificate(
+            {context.integer(4)*context.power(x,context.integer(4)),context.integer(0),
+             context.integer(0),context.integer(0),context.integer(1)},x,64));
+        assert(!integration_binomial_irreducible_certificate(
+            {-context.integer(1),context.integer(0),context.integer(1)},x,64));
         exact_expr root = context.square_root(r);
         auto solved = context.integrate_elementary(root/(context.integer(2)*x*(x+context.integer(1))),x);
         assert(solved.status == risch_status::elementary && solved.remainder == context.integer(0));
