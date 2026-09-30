@@ -6967,8 +6967,10 @@ static integration_parametric_rde_status integration_algebraic_normal_pole_step(
 static integration_parametric_rde_status integration_residue_linear_solve(
     const integration_residue_algebra &algebra,
     std::vector<std::vector<integration_poly>> matrix,
-    size_t maximum_matrix_entries, std::vector<integration_poly> &solution){
+    size_t maximum_matrix_entries, std::vector<integration_poly> &solution,
+    integration_poly *obstruction = nullptr){
     using status = integration_parametric_rde_status;
+    if(obstruction) obstruction->clear();
     const size_t rank = matrix.size();
     if(!rank || algebra.modulus.size() < 2) return status::unsupported;
     if(rank > maximum_matrix_entries/(rank+1)) return status::resource_limit;
@@ -7003,7 +7005,16 @@ static integration_parametric_rde_status integration_residue_linear_solve(
                         algebra.multiply({numeric_value(scale)},matrix[other][j])));
                 if(algebra.inverse(matrix[column][column],inverse)) break;
             }
-            if(!algebra.inverse(matrix[column][column],inverse)) return status::unsupported;
+            if(!algebra.inverse(matrix[column][column],inverse)){
+                if(obstruction){
+                    integration_poly common = algebra.modulus;
+                    for(size_t row = column; row < rank; ++row)
+                        common = integration_gcd_poly(common,matrix[row][column]);
+                    if(common.size() > 1 && common.size() < algebra.modulus.size())
+                        *obstruction = std::move(common);
+                }
+                return status::unsupported;
+            }
             pivot = column;
         }
         if(pivot != column) std::swap(matrix[pivot],matrix[column]);
@@ -7033,8 +7044,10 @@ static integration_parametric_rde_status integration_algebraic_regular_singular_
     exact_context &context, const integration_expr_poly &input,
     const integration_expr_poly &modulus, integration_poly pole, size_t order,
     const exact_expr &variable, const risch_options &options,
-    integration_expr_poly &exact_part, integration_expr_poly &remainder){
+    integration_expr_poly &exact_part, integration_expr_poly &remainder,
+    integration_poly *obstruction = nullptr){
     using status = integration_parametric_rde_status;
+    if(obstruction) obstruction->clear();
     integration_trim(pole);
     if(input.empty() || pole.size() < 2 || order < 2 || modulus.size() < 2) return status::unsupported;
     size_t rank = modulus.size()-1;
@@ -7075,7 +7088,8 @@ static integration_parametric_rde_status integration_algebraic_regular_singular_
             matrix[row][rank])) return status::unsupported;
     }
     std::vector<integration_poly> coefficients;
-    auto solved = integration_residue_linear_solve(local,std::move(matrix),options.maximum_matrix_entries,coefficients);
+    auto solved = integration_residue_linear_solve(local,std::move(matrix),options.maximum_matrix_entries,
+        coefficients,obstruction);
     if(solved != status::solved) return solved;
     integration_expr_poly candidate(rank,context.integer(0));
     for(size_t row = 0; row < rank; ++row){
@@ -7137,14 +7151,29 @@ static integration_parametric_rde_status integration_algebraic_finite_reduce(
             factor = std::move(normal);
         }
         if(factor.size() < 2) continue;
+        std::vector<integration_poly> components{factor};
         for(size_t multiplicity = order; multiplicity > 1; --multiplicity){
-            integration_expr_poly exact,next_residual;
-            auto step = integration_algebraic_regular_singular_pole_step(context,residual,modulus,factor,
-                multiplicity,variable,options,exact,next_residual);
-            if(step == status::unsupported) break;
-            if(step != status::solved) return step;
-            total = integration_expr_add(context,total,exact);
-            residual = std::move(next_residual);
+            for(size_t i = 0; i < components.size();){
+                integration_expr_poly exact,next_residual;
+                integration_poly obstruction;
+                auto step = integration_algebraic_regular_singular_pole_step(context,residual,modulus,
+                    components[i],multiplicity,variable,options,exact,next_residual,&obstruction);
+                if(step == status::unsupported && obstruction.size() > 1 &&
+                   obstruction.size() < components[i].size()){
+                    integration_poly complement;
+                    if(!integration_divide_poly(components[i],obstruction,complement) ||
+                       complement.size() < 2) return status::verification_failed;
+                    components[i] = std::move(obstruction);
+                    components.insert(components.begin()+i+1,std::move(complement));
+                    continue;
+                }
+                if(step != status::solved && step != status::unsupported) return step;
+                if(step == status::solved){
+                    total = integration_expr_add(context,total,exact);
+                    residual = std::move(next_residual);
+                }
+                ++i;
+            }
         }
     }
     integration_expr_poly derivative;
