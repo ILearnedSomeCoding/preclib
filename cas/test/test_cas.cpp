@@ -583,6 +583,68 @@ int main(){
         risch_status::proven_nonelementary);
     assert(context.integrate_elementary(context.differentiate(log_x,x)*
         single_rational_log_pole,x).status == risch_status::elementary);
+    exact_expr quadratic_log_denominator =
+        context.power(log_x,context.integer(2))+context.integer(1);
+    risch_result quadratic_constant_pole = context.integrate_elementary(
+        context.integer(1)/quadratic_log_denominator,x);
+    assert(quadratic_constant_pole.status == risch_status::proven_nonelementary);
+    assert(quadratic_constant_pole.diagnostic ==
+        "constant-polynomial normal pole has a nonconstant residue");
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        quadratic_log_denominator,x).status == risch_status::elementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        context.power(quadratic_log_denominator,context.integer(2)),x
+        ).status == risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        context.power(quadratic_log_denominator,context.integer(2)),x
+        ).status == risch_status::elementary);
+    exact_expr cubic_log_denominator =
+        context.power(log_x,context.integer(3))+log_x+context.integer(1);
+    assert(context.integrate_elementary(context.integer(1)/
+        cubic_log_denominator,x).status == risch_status::proven_nonelementary);
+    risch_result cubic_constant_pole = context.integrate_elementary(
+        context.differentiate(log_x,x)/cubic_log_denominator,x);
+    assert(cubic_constant_pole.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        cubic_constant_pole.elementary_part,x) -
+        context.differentiate(log_x,x)/cubic_log_denominator) ==
+        context.integer(0));
+    exact_context compact_pole_context;
+    exact_expr pole_compact_x = compact_pole_context.symbol("x");
+    exact_expr compact_t = compact_pole_context.natural_logarithm(pole_compact_x);
+    exact_expr compact_denominator = compact_pole_context.power(compact_t,
+        compact_pole_context.integer(3)) + compact_t + compact_pole_context.integer(1);
+    risch_options compact_pole_options;
+    compact_pole_options.maximum_matrix_entries = 1;
+    risch_result compact_cubic_pole = compact_pole_context.integrate_elementary(
+        compact_pole_context.differentiate(compact_t,pole_compact_x)/compact_denominator,
+        pole_compact_x,compact_pole_options);
+    if(compact_cubic_pole.status != risch_status::elementary)
+        std::fprintf(stderr,"compact cubic pole: %s\n",
+            compact_cubic_pole.diagnostic.c_str());
+    assert(compact_cubic_pole.status == risch_status::elementary);
+    assert(compact_cubic_pole.elementary_part.to_string().find("LogRootSum(") !=
+        std::string::npos);
+    std::vector<exact_expr> compact_pole_roots = compact_pole_context.compact(
+        {pole_compact_x,compact_cubic_pole.elementary_part});
+    pole_compact_x = compact_pole_roots[0];
+    compact_t = compact_pole_context.natural_logarithm(pole_compact_x);
+    compact_denominator = compact_pole_context.power(compact_t,
+        compact_pole_context.integer(3)) + compact_t + compact_pole_context.integer(1);
+    assert(compact_pole_context.simplify(compact_pole_context.differentiate(
+        compact_pole_roots[1],pole_compact_x) -
+        compact_pole_context.differentiate(compact_t,pole_compact_x)/
+        compact_denominator) == compact_pole_context.integer(0));
+    exact_expr quartic_log_denominator = quadratic_log_denominator *
+        (context.power(log_x,context.integer(2))+context.integer(2));
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        quartic_log_denominator,x).status == risch_status::elementary);
+    exact_expr cancelled_quadratic_log_residue =
+        (context.power(x,context.integer(2))-context.integer(1)) /
+        ((x-context.integer(1))*(x+context.integer(1))*x*
+            quadratic_log_denominator);
+    assert(context.integrate_elementary(cancelled_quadratic_log_residue,x
+        ).status == risch_status::elementary);
     exact_expr two_log_poles = first_log_pole * second_log_pole;
     assert(context.integrate_elementary(context.integer(1)/two_log_poles,x).status ==
         risch_status::proven_nonelementary);
@@ -624,6 +686,14 @@ int main(){
                context.integer(1) / context.natural_logarithm(x), x).status ==
            risch_status::proven_nonelementary);
     exact_expr shifted_log = context.natural_logarithm(x + context.integer(1));
+    exact_expr shifted_quadratic_log_denominator =
+        context.power(shifted_log,context.integer(2))+context.integer(1);
+    assert(context.integrate_elementary(context.integer(1)/
+        shifted_quadratic_log_denominator,x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        ((x+context.integer(1))*shifted_quadratic_log_denominator),x
+        ).status == risch_status::elementary);
     assert(context.integrate_elementary(context.integer(1)/shifted_log,x).status ==
            risch_status::proven_nonelementary);
     exact_expr shifted_pole = shifted_log + context.integer(1);

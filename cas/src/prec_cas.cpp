@@ -10107,6 +10107,122 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_pure_primitive_pole()) return result;
+    auto classify_constant_polynomial_primitive_pole = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        auto find = [&](auto &&self,const exact_expr &part) -> void{
+            if(generator.valid() || !seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm){
+                integration_poly argument_n,argument_d;
+                if(integration_parse_rational(part.operand(0),variable,
+                        argument_n,argument_d,degree_budget,degree_budget) &&
+                   integration_normalize_rational(argument_n,argument_d) &&
+                   (argument_n.size() > 1 || argument_d.size() > 1)){
+                    generator = part;
+                    return;
+                }
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self,part.operand(i));
+        };
+        find(find,expression);
+        if(!generator.valid()) return false;
+        integration_expr_poly numerator,denominator,polynomial,proper;
+        if(!integration_parse_expr_rational(*this,expression,generator,
+                numerator,denominator,degree_budget,&variable) ||
+           denominator.size() < 3 ||
+           !integration_expr_divmod_rational_coefficients(*this,numerator,
+                denominator,variable,degree_budget,polynomial,proper))
+            return false;
+        exact_expr scale = denominator.back();
+        if(!integration_normalize_expr_coefficient(*this,scale,variable,
+                degree_budget) || integration_expr_zero(*this,scale)) return false;
+        integration_poly constant_denominator(denominator.size(),numeric_value(0));
+        for(size_t i = 0; i < denominator.size(); ++i){
+            integration_poly coefficient_n,coefficient_d;
+            if(!integration_parse_rational(denominator[i]/scale,variable,
+                    coefficient_n,coefficient_d,degree_budget,
+                    verification_degree_budget) ||
+               !integration_normalize_rational(coefficient_n,coefficient_d) ||
+               coefficient_n.size() != 1 || coefficient_d.size() != 1)
+                return false;
+            constant_denominator[i] = coefficient_n[0]/coefficient_d[0];
+        }
+        if(integration_gcd_poly(constant_denominator,
+                integration_derivative_poly(constant_denominator)).size() != 1)
+            return false;
+        exact_expr generator_derivative = differentiate(generator,variable);
+        if(!integration_normalize_expr_coefficient(*this,generator_derivative,
+                variable,degree_budget) ||
+           integration_expr_zero(*this,generator_derivative)) return false;
+        integration_poly constant_numerator(proper.size(),numeric_value(0));
+        bool nonconstant_residue = false;
+        for(size_t i = 0; i < proper.size(); ++i){
+            integration_poly coefficient_n,coefficient_d;
+            if(!integration_parse_rational(proper[i]/
+                    (scale*generator_derivative),variable,
+                    coefficient_n,coefficient_d,degree_budget,
+                    verification_degree_budget) ||
+               !integration_normalize_rational(coefficient_n,coefficient_d))
+                return false;
+            if(coefficient_n.size() != 1 || coefficient_d.size() != 1)
+                nonconstant_residue = true;
+            else constant_numerator[i] = coefficient_n[0]/coefficient_d[0];
+        }
+        auto identity = [&](const exact_expr &difference) -> bool{
+            integration_expr_poly check_n,check_d;
+            if(difference.reachable_node_count() > options.maximum_nodes ||
+               !integration_parse_expr_rational(*this,difference,generator,
+                    check_n,check_d,verification_degree_budget,&variable))
+                return false;
+            for(const exact_expr &coefficient : check_n)
+                if(!integration_expr_zero(*this,coefficient)) return false;
+            return true;
+        };
+        if(!identity(expression -
+                integration_expr_poly_expr(*this,polynomial,generator) -
+                integration_expr_poly_expr(*this,proper,generator)/
+                integration_expr_poly_expr(*this,denominator,generator)))
+            return false;
+        if(nonconstant_residue){
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "constant-polynomial normal pole has a nonconstant residue";
+            return true;
+        }
+        exact_expr polynomial_part = integer(0);
+        if(polynomial.size() != 1 ||
+           !integration_expr_zero(*this,polynomial[0])){
+            polynomial_part = integration_parametric_primitive_polynomial(
+                *this,polynomial,generator,variable,options,integer(0));
+            if(!polynomial_part.valid()) return false;
+        }
+        integration_trim(constant_numerator);
+        exact_expr logarithmic_part = integer(0);
+        if(!integration_zero_poly(constant_numerator)){
+            exact_expr parameter;
+            for(size_t suffix = 0;; ++suffix){
+                parameter = symbol("_risch_normal_t_"+std::to_string(suffix));
+                if(parameter != variable &&
+                   !integration_depends_on(expression,parameter)) break;
+            }
+            logarithmic_part = substitute(log_root_sum(
+                integration_poly_expr(*this,constant_numerator,parameter),
+                integration_poly_expr(*this,constant_denominator,parameter),
+                parameter,degree_budget),parameter,generator);
+        }
+        exact_expr candidate = polynomial_part+logarithmic_part;
+        if(candidate.reachable_node_count() > options.maximum_nodes ||
+           !identity(differentiate(candidate,variable)-expression)) return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_constant_polynomial_primitive_pole()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;
     auto classify_logarithmic_derivative_substitution = [&]() -> bool{
         std::vector<exact_expr> generators;
