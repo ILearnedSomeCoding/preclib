@@ -536,6 +536,54 @@ int main(){
         assert(difference.size() == 1 && difference[0] == context.integer(0));
     }
     {
+        exact_expr a = x*x*x-x, b = a+context.integer(1);
+        exact_expr u = context.square_root(a), v = context.square_root(b);
+        exact_expr ab = a*b;
+        integration_expr_poly holomorphic{
+            -(a+b)/(context.integer(2)*ab),context.integer(0),
+            context.integer(1)/(context.integer(2)*ab)};
+        assert(integration_biquadratic_holomorphic_certificate(context,
+            holomorphic,a,b,x,risch_options()));
+        assert(!integration_biquadratic_holomorphic_certificate(context,
+            {context.integer(0),context.integer(1)},a,b,x,risch_options()));
+        assert(!integration_biquadratic_holomorphic_certificate(context,
+            {context.integer(1),context.integer(0)},a,b,x,risch_options()));
+        exact_expr integrand = context.integer(1)/(u*v);
+        auto solved = context.integrate_elementary(integrand,x);
+        if(solved.status != risch_status::proven_nonelementary)
+            fprintf(stderr,"biquadratic status %d: %s; remainder %s\n",
+                (int)solved.status,solved.diagnostic.c_str(),solved.remainder.to_string().c_str());
+        assert(solved.status == risch_status::proven_nonelementary);
+        assert(solved.remainder != context.integer(0));
+        exact_expr t = context.symbol("_test_biquadratic_holomorphic_t");
+        integration_expr_poly modulus,difference;
+        exact_expr formal_u,formal_v;
+        assert(integration_biquadratic_field(context,a,b,t,x,risch_options(),
+            modulus,formal_u,formal_v));
+        exact_expr error = integrand-context.differentiate(solved.elementary_part,x)-
+            solved.remainder;
+        error = context.substitute(context.substitute(error,u,formal_u),v,formal_v);
+        assert(integration_parse_algebraic_quotient(context,error,t,modulus,x,
+            risch_options(),difference));
+        for(const auto &coefficient : difference)
+            assert(coefficient == context.integer(0));
+        exact_expr sum = context.integer(1)/u+context.integer(1)/v;
+        auto combined = context.integrate_elementary(sum,x);
+        assert(combined.status == risch_status::proven_nonelementary);
+        auto with_elementary = context.integrate_elementary(
+            context.integer(2)*x+sum,x);
+        assert(with_elementary.status == risch_status::proven_nonelementary);
+        assert(with_elementary.elementary_part != context.integer(0));
+        exact_expr sum_error = context.integer(2)*x+sum-
+            context.differentiate(with_elementary.elementary_part,x)-
+            with_elementary.remainder;
+        sum_error = context.substitute(context.substitute(sum_error,u,formal_u),v,formal_v);
+        assert(integration_parse_algebraic_quotient(context,sum_error,t,modulus,x,
+            risch_options(),difference));
+        for(const auto &coefficient : difference)
+            assert(coefficient == context.integer(0));
+    }
+    {
         integration_expr_poly modulus{-x,context.integer(0),context.integer(1)},exact,residual;
         assert(integration_algebraic_infinity_reduce(context,{context.integer(0),context.integer(1)},
             modulus,x,risch_options(),exact,residual) == status::solved);
@@ -726,6 +774,12 @@ int main(){
         assert(elliptic.remainder != context.integer(0));
         auto higher_genus = context.integrate_elementary(x/context.square_root(genus_two),x);
         assert(higher_genus.status == risch_status::proven_nonelementary);
+        exact_expr genus_two_root = context.square_root(genus_two);
+        auto combined_genus_two = context.integrate_elementary(
+            context.integer(2)*x+context.integer(1)/genus_two_root+
+            x/genus_two_root,x);
+        assert(combined_genus_two.status == risch_status::proven_nonelementary);
+        assert(combined_genus_two.elementary_part != context.integer(0));
         exact_expr even_degree = context.power(x,context.integer(4))+context.integer(1);
         auto quartic = context.integrate_elementary(
             context.integer(1)/context.square_root(even_degree),x);

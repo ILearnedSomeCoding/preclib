@@ -6810,6 +6810,38 @@ static bool integration_hyperelliptic_holomorphic_certificate(
     return coefficient.size() <= genus;
 }
 
+// Pullbacks of holomorphic differentials stay holomorphic in the compositum.
+// Independence of the three square classes is certified by the caller.
+static bool integration_biquadratic_holomorphic_certificate(
+    exact_context &context, const integration_expr_poly &residual,
+    const exact_expr &a, const exact_expr &b, const exact_expr &variable,
+    const risch_options &options){
+    if(residual.size() > 4) return false;
+    auto coefficient = [&](size_t i){
+        return i < residual.size() ? residual[i] : context.integer(0);
+    };
+    exact_expr c0 = coefficient(0)+(a+b)*coefficient(2);
+    exact_expr cuv = context.integer(2)*coefficient(2);
+    exact_expr cu = coefficient(1)+(a+context.integer(3)*b)*coefficient(3);
+    exact_expr cv = coefficient(1)+(context.integer(3)*a+b)*coefficient(3);
+    if(!integration_normalize_expr_coefficient(context,c0,variable,
+            options.maximum_degree) || c0 != context.integer(0)) return false;
+    bool nonzero = false;
+    for(auto &entry : std::vector<std::pair<exact_expr,exact_expr>>{
+            {a,cu},{b,cv},{a*b,cuv}}){
+        exact_expr &c = entry.second;
+        if(!integration_normalize_expr_coefficient(context,c,variable,
+                options.maximum_degree)) return false;
+        if(c == context.integer(0)) continue;
+        if(!integration_hyperelliptic_holomorphic_certificate(context,
+                {context.integer(0),c},
+                {-entry.first,context.integer(0),context.integer(1)},
+                variable,options)) return false;
+        nonzero = true;
+    }
+    return nonzero;
+}
+
 // For independent square classes A and B, t=u+v is a primitive element of
 // Q(x)(u,v), where u^2=A and v^2=B. Preserve the chosen roots via t=u+v.
 static bool integration_biquadratic_field(
@@ -6838,6 +6870,46 @@ static bool integration_biquadratic_field(
            proof[0] != context.integer(0)) return false;
     }
     return true;
+}
+
+static bool integration_radical_expression_holomorphic_certificate(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, const risch_options &options){
+    std::vector<exact_expr> roots;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::square_root &&
+           integration_depends_on(part.operand(0),variable)) roots.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self,part.operand(i));
+    };
+    collect(collect,expression);
+    if(roots.empty() || roots.size() > 2) return false;
+    exact_expr parameter;
+    for(size_t suffix = 0;; ++suffix){
+        parameter = context.symbol("_risch_holomorphic_sum_t_"+std::to_string(suffix));
+        if(parameter != variable && !integration_depends_on(expression,parameter)) break;
+    }
+    if(roots.size() == 1){
+        integration_expr_poly modulus{-roots[0].operand(0),context.integer(0),
+            context.integer(1)}, input;
+        exact_expr transformed = context.substitute(expression,roots[0],parameter);
+        return integration_parse_algebraic_quotient(context,transformed,parameter,
+            modulus,variable,options,input) &&
+            integration_hyperelliptic_holomorphic_certificate(context,input,
+                modulus,variable,options);
+    }
+    exact_expr a = roots[0].operand(0), b = roots[1].operand(0), u, v;
+    integration_expr_poly modulus, input;
+    if(!integration_biquadratic_field(context,a,b,parameter,variable,
+            options,modulus,u,v)) return false;
+    exact_expr transformed = context.substitute(context.substitute(
+        expression,roots[0],u),roots[1],v);
+    return integration_parse_algebraic_quotient(context,transformed,parameter,
+        modulus,variable,options,input) &&
+        integration_biquadratic_holomorphic_certificate(context,input,
+            a,b,variable,options);
 }
 
 // In z^n=R(x), D(z^i)=i*R'/(n*R)*z^i. Reduce exact differentials
@@ -9341,10 +9413,13 @@ risch_result exact_context::integrate_elementary(
         exact_expr error = simplify(expand(differentiate(candidate, variable) +
                                             remainder - expression, 100000));
         if(error != integer(0)) return false;
+        bool combined_holomorphic = unresolved_terms > 1 &&
+            integration_radical_expression_holomorphic_certificate(
+                *this,remainder,variable,options);
         if(remainder == integer(0))
             result.status = risch_status::elementary;
-        else if(unresolved_terms == 1 &&
-                sole_remainder_is_proven_nonelementary)
+        else if((unresolved_terms == 1 &&
+                 sole_remainder_is_proven_nonelementary) || combined_holomorphic)
             result.status = risch_status::proven_nonelementary;
         else
             result.status = risch_status::unsupported;
@@ -9352,7 +9427,9 @@ risch_result exact_context::integrate_elementary(
         result.remainder = std::move(remainder);
         result.diagnostic = result.status == risch_status::elementary
             ? "" : result.status == risch_status::proven_nonelementary
-            ? "one additive remainder is proven non-elementary"
+            ? combined_holomorphic
+                ? "combined additive remainder is a nonzero holomorphic differential"
+                : "one additive remainder is proven non-elementary"
             : "additive remainder is preserved without a non-elementarity proof";
         return true;
     };
@@ -10001,7 +10078,9 @@ risch_result exact_context::integrate_elementary(
     auto finish_algebraic_quotient = [&](const exact_expr &transformed,
         const exact_expr &parameter, const integration_expr_poly &modulus,
         const exact_expr &root, integration_expr_poly exact,
-        integration_expr_poly residual) -> bool{
+        integration_expr_poly residual, const exact_expr *biquad_a = nullptr,
+        const exact_expr *biquad_b = nullptr,
+        bool input_holomorphic = false) -> bool{
         const size_t rank = modulus.size()-1;
         integration_expr_poly normal_exact,normal_rest;
         auto normal = integration_algebraic_finite_reduce(*this,residual,modulus,variable,
@@ -10085,8 +10164,13 @@ risch_result exact_context::integrate_elementary(
         }
         exact_expr rest = integration_expr_poly_expr(*this, residual, root);
         const bool proven_holomorphic = rest != integer(0) &&
-            integration_hyperelliptic_holomorphic_certificate(*this,residual,
-                modulus,variable,options);
+            (input_holomorphic ||
+             integration_hyperelliptic_holomorphic_certificate(*this,residual,
+                modulus,variable,options) ||
+             (biquad_a && biquad_b &&
+              integration_biquadratic_holomorphic_certificate(*this,residual,
+                  *biquad_a,*biquad_b,variable,options)));
+        if(input_holomorphic && rest == integer(0)) return false;
         if(candidate == integer(0) && rest != integer(0) && !proven_holomorphic) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes ||
            rest.reachable_node_count() > options.maximum_nodes) return false;
@@ -10122,6 +10206,9 @@ risch_result exact_context::integrate_elementary(
         exact_expr transformed = substitute(substitute(expression,roots[0],u),roots[1],v);
         if(!integration_parse_algebraic_quotient(*this,transformed,parameter,modulus,
                 variable,options,input)) return false;
+        exact_expr a = roots[0].operand(0), b = roots[1].operand(0);
+        bool input_holomorphic = integration_biquadratic_holomorphic_certificate(
+            *this,input,a,b,variable,options);
         exact.assign(4,integer(0));
         residual = input;
         std::vector<integration_expr_poly> homogeneous;
@@ -10135,7 +10222,8 @@ risch_result exact_context::integrate_elementary(
             residual = {integer(0)};
         }
         return finish_algebraic_quotient(transformed,parameter,modulus,
-            roots[0]+roots[1],std::move(exact),std::move(residual));
+            roots[0]+roots[1],std::move(exact),std::move(residual),
+            &a,&b,input_holomorphic);
     };
     if(classify_biquadratic_function_field()) return result;
     auto classify_binomial_algebraic_field = [&]() -> bool{
