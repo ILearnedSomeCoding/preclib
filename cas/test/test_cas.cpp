@@ -626,6 +626,45 @@ int main(){
     assert(context.integrate_elementary(context.integer(1)/
         rational_variable_log_denominator, x).status ==
         risch_status::proven_nonelementary);
+    exact_expr variable_exponential_denominator =
+        context.power(exp_x, context.integer(2)) + x;
+    risch_result variable_exponential_pole = context.integrate_elementary(
+        context.integer(1)/variable_exponential_denominator, x);
+    assert(variable_exponential_pole.status ==
+        risch_status::proven_nonelementary);
+    assert(variable_exponential_pole.diagnostic ==
+        "normal exponential poles have a nonconstant residue invariant");
+    assert(context.integrate_elementary(
+        context.integer(1)/variable_exponential_denominator, x,
+        tiny_residue_matrix_budget).status !=
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.differentiate(variable_exponential_denominator, x)/
+        variable_exponential_denominator, x).status ==
+        risch_status::elementary);
+    assert(context.integrate_elementary(context.integer(1)/context.power(
+        variable_exponential_denominator,context.integer(2)),x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.integer(1)/exp_x, x).status ==
+        risch_status::elementary);
+    exact_expr rational_exponential = context.exponential(
+        context.integer(1)/x);
+    exact_expr rational_exponential_denominator =
+        context.power(rational_exponential, context.integer(2)) + x;
+    assert(context.integrate_elementary(context.integer(1)/
+        rational_exponential_denominator, x).status ==
+        risch_status::proven_nonelementary);
+    exact_expr constant_algebraic_residue_input =
+        context.integer(2)*(context.integer(1)-x)*exp_x/
+        (context.power(exp_x,context.integer(2))+
+         context.power(x,context.integer(2)));
+    risch_result constant_algebraic_residue_result =
+        context.integrate_elementary(constant_algebraic_residue_input,x);
+    assert(constant_algebraic_residue_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        constant_algebraic_residue_result.elementary_part,x)-
+        constant_algebraic_residue_input) == context.integer(0));
     exact_expr cubic_log_denominator =
         context.power(log_x,context.integer(3))+log_x+context.integer(1);
     assert(context.integrate_elementary(context.integer(1)/

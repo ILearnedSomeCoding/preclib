@@ -10223,12 +10223,13 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_constant_polynomial_primitive_pole()) return result;
-    auto classify_normal_primitive_residue = [&]() -> bool{
+    auto classify_normal_transcendental_residue = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
         auto find = [&](auto &&self, const exact_expr &part) -> void{
             if(generator.valid() || !seen.insert(part.id()).second) return;
-            if(part.operation() == exact_opcode::natural_logarithm){
+            if(part.operation() == exact_opcode::natural_logarithm ||
+               part.operation() == exact_opcode::exponential){
                 integration_poly argument_n, argument_d;
                 if(integration_parse_rational(part.operand(0), variable,
                         argument_n, argument_d, degree_budget, degree_budget) &&
@@ -10289,14 +10290,28 @@ risch_result exact_context::integrate_elementary(
                 result.status = risch_status::proven_nonelementary;
                 result.elementary_part = integer(0);
                 result.remainder = expression;
-                result.diagnostic =
-                    "normal primitive poles have a nonconstant residue invariant";
+                result.diagnostic = generator.operation() == exact_opcode::exponential
+                    ? "normal exponential poles have a nonconstant residue invariant"
+                    : "normal primitive poles have a nonconstant residue invariant";
+                return true;
+            }
+        }
+        if(generator.operation() == exact_opcode::exponential){
+            exact_expr logarithmic_part, polynomial_part;
+            if(integration_algebraic_residue_logs(*this, expression, generator,
+                    variable, options, logarithmic_part, polynomial_part) &&
+               polynomial_part == integer(0) &&
+               logarithmic_part.reachable_node_count() <= options.maximum_nodes){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(logarithmic_part);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
                 return true;
             }
         }
         return false;
     };
-    if(classify_normal_primitive_residue()) return result;
+    if(classify_normal_transcendental_residue()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;
     auto classify_logarithmic_derivative_substitution = [&]() -> bool{
         std::vector<exact_expr> generators;
