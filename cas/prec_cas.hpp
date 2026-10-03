@@ -246,8 +246,9 @@ public:
     // Exact local antiderivative for proper P(x)/W(x), with square-free W.
     // Numeric evaluation of the algebraic root sum is intentionally separate.
     exact_expr log_root_sum(const exact_expr &numerator,
-                            const exact_expr &denominator,
-                            const exact_expr &variable);
+                           const exact_expr &denominator,
+                           const exact_expr &variable,
+                           size_t maximum_degree = 64);
     // Sum z*log(argument) over the roots of a square-free constant polynomial.
     exact_expr algebraic_log_sum(const exact_expr &minimal_polynomial,
                                  const exact_expr &parameter, const exact_expr &argument,

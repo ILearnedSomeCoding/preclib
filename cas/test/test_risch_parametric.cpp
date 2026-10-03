@@ -75,6 +75,41 @@ int main(){
     }
     exact_context context;
     exact_expr x = context.symbol("x");
+    {
+        exact_expr denominator = x+context.integer(1);
+        integration_poly numerator, parsed_denominator;
+        assert(integration_parse_rational(context.integer(1)/denominator+
+            context.integer(2)/denominator,x,numerator,parsed_denominator,1,1));
+        assert(integration_normalize_rational(numerator,parsed_denominator));
+        assert(numerator == integration_poly{numeric_value(3)});
+        assert(parsed_denominator == (integration_poly{numeric_value(1),numeric_value(1)}));
+        assert(!integration_parse_rational(context.integer(1)/denominator+
+            context.integer(1)/(x+context.integer(2)),x,numerator,parsed_denominator,1,1));
+    }
+    {
+        exact_expr high_denominator = context.power(x,context.integer(80))+
+            context.integer(1);
+        exact_expr f = context.integer(1)/high_denominator;
+        assert(context.integrate_elementary(f,x).status == risch_status::resource_limit);
+        risch_options high_budget; high_budget.maximum_degree = 96;
+        assert(!integration_rational_antiderivative(context,
+            context.integer(1)/(context.power(x,context.integer(4))+
+                context.integer(1)),x,2).valid());
+        assert(context.log_root_sum(context.integer(1),high_denominator,x,96).valid());
+        auto polynomial = context.integrate_elementary(
+            context.power(x,context.integer(80)),x,high_budget);
+        assert(polynomial.status == risch_status::elementary);
+        assert(polynomial.remainder == context.integer(0));
+        auto integrated = context.integrate_elementary(f,x,high_budget);
+        assert(integrated.status == risch_status::elementary);
+        assert(integrated.remainder == context.integer(0));
+        integration_poly error_numerator,error_denominator;
+        assert(integration_parse_rational(context.differentiate(
+            integrated.elementary_part,x)-f,x,error_numerator,error_denominator,
+            96,192));
+        assert(integration_normalize_rational(error_numerator,error_denominator));
+        assert(integration_zero_poly(error_numerator));
+    }
     for(const auto &h : {x, context.power(x, context.integer(2)) + context.integer(1)}){
         for(int power : {-2, 1, 3}){
             exact_expr u = context.power(h, context.integer(power));

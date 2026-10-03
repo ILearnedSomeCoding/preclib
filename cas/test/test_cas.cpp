@@ -644,6 +644,16 @@ int main(){
                context.simplify(context.differentiate(
                    triple_angle_primitive, x)), x).status ==
            risch_status::elementary);
+    exact_expr seventeenfold_angle = context.integer(17) * x;
+    exact_expr seventeenfold_integrand = context.integer(1) /
+        (context.integer(1) + context.sine(seventeenfold_angle) +
+         context.cosine(seventeenfold_angle));
+    auto seventeenfold_integral = context.integrate_elementary(
+        seventeenfold_integrand, x);
+    if(seventeenfold_integral.status != risch_status::elementary)
+        fprintf(stderr,"17x trigonometric integral: %s\n",
+            seventeenfold_integral.diagnostic.c_str());
+    assert(seventeenfold_integral.status == risch_status::elementary);
     exact_expr fortyfold_angle = context.integer(40) * x;
     exact_expr fortyfold_trig_integrand = context.sine(fortyfold_angle) /
         (context.integer(1) + context.cosine(fortyfold_angle));

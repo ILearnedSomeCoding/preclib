@@ -2835,10 +2835,14 @@ static bool integration_parse_rational(const exact_expr &expression,
                                            child_denominator,
                                            maximum_exponent, maximum_degree))
                 return false;
-            numerator = integration_add(
-                integration_mul(numerator, child_denominator),
-                integration_mul(child_numerator, denominator));
-            denominator = integration_mul(denominator, child_denominator);
+            if(denominator == child_denominator){
+                numerator = integration_add(numerator, child_numerator);
+            }else{
+                numerator = integration_add(
+                    integration_mul(numerator, child_denominator),
+                    integration_mul(child_numerator, denominator));
+                denominator = integration_mul(denominator, child_denominator);
+            }
             if(!within_budget(numerator) || !within_budget(denominator))
                 return false;
         }
@@ -3114,13 +3118,11 @@ static bool integration_normalize_rational(integration_poly &numerator,
 
 static exact_expr integration_rational_antiderivative(
     exact_context &context, const exact_expr &expression,
-    const exact_expr &variable){
+    const exact_expr &variable,
+    size_t maximum_degree = integration_public_hermite_degree_limit){
     integration_poly numerator, denominator;
-    if(!integration_parse_rational(expression, variable,
-                                   numerator, denominator) &&
-       !integration_parse_rational(expression, variable, numerator, denominator,
-                                   integration_public_hermite_degree_limit,
-                                   integration_public_hermite_degree_limit))
+    if(!integration_parse_rational(expression, variable, numerator, denominator,
+                                   maximum_degree, maximum_degree))
         return exact_expr();
     integration_poly quotient, remainder;
     if(!integration_divmod_poly(numerator, denominator,
@@ -3148,9 +3150,8 @@ static exact_expr integration_rational_antiderivative(
            integration_derivative_poly(denominator)).size() == 1)
         proper = context.log_root_sum(
             integration_poly_expr(context, remainder, variable),
-            denominator_expression, variable);
-    if(!proper.valid() && denominator.size() - 1 <=
-                              integration_public_hermite_degree_limit){
+            denominator_expression, variable, maximum_degree);
+    if(!proper.valid() && denominator.size() - 1 <= maximum_degree){
         integration_poly rational_numerator, rational_denominator;
         integration_poly reduced_numerator, reduced_denominator;
         if(integration_hermite_reduce(remainder, denominator,
@@ -3170,7 +3171,7 @@ static exact_expr integration_rational_antiderivative(
                 logarithmic_part = context.log_root_sum(
                     integration_poly_expr(context, reduced_numerator, variable),
                     integration_poly_expr(context, reduced_denominator, variable),
-                    variable);
+                    variable, maximum_degree);
             exact_expr candidate = polynomial_part + rational_part +
                                    logarithmic_part;
             integration_poly check_numerator, check_denominator;
@@ -8245,7 +8246,8 @@ exact_expr exact_context::algebraic_log_sum(
 
 exact_expr exact_context::log_root_sum(const exact_expr &numerator,
                                        const exact_expr &denominator,
-                                       const exact_expr &variable){
+                                       const exact_expr &variable,
+                                       size_t maximum_degree){
     if(!numerator.valid() || !denominator.valid() || !variable.valid() ||
        numerator.storage_ != storage_ || denominator.storage_ != storage_ ||
        variable.storage_ != storage_ ||
@@ -8253,8 +8255,10 @@ exact_expr exact_context::log_root_sum(const exact_expr &numerator,
         throw std::invalid_argument(
             "LogRootSum requires expressions and a symbol in one context");
     integration_poly p, q;
-    if(!integration_parse_poly(numerator, variable, p) ||
-       !integration_parse_poly(denominator, variable, q))
+    if(!integration_parse_poly(numerator, variable, p,
+            maximum_degree, maximum_degree) ||
+       !integration_parse_poly(denominator, variable, q,
+            maximum_degree, maximum_degree))
         throw std::invalid_argument(
             "LogRootSum requires exact rational polynomial operands");
     if(integration_zero_poly(p)) return integer(0);
@@ -9566,14 +9570,15 @@ risch_result exact_context::integrate_elementary(
         exact_expr transformed_integrand = simplify(transformed * dx_dt);
         integration_poly numerator, denominator;
         if(!integration_parse_rational(transformed_integrand, parameter,
-                                       numerator, denominator) ||
+                                       numerator, denominator, degree_budget,
+                                       degree_budget) ||
            !integration_normalize_rational(numerator, denominator))
             return false;
         exact_expr rational_integrand = integration_poly_expr(
             *this, numerator, parameter) /
             integration_poly_expr(*this, denominator, parameter);
         exact_expr parameter_primitive = integration_rational_antiderivative(
-            *this, rational_integrand, parameter);
+            *this, rational_integrand, parameter, degree_budget);
         if(!parameter_primitive.valid() ||
            parameter_primitive.operation() == exact_opcode::integral)
             return false;
@@ -9599,7 +9604,9 @@ risch_result exact_context::integrate_elementary(
         if(parameter_error != integer(0)){
             integration_poly error_numerator, error_denominator;
             if(!integration_parse_rational(parameter_error, parameter,
-                                           error_numerator, error_denominator) ||
+                                           error_numerator, error_denominator,
+                                           degree_budget,
+                                           verification_degree_budget) ||
                !integration_normalize_rational(error_numerator,
                                                error_denominator) ||
                !integration_zero_poly(error_numerator))
@@ -10886,7 +10893,8 @@ risch_result exact_context::integrate_elementary(
             exact_expr logarithmic = scaled_derivative == reduced_numerator
                 ? value(log_coefficient) * natural_logarithm(
                     integration_poly_expr(*this, reduced_denominator, variable))
-                : integration_rational_antiderivative(*this, residual, variable);
+                : integration_rational_antiderivative(*this, residual, variable,
+                    degree_budget);
             if(logarithmic.valid() &&
                verified(partial + logarithmic, integer(0))){
                 partial = partial + logarithmic;
@@ -10908,7 +10916,8 @@ risch_result exact_context::integrate_elementary(
     }
 
     integration_poly coefficients;
-    if(!integration_parse_poly(expression, variable, coefficients))
+    if(!integration_parse_poly(expression, variable, coefficients,
+            degree_budget, degree_budget))
         return result;
     integration_poly primitive(coefficients.size() + 1, numeric_value(0));
     for(size_t i = 0; i < coefficients.size(); ++i)
@@ -10917,7 +10926,8 @@ risch_result exact_context::integrate_elementary(
 
     integration_poly derivative;
     if(!integration_parse_poly(differentiate(candidate, variable),
-                               variable, derivative)){
+                               variable, derivative, degree_budget,
+                               degree_budget)){
         result.status = risch_status::verification_failed;
         result.diagnostic = "could not verify polynomial derivative";
         return result;
