@@ -495,6 +495,11 @@ int main(){
              context.integer(0),context.integer(0),context.integer(1)},x,64));
         assert(!integration_binomial_irreducible_certificate(
             {-context.integer(1),context.integer(0),context.integer(1)},x,64));
+        bool square = false;
+        assert(integration_rational_square_status(x*x/(x+context.integer(1)),x,64,square) && !square);
+        assert(integration_rational_square_status(context.integer(9)*x*x/
+            (context.integer(4)*(x+context.integer(1))*(x+context.integer(1))),x,64,square) && square);
+        assert(integration_rational_square_status(-x*x,x,64,square) && !square);
         exact_expr root = context.square_root(r);
         auto solved = context.integrate_elementary(root/(context.integer(2)*x*(x+context.integer(1))),x);
         assert(solved.status == risch_status::elementary && solved.remainder == context.integer(0));
@@ -502,6 +507,33 @@ int main(){
         assert(integration_parse_algebraic_quotient(context,solved.elementary_part-root/x,
             root,{-r,context.integer(0),context.integer(1)},x,risch_options(),difference));
         for(const auto &v : difference) assert(v == context.integer(0));
+    }
+    {
+        exact_expr u = context.square_root(x);
+        exact_expr v = context.square_root(x+context.integer(1));
+        exact_expr t = context.symbol("_risch_test_biquadratic_t");
+        integration_expr_poly modulus;
+        exact_expr formal_u,formal_v;
+        assert(integration_biquadratic_field(context,x,x+context.integer(1),t,x,
+            risch_options(),modulus,formal_u,formal_v));
+        assert(!integration_biquadratic_field(context,x,x*x,t,x,
+            risch_options(),modulus,formal_u,formal_v));
+        assert(!integration_biquadratic_field(context,x,context.integer(1)/x,t,x,
+            risch_options(),modulus,formal_u,formal_v));
+        exact_expr target = context.integer(1)/(u+v);
+        exact_expr integrand = -(context.integer(1)/(context.integer(2)*u)+
+            context.integer(1)/(context.integer(2)*v))/((u+v)*(u+v));
+        auto solved = context.integrate_elementary(integrand,x);
+        assert(solved.status == risch_status::elementary);
+        assert(solved.remainder == context.integer(0));
+        integration_expr_poly difference;
+        assert(integration_biquadratic_field(context,x,x+context.integer(1),t,x,
+            risch_options(),modulus,formal_u,formal_v));
+        exact_expr error = context.substitute(context.substitute(
+            solved.elementary_part-target,u,formal_u),v,formal_v);
+        assert(integration_parse_algebraic_quotient(context,error,t,modulus,x,
+            risch_options(),difference));
+        assert(difference.size() == 1 && difference[0] == context.integer(0));
     }
     {
         integration_expr_poly modulus{-x,context.integer(0),context.integer(1)},exact,residual;
