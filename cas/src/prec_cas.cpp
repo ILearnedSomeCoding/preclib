@@ -9818,80 +9818,128 @@ risch_result exact_context::integrate_elementary(
         auto find = [&](auto &&self, const exact_expr &part) -> void{
             if(generator.valid() || !seen.insert(part.id()).second) return;
             if(part.operation() == exact_opcode::natural_logarithm &&
-               part.operand(0) == variable){
-                generator = part;
-                return;
+               integration_depends_on(part.operand(0),variable)){
+                integration_poly argument_numerator,argument_denominator;
+                if(integration_parse_rational(part.operand(0),variable,
+                        argument_numerator,argument_denominator,degree_budget,
+                        degree_budget) &&
+                   integration_normalize_rational(argument_numerator,
+                       argument_denominator) &&
+                   (argument_numerator.size() > 1 ||
+                    argument_denominator.size() > 1)){
+                    generator = part;
+                    return;
+                }
             }
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self, part.operand(i));
         };
         find(find, expression);
         if(!generator.valid()) return false;
-        exact_expr residue = expression;
-        size_t pole_order = 0;
-        for(size_t order = 1; order <= options.maximum_degree; ++order){
-            residue = simplify(residue * generator);
-            if(!integration_depends_on(residue, generator)){
-                pole_order = order;
-                break;
+        std::vector<exact_expr> poles{generator};
+        std::unordered_set<uint32_t> pole_seen;
+        auto collect_poles = [&](auto &&self, const exact_expr &part) -> void{
+            if(!pole_seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::add &&
+               integration_depends_on(part,generator)){
+                exact_expr shift = simplify(part-generator);
+                integration_poly numerator,denominator;
+                if(integration_parse_rational(shift,variable,numerator,
+                        denominator,degree_budget,degree_budget) &&
+                   integration_normalize_rational(numerator,denominator))
+                    poles.push_back(part);
             }
-        }
-        if(pole_order == 0) return false;
-        exact_expr generator_derivative = differentiate(generator, variable);
-        exact_expr elementary_part = integer(0);
-        for(size_t order = pole_order; order > 1; --order){
-            integration_poly numerator, denominator;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self,part.operand(i));
+        };
+        collect_poles(collect_poles,expression);
+        auto classify_pole = [&](const exact_expr &pole) -> bool{
+            exact_expr residue = expression;
+            size_t pole_order = 0;
+            for(size_t order = 1; order <= options.maximum_degree; ++order){
+                residue = simplify(residue * pole);
+                if(!integration_depends_on(residue, generator)){
+                    pole_order = order;
+                    break;
+                }
+            }
+            if(pole_order == 0) return false;
+            exact_expr pole_derivative = differentiate(pole, variable);
+            exact_expr elementary_part = integer(0);
+            for(size_t order = pole_order; order > 1; --order){
+                integration_poly numerator, denominator;
+                if(!integration_parse_rational(residue, variable,
+                        numerator, denominator,degree_budget,
+                        verification_degree_budget) ||
+                   !integration_normalize_rational(numerator, denominator))
+                    return false;
+                exact_expr coefficient = simplify(
+                    -residue / (integer((long long)order - 1) *
+                                pole_derivative));
+                if(integration_depends_on(coefficient, generator)) return false;
+                exact_expr term = coefficient /
+                    power(pole, integer((long long)order - 1));
+                elementary_part = simplify(elementary_part + term);
+                exact_expr remainder = simplify(expand(
+                    expression - differentiate(elementary_part, variable), 100000));
+                residue = remainder;
+                for(size_t i = 0; i + 1 < order; ++i)
+                    residue = simplify(residue * pole);
+                if(integration_depends_on(residue, generator)) return false;
+            }
+            integration_poly residue_numerator, residue_denominator;
             if(!integration_parse_rational(residue, variable,
-                                           numerator, denominator) ||
-               !integration_normalize_rational(numerator, denominator))
+                    residue_numerator, residue_denominator, degree_budget,
+                    verification_degree_budget) ||
+               !integration_normalize_rational(residue_numerator,
+                   residue_denominator)) return false;
+            integration_poly derivative_numerator,derivative_denominator;
+            if(!integration_parse_rational(pole_derivative,variable,
+                    derivative_numerator,derivative_denominator,degree_budget,
+                    verification_degree_budget) ||
+               !integration_normalize_rational(derivative_numerator,
+                   derivative_denominator) ||
+               integration_zero_poly(derivative_numerator)) return false;
+            integration_poly ratio_numerator = integration_mul(residue_numerator,
+                derivative_denominator);
+            integration_poly ratio_denominator = integration_mul(residue_denominator,
+                derivative_numerator);
+            if(!integration_normalize_rational(ratio_numerator,ratio_denominator))
                 return false;
-            exact_expr coefficient = simplify(
-                -residue / (integer((long long)order - 1) *
-                            generator_derivative));
-            if(integration_depends_on(coefficient, generator)) return false;
-            exact_expr term = coefficient /
-                power(generator, integer((long long)order - 1));
-            elementary_part = simplify(elementary_part + term);
-            exact_expr remainder = simplify(expand(
-                expression - differentiate(elementary_part, variable), 100000));
-            residue = remainder;
-            for(size_t i = 0; i + 1 < order; ++i)
-                residue = simplify(residue * generator);
-            if(integration_depends_on(residue, generator)) return false;
-        }
-        integration_poly residue_numerator, residue_denominator;
-        if(!integration_parse_rational(residue, variable,
-                                       residue_numerator, residue_denominator) ||
-           !integration_normalize_rational(residue_numerator,
-                                           residue_denominator))
-            return false;
-        exact_expr logarithmic_residue = simplify(residue /
-                                                  generator_derivative);
-        if(!integration_depends_on(logarithmic_residue, variable)){
-            if(try_verified_elementary()) return true;
-            exact_expr candidate = simplify(elementary_part +
-                logarithmic_residue * natural_logarithm(generator));
-            exact_expr error = simplify(expand(
-                differentiate(candidate, variable) - expression, 100000));
-            if(error == integer(0)){
-                result.status = risch_status::elementary;
-                result.elementary_part = std::move(candidate);
-                result.remainder = integer(0);
-                result.diagnostic.clear();
-            }else{
-                result.status = risch_status::verification_failed;
-                result.diagnostic =
-                    "primitive logarithmic residue failed verification";
+            bool constant_residue = ratio_numerator.size() == 1 &&
+                ratio_denominator.size() == 1;
+            exact_expr logarithmic_residue = constant_residue
+                ? value(ratio_numerator[0]/ratio_denominator[0])
+                : simplify(residue/pole_derivative);
+            if(constant_residue){
+                if(try_verified_elementary()) return true;
+                exact_expr candidate = simplify(elementary_part +
+                    logarithmic_residue * natural_logarithm(pole));
+                exact_expr error = simplify(expand(
+                    differentiate(candidate, variable) - expression, 100000));
+                if(error == integer(0)){
+                    result.status = risch_status::elementary;
+                    result.elementary_part = std::move(candidate);
+                    result.remainder = integer(0);
+                    result.diagnostic.clear();
+                }else{
+                    result.status = risch_status::verification_failed;
+                    result.diagnostic =
+                        "primitive logarithmic residue failed verification";
+                }
+                return true;
             }
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = std::move(elementary_part);
+            result.remainder = simplify(expression -
+                differentiate(result.elementary_part, variable));
+            result.diagnostic =
+                "primitive pole has a nonconstant logarithmic residue";
             return true;
-        }
-        result.status = risch_status::proven_nonelementary;
-        result.elementary_part = std::move(elementary_part);
-        result.remainder = simplify(expression -
-            differentiate(result.elementary_part, variable));
-        result.diagnostic =
-            "primitive pole has a nonconstant logarithmic residue";
-        return true;
+        };
+        for(const exact_expr &pole : poles)
+            if(classify_pole(pole)) return true;
+        return false;
     };
     if(classify_pure_primitive_pole()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;

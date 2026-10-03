@@ -578,6 +578,60 @@ int main(){
     assert(context.integrate_elementary(
                context.integer(1) / context.natural_logarithm(x), x).status ==
            risch_status::proven_nonelementary);
+    exact_expr shifted_log = context.natural_logarithm(x + context.integer(1));
+    assert(context.integrate_elementary(context.integer(1)/shifted_log,x).status ==
+           risch_status::proven_nonelementary);
+    exact_expr shifted_pole = shifted_log + context.integer(1);
+    assert(context.integrate_elementary(context.integer(1)/shifted_pole,x).status ==
+           risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.integer(1)/((x+context.integer(1))*shifted_pole),x).status ==
+        risch_status::elementary);
+    exact_expr variable_shifted_pole = shifted_log + x;
+    assert(context.integrate_elementary(
+        context.integer(1)/variable_shifted_pole,x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.differentiate(variable_shifted_pole,x)/variable_shifted_pole,x
+        ).status == risch_status::elementary);
+    exact_expr rational_shifted_pole = shifted_log +
+        x/(x+context.integer(1));
+    assert(context.integrate_elementary(
+        context.integer(1)/rational_shifted_pole,x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.differentiate(rational_shifted_pole,x)/rational_shifted_pole,x
+        ).status == risch_status::elementary);
+    risch_result shifted_pole_second_order = context.integrate_elementary(
+        context.integer(1)/context.power(shifted_pole,context.integer(2)),x);
+    assert(shifted_pole_second_order.status ==
+        risch_status::proven_nonelementary);
+    assert(shifted_pole_second_order.elementary_part != context.integer(0));
+    auto shifted_second_order = context.integrate_elementary(
+        context.integer(1)/context.power(shifted_log,context.integer(2)),x);
+    assert(shifted_second_order.status == risch_status::proven_nonelementary);
+    assert(shifted_second_order.elementary_part != context.integer(0));
+    assert(shifted_second_order.remainder != context.integer(0));
+    exact_expr rational_argument = x/(x+context.integer(1));
+    assert(context.integrate_elementary(context.integer(1)/
+        context.natural_logarithm(rational_argument),x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.integer(1)/((x+context.integer(1))*shifted_log),x).status ==
+        risch_status::elementary);
+    assert(context.integrate_elementary(
+        context.integer(1)/((x+context.integer(1))*
+            context.power(shifted_log,context.integer(2))),x).status ==
+        risch_status::elementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        context.natural_logarithm(context.power(x,context.integer(2))+
+            context.integer(1)),x).status == risch_status::proven_nonelementary);
+    exact_expr cancelled_residue =
+        (context.power(x,context.integer(2))-context.integer(1))/
+        ((x-context.integer(1))*context.power(x+context.integer(1),
+            context.integer(2))*shifted_log);
+    assert(context.integrate_elementary(cancelled_residue,x).status ==
+        risch_status::elementary);
     assert(context.integrate_elementary(
                context.integer(1) /
                    (context.power(x, context.integer(2)) *
