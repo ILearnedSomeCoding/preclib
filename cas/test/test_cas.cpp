@@ -665,6 +665,33 @@ int main(){
     assert(context.simplify(context.differentiate(
         constant_algebraic_residue_result.elementary_part,x)-
         constant_algebraic_residue_input) == context.integer(0));
+    exact_expr algebraic_residue_denominator =
+        context.power(exp_x,context.integer(2))+
+        context.power(x,context.integer(2));
+    exact_expr exponential_log_plus_constant =
+        (algebraic_residue_denominator+
+         context.integer(2)*(context.integer(1)-x)*exp_x)/
+        algebraic_residue_denominator;
+    risch_result exponential_log_plus_constant_result =
+        context.integrate_elementary(exponential_log_plus_constant,x);
+    assert(exponential_log_plus_constant_result.status ==
+        risch_status::elementary);
+    assert(exponential_log_plus_constant_result.elementary_part ==
+        x + constant_algebraic_residue_result.elementary_part);
+    exact_expr exponential_log_plus_nonelementary =
+        (algebraic_residue_denominator*exp_x/x+
+         context.integer(2)*(context.integer(1)-x)*exp_x)/
+        algebraic_residue_denominator;
+    risch_result exponential_log_plus_nonelementary_result =
+        context.integrate_elementary(exponential_log_plus_nonelementary,x);
+    assert(exponential_log_plus_nonelementary_result.status ==
+        risch_status::proven_nonelementary);
+    assert(exponential_log_plus_nonelementary_result.elementary_part !=
+        context.integer(0));
+    assert(exponential_log_plus_nonelementary_result.elementary_part ==
+        constant_algebraic_residue_result.elementary_part);
+    assert(context.simplify(exponential_log_plus_nonelementary_result.remainder-
+        exp_x/x) == context.integer(0));
     exact_expr cubic_log_denominator =
         context.power(log_x,context.integer(3))+log_x+context.integer(1);
     assert(context.integrate_elementary(context.integer(1)/

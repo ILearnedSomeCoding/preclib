@@ -10256,6 +10256,25 @@ risch_result exact_context::integrate_elementary(
                 common, variable, degree_budget, reduced)) return false;
         denominator = std::move(reduced);
         if(denominator.size() < 2) return false;
+        if(generator.operation() == exact_opcode::exponential){
+            exact_expr argument_derivative =
+                differentiate(generator.operand(0), variable);
+            exact_expr scale = denominator.back();
+            auto constant_coefficient = [&](const exact_expr &coefficient) -> bool{
+                integration_poly cn, cd;
+                return integration_parse_rational(coefficient, variable, cn, cd,
+                           degree_budget, verification_degree_budget) &&
+                    integration_normalize_rational(cn, cd) &&
+                    cn.size() == 1 && cd.size() == 1;
+            };
+            bool rational_substitution = true;
+            for(const exact_expr &coefficient : numerator)
+                rational_substitution &= constant_coefficient(
+                    coefficient/(scale*argument_derivative));
+            for(const exact_expr &coefficient : denominator)
+                rational_substitution &= constant_coefficient(coefficient/scale);
+            if(rational_substitution) return false;
+        }
         integration_expr_poly partial(denominator.size() - 1, integer(0));
         for(size_t i = 1; i < denominator.size(); ++i)
             partial[i - 1] = integer(i) * denominator[i];
@@ -10300,13 +10319,37 @@ risch_result exact_context::integrate_elementary(
             exact_expr logarithmic_part, polynomial_part;
             if(integration_algebraic_residue_logs(*this, expression, generator,
                     variable, options, logarithmic_part, polynomial_part) &&
-               polynomial_part == integer(0) &&
                logarithmic_part.reachable_node_count() <= options.maximum_nodes){
-                result.status = risch_status::elementary;
-                result.elementary_part = std::move(logarithmic_part);
-                result.remainder = integer(0);
-                result.diagnostic.clear();
-                return true;
+                if(polynomial_part == integer(0)){
+                    result.status = risch_status::elementary;
+                    result.elementary_part = std::move(logarithmic_part);
+                    result.remainder = integer(0);
+                    result.diagnostic.clear();
+                    return true;
+                }
+                // Keep linear exponential denominators on the existing real-log path.
+                if(denominator.size() > 2){
+                    risch_result lower = integrate_elementary(polynomial_part,
+                        variable, options);
+                    if(lower.conditions.empty() &&
+                       (lower.status == risch_status::proven_nonelementary ||
+                        (lower.status == risch_status::elementary &&
+                         lower.remainder == integer(0)))){
+                        exact_expr combined = logarithmic_part + lower.elementary_part;
+                        exact_expr difference = expression -
+                            differentiate(combined, variable) - lower.remainder;
+                        integration_expr_poly check_n, check_d;
+                        if(combined.reachable_node_count() <= options.maximum_nodes &&
+                           difference.reachable_node_count() <= options.maximum_nodes &&
+                           integration_parse_expr_rational(*this, difference, generator,
+                               check_n, check_d, verification_degree_budget, &variable) &&
+                           check_n.size() == 1 && check_n[0] == integer(0)){
+                            result = std::move(lower);
+                            result.elementary_part = std::move(combined);
+                            return true;
+                        }
+                    }
+                }
             }
         }
         return false;
