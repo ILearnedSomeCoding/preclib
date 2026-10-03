@@ -9939,7 +9939,172 @@ risch_result exact_context::integrate_elementary(
         };
         for(const exact_expr &pole : poles)
             if(classify_pole(pole)) return true;
-        return false;
+        integration_expr_poly numerator,denominator;
+        if(!integration_parse_expr_rational(*this,expression,generator,
+                numerator,denominator,degree_budget,&variable)) return false;
+        integration_expr_poly polynomial,proper;
+        if(!integration_expr_divmod_rational_coefficients(*this,numerator,
+                denominator,variable,degree_budget,polynomial,proper)) return false;
+        struct linear_pole{
+            exact_expr expression,shift;
+            size_t order;
+        };
+        std::vector<linear_pole> factors;
+        integration_expr_poly remaining = denominator;
+        for(const exact_expr &pole : poles){
+            exact_expr shift = simplify(pole-generator);
+            if(!integration_normalize_expr_coefficient(*this,shift,variable,
+                    degree_budget)) continue;
+            size_t order = 0;
+            for(;;){
+                integration_expr_poly quotient,remainder;
+                if(!integration_expr_divmod_rational_coefficients(*this,remaining,
+                        {shift,integer(1)},variable,degree_budget,
+                        quotient,remainder)) return false;
+                if(remainder.size() != 1 ||
+                   !integration_expr_zero(*this,remainder[0])) break;
+                remaining = std::move(quotient);
+                ++order;
+            }
+            if(!order) continue;
+            for(const linear_pole &previous : factors){
+                integration_poly difference_n,difference_d;
+                if(!integration_parse_rational(shift-previous.shift,variable,
+                        difference_n,difference_d,degree_budget,degree_budget) ||
+                   !integration_normalize_rational(difference_n,difference_d))
+                    return false;
+                if(integration_zero_poly(difference_n)) return false;
+            }
+            factors.push_back({pole,shift,order});
+        }
+        if(factors.empty() || remaining.size() != 1 ||
+           integration_expr_zero(*this,remaining[0])) return false;
+        auto translate = [&](const integration_expr_poly &source,
+                             const exact_expr &shift,
+                             integration_expr_poly &translated) -> bool{
+            translated = {integer(0)};
+            for(size_t j = source.size(); j-- > 0;){
+                translated = integration_expr_mul(*this,translated,
+                    {-shift,integer(1)});
+                translated[0] = translated[0] + source[j];
+                for(exact_expr &coefficient : translated)
+                    if(!integration_normalize_expr_coefficient(*this,
+                            coefficient,variable,verification_degree_budget))
+                        return false;
+                integration_expr_trim(*this,translated);
+            }
+            return true;
+        };
+        auto rational_identity = [&](const exact_expr &difference) -> bool{
+            integration_expr_poly check_n,check_d;
+            if(difference.reachable_node_count() > options.maximum_nodes ||
+               !integration_parse_expr_rational(*this,difference,generator,
+                    check_n,check_d,verification_degree_budget,&variable))
+                return false;
+            for(const exact_expr &coefficient : check_n)
+                if(!integration_expr_zero(*this,coefficient)) return false;
+            return true;
+        };
+        exact_expr principal_part = integer(0);
+        exact_expr reduced_poles = integer(0);
+        exact_expr rational_part = integer(0);
+        exact_expr logarithmic_part = integer(0);
+        bool nonconstant_residue = false;
+        for(size_t i = 0; i < factors.size(); ++i){
+            const linear_pole &factor = factors[i];
+            integration_expr_poly quotient = denominator;
+            for(size_t k = 0; k < factor.order; ++k){
+                integration_expr_poly next,remainder;
+                if(!integration_expr_divmod_rational_coefficients(*this,quotient,
+                        {factor.shift,integer(1)},variable,degree_budget,
+                        next,remainder) || remainder.size() != 1 ||
+                   !integration_expr_zero(*this,remainder[0])) return false;
+                quotient = std::move(next);
+            }
+            integration_expr_poly local_n,local_d;
+            if(!translate(proper,factor.shift,local_n) ||
+               !translate(quotient,factor.shift,local_d) ||
+               integration_expr_zero(*this,local_d[0])) return false;
+            std::vector<exact_expr> series(factor.order,integer(0));
+            for(size_t k = 0; k < factor.order; ++k){
+                exact_expr coefficient = k < local_n.size()
+                    ? local_n[k] : integer(0);
+                for(size_t j = 1; j <= k && j < local_d.size(); ++j)
+                    coefficient = coefficient - local_d[j]*series[k-j];
+                coefficient = coefficient/local_d[0];
+                if(!integration_normalize_expr_coefficient(*this,coefficient,
+                        variable,verification_degree_budget)) return false;
+                series[k] = coefficient;
+            }
+            std::vector<exact_expr> coefficients(factor.order+1,integer(0));
+            for(size_t k = 1; k <= factor.order; ++k)
+                coefficients[k] = series[factor.order-k];
+            for(size_t k = 1; k <= factor.order; ++k)
+                if(!integration_expr_zero(*this,coefficients[k]))
+                    principal_part = principal_part + coefficients[k]/
+                        power(factor.expression,integer(k));
+            exact_expr pole_derivative = differentiate(factors[i].expression,variable);
+            if(!integration_normalize_expr_coefficient(*this,pole_derivative,
+                    variable,verification_degree_budget) ||
+               integration_expr_zero(*this,pole_derivative)) return false;
+            for(size_t k = factor.order; k > 1; --k){
+                if(integration_expr_zero(*this,coefficients[k])) continue;
+                exact_expr coefficient = -coefficients[k]/
+                    (integer(k-1)*pole_derivative);
+                if(!integration_normalize_expr_coefficient(*this,coefficient,
+                        variable,verification_degree_budget)) return false;
+                rational_part = rational_part + coefficient/
+                    power(factor.expression,integer(k-1));
+                coefficients[k-1] = coefficients[k-1] -
+                    differentiate(coefficient,variable);
+                if(!integration_normalize_expr_coefficient(*this,
+                        coefficients[k-1],variable,
+                        verification_degree_budget)) return false;
+            }
+            reduced_poles = reduced_poles + coefficients[1]/factor.expression;
+            integration_poly ratio_n,ratio_d;
+            if(!integration_parse_rational(coefficients[1]/pole_derivative,
+                    variable,ratio_n,ratio_d,degree_budget,
+                    verification_degree_budget) ||
+               !integration_normalize_rational(ratio_n,ratio_d)) return false;
+            if(ratio_n.size() != 1 || ratio_d.size() != 1){
+                nonconstant_residue = true;
+                continue;
+            }
+            if(!ratio_n[0].is_zero()) logarithmic_part = logarithmic_part +
+                value(ratio_n[0]/ratio_d[0]) *
+                natural_logarithm(factor.expression);
+        }
+        if(!rational_identity(expression -
+                integration_expr_poly_expr(*this,polynomial,generator) -
+                principal_part) ||
+           !rational_identity(principal_part-differentiate(rational_part,
+                variable)-reduced_poles)) return false;
+        if(nonconstant_residue){
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "a normal primitive pole has a nonconstant logarithmic residue";
+            return true;
+        }
+        exact_expr polynomial_part = integer(0);
+        if(polynomial.size() != 1 ||
+           !integration_expr_zero(*this,polynomial[0])){
+            polynomial_part = integration_parametric_primitive_polynomial(
+                *this,polynomial,generator,variable,options,integer(0));
+            if(!polynomial_part.valid()) return false;
+        }
+        exact_expr candidate = simplify(polynomial_part+logarithmic_part+
+            rational_part);
+        if(candidate.reachable_node_count() > options.maximum_nodes) return false;
+        if(!rational_identity(differentiate(candidate,variable)-expression))
+            return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
     };
     if(classify_pure_primitive_pole()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;

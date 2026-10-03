@@ -575,6 +575,51 @@ int main(){
     assert(context.integrate_elementary(
         context.integer(1) / (log_x + context.integer(1)), x).status ==
         risch_status::proven_nonelementary);
+    exact_expr first_log_pole = log_x + context.integer(1);
+    exact_expr second_log_pole = log_x + context.integer(2);
+    exact_expr single_rational_log_pole = second_log_pole/
+        context.power(first_log_pole,context.integer(2));
+    assert(context.integrate_elementary(single_rational_log_pole,x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.differentiate(log_x,x)*
+        single_rational_log_pole,x).status == risch_status::elementary);
+    exact_expr two_log_poles = first_log_pole * second_log_pole;
+    assert(context.integrate_elementary(context.integer(1)/two_log_poles,x).status ==
+        risch_status::proven_nonelementary);
+    exact_expr two_pole_derivative =
+        context.differentiate(log_x,x)/two_log_poles;
+    assert(context.integrate_elementary(two_pole_derivative,x).status ==
+        risch_status::elementary);
+    exact_expr two_pole_polynomial = context.differentiate(log_x,x) *
+        (context.power(log_x,context.integer(2))+context.integer(1))/
+        two_log_poles;
+    assert(context.integrate_elementary(two_pole_polynomial,x).status ==
+        risch_status::elementary);
+    exact_expr third_log_pole = log_x + context.integer(3);
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        (two_log_poles*third_log_pole),x).status == risch_status::elementary);
+    exact_expr repeated_log_poles =
+        context.power(first_log_pole,context.integer(2))*second_log_pole;
+    assert(context.integrate_elementary(context.integer(1)/
+        repeated_log_poles,x).status == risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        repeated_log_poles,x).status == risch_status::elementary);
+    exact_expr repeated_rational_primitive = context.integer(1)/
+        (first_log_pole*second_log_pole);
+    assert(context.integrate_elementary(context.differentiate(
+        repeated_rational_primitive,x),x).status == risch_status::elementary);
+    exact_expr cubic_log_poles =
+        context.power(first_log_pole,context.integer(3))*second_log_pole;
+    assert(context.integrate_elementary(context.differentiate(log_x,x)/
+        cubic_log_poles,x).status == risch_status::elementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        cubic_log_poles,x).status == risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        (first_log_pole*(log_x+x)),x).status ==
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(context.integer(1)/
+        (context.power(first_log_pole,context.integer(2))*(log_x+x)),x
+        ).status == risch_status::proven_nonelementary);
     assert(context.integrate_elementary(
                context.integer(1) / context.natural_logarithm(x), x).status ==
            risch_status::proven_nonelementary);
