@@ -598,6 +598,34 @@ int main(){
     assert(context.integrate_elementary(context.differentiate(log_x,x)/
         context.power(quadratic_log_denominator,context.integer(2)),x
         ).status == risch_status::elementary);
+    exact_expr variable_quadratic_log_denominator =
+        context.power(log_x, context.integer(2)) + x;
+    risch_result variable_quadratic_log_pole = context.integrate_elementary(
+        context.integer(1)/variable_quadratic_log_denominator, x);
+    assert(variable_quadratic_log_pole.status ==
+        risch_status::proven_nonelementary);
+    assert(variable_quadratic_log_pole.diagnostic ==
+        "normal primitive poles have a nonconstant residue invariant");
+    risch_options tiny_residue_matrix_budget;
+    tiny_residue_matrix_budget.maximum_matrix_entries = 1;
+    assert(context.integrate_elementary(
+        context.integer(1)/variable_quadratic_log_denominator, x,
+        tiny_residue_matrix_budget).status !=
+        risch_status::proven_nonelementary);
+    assert(context.integrate_elementary(
+        context.differentiate(variable_quadratic_log_denominator, x)/
+        variable_quadratic_log_denominator, x).status ==
+        risch_status::elementary);
+    risch_result repeated_variable_quadratic_log_pole =
+        context.integrate_elementary(context.integer(1)/context.power(
+            variable_quadratic_log_denominator, context.integer(2)), x);
+    assert(repeated_variable_quadratic_log_pole.status ==
+        risch_status::proven_nonelementary);
+    exact_expr rational_variable_log_denominator =
+        context.power(rational_log, context.integer(2)) + x;
+    assert(context.integrate_elementary(context.integer(1)/
+        rational_variable_log_denominator, x).status ==
+        risch_status::proven_nonelementary);
     exact_expr cubic_log_denominator =
         context.power(log_x,context.integer(3))+log_x+context.integer(1);
     assert(context.integrate_elementary(context.integer(1)/

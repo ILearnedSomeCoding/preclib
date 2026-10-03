@@ -10223,6 +10223,80 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(classify_constant_polynomial_primitive_pole()) return result;
+    auto classify_normal_primitive_residue = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        auto find = [&](auto &&self, const exact_expr &part) -> void{
+            if(generator.valid() || !seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm){
+                integration_poly argument_n, argument_d;
+                if(integration_parse_rational(part.operand(0), variable,
+                        argument_n, argument_d, degree_budget, degree_budget) &&
+                   integration_normalize_rational(argument_n, argument_d) &&
+                   (argument_n.size() > 1 || argument_d.size() > 1)){
+                    generator = part;
+                    return;
+                }
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        find(find, expression);
+        if(!generator.valid()) return false;
+        integration_expr_poly numerator, denominator, common, reduced;
+        if(!integration_parse_expr_rational(*this, expression, generator,
+                numerator, denominator, degree_budget, &variable) ||
+           !integration_expr_gcd_rational_coefficients(*this, numerator,
+                denominator, variable, degree_budget, common) ||
+           !integration_expr_divide_rational_coefficients(*this, numerator,
+                common, variable, degree_budget, reduced)) return false;
+        numerator = std::move(reduced);
+        if(!integration_expr_divide_rational_coefficients(*this, denominator,
+                common, variable, degree_budget, reduced)) return false;
+        denominator = std::move(reduced);
+        if(denominator.size() < 2) return false;
+        integration_expr_poly partial(denominator.size() - 1, integer(0));
+        for(size_t i = 1; i < denominator.size(); ++i)
+            partial[i - 1] = integer(i) * denominator[i];
+        integration_expr_poly squarefree_gcd, normal, special;
+        if(!integration_expr_gcd_rational_coefficients(*this, denominator,
+                partial, variable, degree_budget, squarefree_gcd) ||
+           squarefree_gcd.size() != 1 ||
+           !integration_differential_denominator_parts(*this, denominator,
+                generator, variable, options, normal, special) ||
+           special.size() != 1) return false;
+        integration_expr_poly polynomial, proper, derivative, inverse, quotient,
+            residue, characteristic;
+        if(!integration_expr_divmod_rational_coefficients(*this, numerator,
+                denominator, variable, degree_budget, polynomial, proper) ||
+           !integration_parse_expr_poly(*this, simplify(expand(differentiate(
+                integration_expr_poly_expr(*this, denominator, generator),
+                variable), 100000)), generator, derivative) ||
+           !integration_expr_inverse_mod_rational_coefficients(*this, derivative,
+                denominator, variable, degree_budget, inverse) ||
+           !integration_expr_divmod_rational_coefficients(*this,
+                integration_expr_mul(*this, proper, inverse), denominator,
+                variable, degree_budget, quotient, residue) ||
+           !integration_residue_characteristic_polynomial(*this, residue,
+                denominator, variable, options, characteristic)) return false;
+        // Constant residues have constant elementary symmetric functions.
+        for(const exact_expr &coefficient : characteristic){
+            integration_poly cn, cd;
+            if(!integration_parse_rational(coefficient, variable, cn, cd,
+                    degree_budget, verification_degree_budget) ||
+               !integration_normalize_rational(cn, cd)) return false;
+            if(cn.size() > 1 || cd.size() > 1){
+                result.status = risch_status::proven_nonelementary;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.diagnostic =
+                    "normal primitive poles have a nonconstant residue invariant";
+                return true;
+            }
+        }
+        return false;
+    };
+    if(classify_normal_primitive_residue()) return result;
     if(classify_logarithmic_rational_hyperexponential()) return result;
     auto classify_logarithmic_derivative_substitution = [&]() -> bool{
         std::vector<exact_expr> generators;
