@@ -668,9 +668,71 @@ int main(){
         exact_expr r = x*x*x-x,root = context.square_root(r);
         exact_expr original = root/(x+context.integer(2));
         auto solved = context.integrate_elementary(context.differentiate(original,x)+context.integer(1)/root,x);
-        assert(solved.status == risch_status::unsupported);
+        assert(solved.status == risch_status::proven_nonelementary);
         assert(solved.elementary_part != context.integer(0));
         assert(solved.remainder != context.integer(0));
+        exact_expr conservation = context.differentiate(original,x)+context.integer(1)/root-
+            context.differentiate(solved.elementary_part,x)-solved.remainder;
+        exact_expr z = context.symbol("_test_holomorphic_root");
+        std::vector<exact_expr> roots;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::square_root) roots.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i) self(self,part.operand(i));
+        };
+        collect(collect,conservation);
+        for(const auto &part : roots){
+            exact_expr relation = part.operand(0)-r;
+            assert(integration_normalize_expr_coefficient(context,relation,x,64));
+            assert(relation == context.integer(0));
+            conservation = context.substitute(conservation,part,z);
+        }
+        integration_expr_poly difference;
+        if(!integration_parse_algebraic_quotient(context,conservation,z,
+            {-r,context.integer(0),context.integer(1)},x,risch_options(),difference)){
+            fprintf(stderr,"holomorphic conservation: %s\n",conservation.to_string().c_str());
+            assert(false);
+        }
+        for(const auto &coefficient : difference)
+            assert(coefficient == context.integer(0));
+    }
+    {
+        exact_expr p = x*x*x-x;
+        integration_expr_poly modulus{-p,context.integer(0),context.integer(1)};
+        assert(integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),context.integer(1)/p},modulus,x,risch_options()));
+        assert(!integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),x/p},modulus,x,risch_options()));
+        assert(!integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(1),context.integer(1)/p},modulus,x,risch_options()));
+        exact_expr genus_two = context.power(x,context.integer(5))-x+context.integer(1);
+        modulus[0] = -genus_two;
+        assert(integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),x/genus_two},modulus,x,risch_options()));
+        risch_options tiny; tiny.maximum_degree = 2;
+        assert(!integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),x/genus_two},modulus,x,tiny));
+        modulus[0] = -x*x*(x+context.integer(1));
+        assert(!integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),context.integer(1)/(x*x*(x+context.integer(1)))},
+            modulus,x,risch_options()));
+        modulus[0] = -(x*x+context.integer(1));
+        assert(!integration_hyperelliptic_holomorphic_certificate(context,
+            {context.integer(0),context.integer(1)/(x*x+context.integer(1))},
+            modulus,x,risch_options()));
+        auto elliptic = context.integrate_elementary(context.integer(1)/context.square_root(p),x);
+        assert(elliptic.status == risch_status::proven_nonelementary);
+        assert(elliptic.remainder != context.integer(0));
+        auto higher_genus = context.integrate_elementary(x/context.square_root(genus_two),x);
+        assert(higher_genus.status == risch_status::proven_nonelementary);
+        exact_expr even_degree = context.power(x,context.integer(4))+context.integer(1);
+        auto quartic = context.integrate_elementary(
+            context.integer(1)/context.square_root(even_degree),x);
+        assert(quartic.status == risch_status::proven_nonelementary);
+        auto elementary = context.integrate_elementary(
+            context.integer(1)/context.square_root(x*x+context.integer(1)),x);
+        assert(elementary.status != risch_status::proven_nonelementary);
     }
     {
         integration_expr_poly modulus{-x,context.integer(1),context.integer(1)};

@@ -6775,6 +6775,41 @@ static bool integration_rational_square_status(
     return true;
 }
 
+// A nonzero holomorphic differential on a smooth projective curve has no
+// elementary primitive. For y^2=P(x), x^i dx/y (i<genus) are holomorphic.
+// Only certify this exact shape; a failed algebraic search proves nothing.
+static bool integration_hyperelliptic_holomorphic_certificate(
+    exact_context &context, const integration_expr_poly &residual,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options){
+    if(modulus.size() != 3 || residual.size() < 2 ||
+       residual[0] != context.integer(0)) return false;
+    for(size_t i = 2; i < residual.size(); ++i)
+        if(residual[i] != context.integer(0)) return false;
+    exact_expr middle = modulus[1], leading = modulus[2];
+    if(!integration_normalize_expr_coefficient(context,middle,variable,
+            options.maximum_degree) || middle != context.integer(0) ||
+       !integration_normalize_expr_coefficient(context,leading,variable,
+            options.maximum_degree) || leading == context.integer(0)) return false;
+    integration_poly p, pd;
+    if(!integration_parse_rational(-modulus[0]/leading,variable,p,pd,
+            options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(p,pd) || pd.size() != 1 ||
+       p.size() < 4 || p.size()-1 > options.maximum_degree ||
+       integration_gcd_poly(p,integration_derivative_poly(p)).size() != 1)
+        return false;
+    integration_poly numerator, denominator;
+    if(!integration_parse_rational(residual[1],variable,numerator,denominator,
+            options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(numerator,denominator) ||
+       integration_zero_poly(numerator)) return false;
+    integration_poly coefficient;
+    if(!integration_divide_poly(integration_mul(numerator,p),denominator,
+            coefficient) || integration_zero_poly(coefficient)) return false;
+    const size_t genus = (p.size()-2)/2;
+    return coefficient.size() <= genus;
+}
+
 // For independent square classes A and B, t=u+v is a primitive element of
 // Q(x)(u,v), where u^2=A and v^2=B. Preserve the chosen roots via t=u+v.
 static bool integration_biquadratic_field(
@@ -10049,12 +10084,17 @@ risch_result exact_context::integrate_elementary(
             }
         }
         exact_expr rest = integration_expr_poly_expr(*this, residual, root);
-        if(candidate == integer(0) && rest != integer(0)) return false;
+        const bool proven_holomorphic = rest != integer(0) &&
+            integration_hyperelliptic_holomorphic_certificate(*this,residual,
+                modulus,variable,options);
+        if(candidate == integer(0) && rest != integer(0) && !proven_holomorphic) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes ||
            rest.reachable_node_count() > options.maximum_nodes) return false;
-        result.status = rest == integer(0) ? risch_status::elementary : risch_status::unsupported;
+        result.status = rest == integer(0) ? risch_status::elementary :
+            proven_holomorphic ? risch_status::proven_nonelementary : risch_status::unsupported;
         result.elementary_part = std::move(candidate); result.remainder = std::move(rest);
         result.diagnostic = result.status == risch_status::elementary ? "" :
+            proven_holomorphic ? "nonzero holomorphic differential on a smooth hyperelliptic curve" :
             "algebraic remainder preserved after certified exact reduction";
         return true;
     };
