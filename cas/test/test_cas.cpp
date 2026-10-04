@@ -278,6 +278,43 @@ int main(){
         inverse_exponential_result.elementary_part, x) -
         context.integer(1) / ((context.integer(1) + context.e()) *
             context.exponential(x))) == context.integer(0));
+    exact_expr normal_exponential_denominator =
+        context.integer(1) + related_exponential_denominator;
+    exact_expr normalized_normal_denominator =
+        context.integer(1) +
+        (context.integer(1) + context.e()) * context.exponential(x);
+    risch_result normal_exponential_result = context.integrate_elementary(
+        context.integer(1) / normal_exponential_denominator, x);
+    assert(normal_exponential_result.status == risch_status::elementary);
+    assert(normal_exponential_result.elementary_part ==
+        x - context.natural_logarithm(normalized_normal_denominator));
+    risch_result normal_exponential_numerator = context.integrate_elementary(
+        shifted_exponential / normal_exponential_denominator, x);
+    assert(normal_exponential_numerator.status == risch_status::elementary);
+    assert(normal_exponential_numerator.remainder == context.integer(0));
+    assert(normal_exponential_numerator.conditions.empty());
+    risch_result normal_exponential_polynomial = context.integrate_elementary(
+        (context.integer(1) + context.power(context.exponential(x),
+            context.integer(3))) / normal_exponential_denominator, x);
+    assert(normal_exponential_polynomial.status == risch_status::elementary);
+    assert(normal_exponential_polynomial.remainder == context.integer(0));
+    exact_expr shifted_double_x = context.integer(2) * x;
+    exact_expr double_normal_denominator = context.integer(1) +
+        context.exponential(shifted_double_x) +
+        context.exponential(shifted_double_x + context.integer(1));
+    risch_result double_normal_result = context.integrate_elementary(
+        context.integer(1) / double_normal_denominator, x);
+    assert(double_normal_result.status == risch_status::elementary);
+    assert(double_normal_result.remainder == context.integer(0));
+    assert(double_normal_result.conditions.empty());
+    exact_expr negative_x = -x;
+    exact_expr negative_normal_denominator = context.integer(1) +
+        context.exponential(negative_x) +
+        context.exponential(negative_x + context.integer(1));
+    risch_result negative_normal_result = context.integrate_elementary(
+        context.integer(1) / negative_normal_denominator, x);
+    assert(negative_normal_result.status == risch_status::elementary);
+    assert(negative_normal_result.remainder == context.integer(0));
     risch_options related_exponential_budget;
     related_exponential_budget.maximum_recursion_depth = 1;
     assert(context.integrate_elementary(

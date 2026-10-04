@@ -9411,7 +9411,7 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(normalize_integer_related_exponentials()) return result;
-    auto classify_constant_coefficient_exponential_monomial = [&]() -> bool{
+    auto classify_constant_coefficient_exponential_rational = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
         bool multiple_generators = false;
@@ -9452,15 +9452,14 @@ risch_result exact_context::integrate_elementary(
         for(const exact_expr &coefficient : numerator)
             if(!exact_constant(coefficient)) return false;
         size_t denominator_degree = 0;
-        bool found = false;
+        size_t nonzero_coefficients = 0;
         for(size_t i = 0; i < denominator.size(); ++i){
             if(!exact_constant(denominator[i])) return false;
             if(integration_expr_zero(*this, denominator[i])) continue;
-            if(found) return false;
             denominator_degree = i;
-            found = true;
+            ++nonzero_coefficients;
         }
-        if(!found || denominator_degree == 0) return false;
+        if(nonzero_coefficients == 0 || denominator_degree == 0) return false;
         auto positive_constant = [&](auto &&self, const exact_expr &part) -> bool{
             if(part.is_value()) return !part.value().is_approximate() &&
                 !part.value().is_zero() && !part.value().is_negative();
@@ -9474,45 +9473,106 @@ risch_result exact_context::integrate_elementary(
                 if(!self(self, part.operand(i))) return false;
             return part.operand_count() != 0;
         };
-        if(!positive_constant(positive_constant,
-                denominator[denominator_degree])) return false;
         exact_expr candidate = integer(0);
-        for(size_t i = 0; i < numerator.size(); ++i){
-            if(integration_expr_zero(*this, numerator[i])) continue;
-            int64_t exponent = (int64_t)i - (int64_t)denominator_degree;
-            exact_expr monomial = exponent == 0 ? integer(1) :
-                power(generator, integer(exponent));
-            risch_result term = integrate_elementary(monomial, variable, options);
-            if(term.status == risch_status::resource_limit ||
-               term.status == risch_status::verification_failed){
-                result.status = term.status;
-                result.diagnostic = std::move(term.diagnostic);
-                return true;
+        if(nonzero_coefficients == 1){
+            if(!positive_constant(positive_constant,
+                    denominator[denominator_degree])) return false;
+            for(size_t i = 0; i < numerator.size(); ++i){
+                if(integration_expr_zero(*this, numerator[i])) continue;
+                int64_t exponent = (int64_t)i - (int64_t)denominator_degree;
+                exact_expr monomial = exponent == 0 ? integer(1) :
+                    power(generator, integer(exponent));
+                risch_result term = integrate_elementary(monomial, variable, options);
+                if(term.status == risch_status::resource_limit ||
+                   term.status == risch_status::verification_failed){
+                    result.status = term.status;
+                    result.diagnostic = std::move(term.diagnostic);
+                    return true;
+                }
+                if(term.status != risch_status::elementary ||
+                   term.remainder != integer(0) || !term.conditions.empty()) return false;
+                candidate = candidate + numerator[i] /
+                    denominator[denominator_degree] * term.elementary_part;
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic = "constant-coefficient exponential result node budget exceeded";
+                    return true;
+                }
             }
-            if(term.status != risch_status::elementary ||
-               term.remainder != integer(0) || !term.conditions.empty()) return false;
-            candidate = candidate + numerator[i] /
-                denominator[denominator_degree] * term.elementary_part;
-            if(candidate.reachable_node_count() > options.maximum_nodes){
-                result.status = risch_status::resource_limit;
-                result.diagnostic = "constant-coefficient exponential result node budget exceeded";
-                return true;
+        }else if(nonzero_coefficients == 2 && denominator_degree == 1 &&
+                 argument_n.size() == 2 &&
+                 argument_d.size() == 1 &&
+                 positive_constant(positive_constant, denominator[0]) &&
+                 positive_constant(positive_constant, denominator[1])){
+            numeric_value slope = argument_n[1] / argument_d[0];
+            if(slope.is_zero()) return false;
+            exact_expr d0 = denominator[0], d1 = denominator[1];
+            integration_expr_poly remainder = numerator;
+            integration_expr_poly quotient(numerator.size() - 1, integer(0));
+            for(size_t i = numerator.size(); i-- > 1;){
+                quotient[i - 1] = remainder[i] / d1;
+                remainder[i - 1] = simplify(remainder[i - 1] -
+                    quotient[i - 1] * d0);
             }
+            candidate = numerator[0] / d0 * variable;
+            for(size_t i = 1; i < quotient.size(); ++i){
+                if(integration_expr_zero(*this, quotient[i])) continue;
+                candidate = candidate + quotient[i] *
+                    power(generator, integer(i)) /
+                    value(slope * numeric_value(i));
+            }
+            // t'=slope*t: the polynomial quotient integrates termwise,
+            // while the proper normal pole has a logarithmic primitive.
+            exact_expr proper = remainder[0] / d0;
+            candidate = candidate - proper / value(slope) *
+                natural_logarithm(d0+d1*generator);
+        }else return false;
+        if(candidate.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.diagnostic = "constant-coefficient exponential result node budget exceeded";
+            return true;
         }
         exact_expr difference = differentiate(candidate, variable) - expression;
         integration_expr_poly check_n, check_d;
         if(difference.reachable_node_count() > options.maximum_nodes ||
            !integration_parse_expr_rational(*this, difference, generator,
                 check_n, check_d, verification_degree_budget)) return false;
+        auto zero_constant_coefficient = [&](const exact_expr &coefficient) -> bool{
+            if(integration_expr_zero(*this, coefficient)) return true;
+            exact_expr constant_generator;
+            bool multiple = false;
+            std::unordered_set<uint32_t> visited;
+            auto collect_constant = [&](auto &&self, const exact_expr &part) -> void{
+                if(!visited.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::constant_e ||
+                   (part.operation() == exact_opcode::exponential &&
+                    !integration_depends_on(part, variable))){
+                    if(constant_generator.valid() && constant_generator != part)
+                        multiple = true;
+                    else constant_generator = part;
+                    return;
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_constant(collect_constant, coefficient);
+            if(multiple || !constant_generator.valid()) return false;
+            integration_expr_poly n, d;
+            if(!integration_parse_expr_rational(*this, coefficient,
+                    constant_generator, n, d, verification_degree_budget)) return false;
+            for(const exact_expr &v : n)
+                if(!integration_expr_zero(*this, v)) return false;
+            return true;
+        };
         for(const exact_expr &coefficient : check_n)
-            if(!integration_expr_zero(*this, coefficient)) return false;
+            if(!zero_constant_coefficient(coefficient)) return false;
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);
         result.diagnostic.clear();
         return true;
     };
-    if(classify_constant_coefficient_exponential_monomial()) return result;
+    if(classify_constant_coefficient_exponential_rational()) return result;
     auto classify_constant_multiple = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
         std::vector<exact_expr> constants, dependent;
