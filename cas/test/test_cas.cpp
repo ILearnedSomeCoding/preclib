@@ -482,6 +482,34 @@ int main(){
          context.power(context.exponential(x), context.integer(2))), x);
     assert(quadratic_normal_pole.status == risch_status::elementary);
     assert(quadratic_normal_pole.remainder == context.integer(0));
+    risch_result related_quadratic_pole = context.integrate_elementary(
+        context.integer(1) /
+        (context.integer(1) + context.exponential(x) +
+         context.exponential(context.integer(2) * x)), x);
+    assert(related_quadratic_pole.status == risch_status::elementary);
+    assert(related_quadratic_pole.remainder == context.integer(0));
+    risch_options related_rational_budget;
+    related_rational_budget.maximum_recursion_depth = 1;
+    assert(context.integrate_elementary(
+        context.integer(1) /
+            (context.integer(1) + context.exponential(x) +
+             context.exponential(context.integer(2) * x)),
+        x, related_rational_budget).status == risch_status::elementary);
+    risch_result opposite_exponential_pole = context.integrate_elementary(
+        context.integer(1) /
+            (context.integer(1) + context.exponential(x) +
+             context.exponential(-x)),
+        x, related_rational_budget);
+    assert(opposite_exponential_pole.status == risch_status::elementary);
+    assert(opposite_exponential_pole.remainder == context.integer(0));
+    risch_result fractional_exponential_pole = context.integrate_elementary(
+        context.integer(1) /
+            (context.integer(1) +
+             context.exponential(x / context.integer(2)) +
+             context.exponential(x)),
+        x, related_rational_budget);
+    assert(fractional_exponential_pole.status == risch_status::elementary);
+    assert(fractional_exponential_pole.remainder == context.integer(0));
     risch_result cubic_normal_pole = context.integrate_elementary(
         context.integer(1) /
         (context.integer(1) +
