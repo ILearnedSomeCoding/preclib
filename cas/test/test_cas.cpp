@@ -355,6 +355,43 @@ int main(){
     assert(repeated_symbolic_pole.remainder == context.integer(0));
     assert(has_condition(repeated_symbolic_pole, nonzero_a));
     assert(!has_condition(repeated_symbolic_pole, nonzero_b));
+    risch_result repeated_polynomial_pole = context.integrate_elementary(
+        (context.integer(1) + context.power(context.exponential(x),
+            context.integer(4))) *
+            context.power(nonzero_a + nonzero_b * context.exponential(x),
+                context.integer(-3)), x);
+    assert(repeated_polynomial_pole.status == risch_status::elementary);
+    assert(repeated_polynomial_pole.remainder == context.integer(0));
+    assert(has_condition(repeated_polynomial_pole, nonzero_a));
+    assert(has_condition(repeated_polynomial_pole, nonzero_b));
+    risch_result repeated_cancelled_log = context.integrate_elementary(
+        context.exponential(x) *
+            context.power(nonzero_a + nonzero_b * context.exponential(x),
+                context.integer(-2)), x);
+    assert(repeated_cancelled_log.status == risch_status::elementary);
+    assert(repeated_cancelled_log.remainder == context.integer(0));
+    assert(!has_condition(repeated_cancelled_log, nonzero_a));
+    assert(has_condition(repeated_cancelled_log, nonzero_b));
+    risch_result two_normal_poles = context.integrate_elementary(
+        context.integer(1) /
+            ((context.integer(1) + context.exponential(x)) *
+             (context.integer(2) + context.exponential(x))), x);
+    assert(two_normal_poles.status == risch_status::elementary);
+    assert(two_normal_poles.remainder == context.integer(0));
+    exact_expr pole_c = context.symbol("_risch_pole_c");
+    exact_expr pole_d = context.symbol("_risch_pole_d");
+    exact_expr two_symbolic_input =
+        context.integer(1) /
+            ((nonzero_a + nonzero_b * context.exponential(x)) *
+             (pole_c + pole_d * context.exponential(x)));
+    risch_result two_symbolic_normal_poles = context.integrate_elementary(
+        two_symbolic_input, x);
+    assert(two_symbolic_normal_poles.status == risch_status::elementary);
+    assert(two_symbolic_normal_poles.remainder == context.integer(0));
+    assert(has_condition(two_symbolic_normal_poles, nonzero_a));
+    assert(has_condition(two_symbolic_normal_poles, pole_c));
+    assert(has_condition(two_symbolic_normal_poles,
+        nonzero_b * pole_c - nonzero_a * pole_d));
     risch_result repeated_specialized_pole = context.integrate_elementary(
         context.power(nonzero_b * context.exponential(x),
             context.integer(-3)), x);

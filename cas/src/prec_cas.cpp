@@ -9576,14 +9576,32 @@ risch_result exact_context::integrate_elementary_impl(
         if(nonzero_coefficients == 0 || denominator_degree == 0) return false;
         exact_expr candidate = integer(0);
         bool repeated_linear_pole = false;
-        if(expression.operation() == exact_opcode::power){
+        exact_expr pole_power;
+        exact_expr polynomial_factor = integer(1);
+        if(expression.operation() == exact_opcode::power)
+            pole_power = expression;
+        else if(expression.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr factor = expression.operand(i);
+                int64_t power = 0;
+                if(factor.operation() == exact_opcode::power &&
+                   integration_signed_exponent(factor.operand(1), power) &&
+                   power <= -2 && !pole_power.valid())
+                    pole_power = factor;
+                else polynomial_factor = polynomial_factor * factor;
+            }
+        }
+        if(pole_power.valid()){
             int64_t exponent = 0;
-            if(integration_signed_exponent(expression.operand(1), exponent) &&
+            if(integration_signed_exponent(pole_power.operand(1), exponent) &&
                exponent <= -2 && exponent >= -(int64_t)degree_budget &&
                argument_n.size() == 2 && argument_d.size() == 1){
-                integration_expr_poly base_n, base_d;
-                if(integration_parse_expr_rational(*this, expression.operand(0),
+                integration_expr_poly base_n, base_d, polynomial;
+                if(integration_parse_expr_rational(*this, pole_power.operand(0),
                         generator, base_n, base_d, degree_budget) &&
+                   integration_parse_expr_poly(*this, polynomial_factor,
+                        generator, polynomial) &&
+                   !polynomial.empty() && polynomial.size() <= degree_budget &&
                    base_n.size() == 2 && base_d.size() == 1 &&
                    integration_formal_constant_zero(*this, base_d[0] - integer(1),
                         variable, verification_degree_budget) &&
@@ -9592,23 +9610,138 @@ risch_result exact_context::integrate_elementary_impl(
                         verification_degree_budget) &&
                    !integration_formal_constant_zero(*this, base_n[1], variable,
                         verification_degree_budget)){
+                    bool constant_polynomial = true;
+                    for(const exact_expr &coefficient : polynomial)
+                        if(!exact_constant(coefficient)) constant_polynomial = false;
+                    if(!constant_polynomial) return false;
                     size_t order = (size_t)-exponent;
                     numeric_value slope = argument_n[1] / argument_d[0];
                     exact_expr a = base_n[0];
-                    exact_expr pole = expression.operand(0);
-                    exact_expr a_power = power(a, integer(order));
-                    candidate = variable / a_power -
-                        natural_logarithm(pole) / (value(slope) * a_power);
-                    for(size_t k = 2; k <= order; ++k)
-                        candidate = candidate + integer(1) /
-                            (value(slope * numeric_value(k - 1)) *
-                             power(a, integer(order - k + 1)) *
-                             power(pole, integer(k - 1)));
+                    exact_expr b = base_n[1];
+                    exact_expr pole = pole_power.operand(0);
+                    std::vector<exact_expr> residues(order + 1, integer(0));
+                    for(size_t k = order; k > 0; --k){
+                        if(polynomial.size() == 1){
+                            residues[k] = polynomial[0];
+                            polynomial[0] = integer(0);
+                            continue;
+                        }
+                        integration_expr_poly quotient(polynomial.size() - 1,
+                            integer(0));
+                        for(size_t i = polynomial.size() - 1; i > 0; --i)
+                            quotient[i - 1] = simplify((polynomial[i] -
+                                (i < quotient.size() ? a * quotient[i] : integer(0))) / b);
+                        residues[k] = simplify(polynomial[0] - a * quotient[0]);
+                        polynomial = std::move(quotient);
+                    }
+                    candidate = polynomial[0] * variable;
+                    for(size_t i = 1; i < polynomial.size(); ++i)
+                        candidate = candidate + polynomial[i] *
+                            power(generator, integer(i)) /
+                            value(slope * numeric_value(i));
+                    exact_expr log_coefficient = integer(0);
+                    for(size_t k = 1; k <= order; ++k)
+                        log_coefficient = log_coefficient +
+                            residues[k] / power(a, integer(k));
+                    log_coefficient = simplify(log_coefficient);
+                    if(!integration_formal_constant_zero(*this,
+                            log_coefficient, variable,
+                            verification_degree_budget))
+                        candidate = candidate + log_coefficient * variable -
+                            log_coefficient / value(slope) *
+                            natural_logarithm(pole);
+                    for(size_t j = 1; j < order; ++j){
+                        exact_expr coefficient = integer(0);
+                        for(size_t k = j + 1; k <= order; ++k)
+                            coefficient = coefficient +
+                                residues[k] / power(a, integer(k - j));
+                        coefficient = simplify(coefficient);
+                        if(integration_formal_constant_zero(*this, coefficient,
+                                variable, verification_degree_budget)) continue;
+                        candidate = candidate + coefficient /
+                            (value(slope * numeric_value(j)) *
+                             power(pole, integer(j)));
+                    }
                     repeated_linear_pole = true;
                 }
             }
         }
-        if(!repeated_linear_pole && nonzero_coefficients == 1){
+        bool two_linear_poles = false;
+        if(!repeated_linear_pole && numerator.size() == 1 &&
+           argument_n.size() == 2 && argument_d.size() == 1){
+            std::vector<exact_expr> factors;
+            exact_expr scalar = integer(1);
+            auto collect_factor = [&](const exact_expr &factor) -> bool{
+                if(factor.operation() != exact_opcode::power){
+                    if(!exact_constant(factor)) return false;
+                    scalar = scalar * factor;
+                    return true;
+                }
+                int64_t exponent = 0;
+                if(!integration_signed_exponent(factor.operand(1), exponent) ||
+                   exponent != -1) return false;
+                exact_expr base = factor.operand(0);
+                if(base.operation() == exact_opcode::multiply &&
+                   base.operand_count() == 2){
+                    factors.push_back(base.operand(0));
+                    factors.push_back(base.operand(1));
+                }else factors.push_back(base);
+                return factors.size() <= 2;
+            };
+            bool shape = true;
+            if(expression.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < expression.operand_count(); ++i)
+                    if(!collect_factor(expression.operand(i))){
+                        shape = false;
+                        break;
+                    }
+            }else shape = collect_factor(expression);
+            if(shape && factors.size() == 2){
+                integration_expr_poly first_n, first_d, second_n, second_d;
+                exact_expr first = factors[0], second = factors[1];
+                if(integration_parse_expr_rational(*this, first, generator,
+                        first_n, first_d, degree_budget) &&
+                   integration_parse_expr_rational(*this, second, generator,
+                        second_n, second_d, degree_budget) &&
+                   first_n.size() == 2 && second_n.size() == 2 &&
+                   first_d.size() == 1 && second_d.size() == 1 &&
+                   integration_formal_constant_zero(*this,
+                        first_d[0] - integer(1), variable,
+                        verification_degree_budget) &&
+                   integration_formal_constant_zero(*this,
+                        second_d[0] - integer(1), variable,
+                        verification_degree_budget)){
+                    exact_expr a = first_n[0], b = first_n[1];
+                    exact_expr c = second_n[0], d = second_n[1];
+                    if(exact_constant(a) && exact_constant(b) &&
+                       exact_constant(c) && exact_constant(d) &&
+                       !(a.is_value() && b.is_value() &&
+                         c.is_value() && d.is_value())){
+                        exact_expr determinant = b*c - a*d;
+                        if(!integration_formal_constant_zero(*this, a, variable,
+                                verification_degree_budget) &&
+                           !integration_formal_constant_zero(*this, b, variable,
+                                verification_degree_budget) &&
+                           !integration_formal_constant_zero(*this, c, variable,
+                                verification_degree_budget) &&
+                           !integration_formal_constant_zero(*this, d, variable,
+                                verification_degree_budget) &&
+                           !integration_formal_constant_zero(*this, determinant,
+                                variable, verification_degree_budget)){
+                            numeric_value slope = argument_n[1] / argument_d[0];
+                            exact_expr first_primitive = variable / a -
+                                natural_logarithm(first) / (value(slope) * a);
+                            exact_expr second_primitive = variable / c -
+                                natural_logarithm(second) / (value(slope) * c);
+                            candidate = scalar * (b*first_primitive -
+                                d*second_primitive) / determinant;
+                            two_linear_poles = true;
+                        }
+                    }
+                }
+            }
+        }
+        if(!repeated_linear_pole && !two_linear_poles && nonzero_coefficients == 1){
             for(size_t i = 0; i < numerator.size(); ++i){
                 if(integration_expr_zero(*this, numerator[i])) continue;
                 int64_t exponent = (int64_t)i - (int64_t)denominator_degree;
@@ -9631,7 +9764,8 @@ risch_result exact_context::integrate_elementary_impl(
                     return true;
                 }
             }
-        }else if(!repeated_linear_pole && nonzero_coefficients == 2 &&
+        }else if(!repeated_linear_pole && !two_linear_poles &&
+                 nonzero_coefficients == 2 &&
                  denominator_degree == 1 &&
                  argument_n.size() == 2 &&
                  argument_d.size() == 1){
@@ -9657,7 +9791,7 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr proper = remainder[0] / d0;
             candidate = candidate - proper / value(slope) *
                 natural_logarithm(d0+d1*generator);
-        }else if(!repeated_linear_pole) return false;
+        }else if(!repeated_linear_pole && !two_linear_poles) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes){
             result.status = risch_status::resource_limit;
             result.diagnostic = "constant-coefficient exponential result node budget exceeded";
