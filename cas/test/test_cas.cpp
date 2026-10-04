@@ -318,9 +318,12 @@ int main(){
     assert(negative_normal_result.remainder == context.integer(0));
     risch_options related_exponential_budget;
     related_exponential_budget.maximum_recursion_depth = 1;
-    assert(context.integrate_elementary(
+    risch_result related_shallow = context.integrate_elementary(
         context.integer(1) / related_exponential_denominator, x,
-        related_exponential_budget).status == risch_status::resource_limit);
+        related_exponential_budget);
+    assert(related_shallow.status == risch_status::elementary);
+    assert(related_shallow.remainder == context.integer(0));
+    assert(related_shallow.conditions.empty());
     assert(context.integrate_elementary(context.e()*exp_x_squared, x).status ==
         risch_status::proven_nonelementary);
     exact_expr nonzero_a = context.symbol("_risch_nonzero_a");

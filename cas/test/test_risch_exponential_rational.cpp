@@ -125,6 +125,53 @@ int main(){
             (b*nonlinear_t+c*context.power(nonlinear_t,
                 context.integer(2))), x, options);
     assert(nonlinear_zero_constant.status == risch_status::elementary);
+    risch_result symbolic_shift = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+t+
+            context.exponential(x+a)), x, options);
+    assert(symbolic_shift.status == risch_status::elementary);
+    assert(symbolic_shift.remainder == context.integer(0));
+    exact_expr shifted_linear_coefficient = context.integer(1)+
+        context.exponential(a);
+    assert(std::find(symbolic_shift.conditions.begin(),
+        symbolic_shift.conditions.end(), shifted_linear_coefficient) !=
+        symbolic_shift.conditions.end());
+    risch_result two_symbolic_shifts = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+
+            context.exponential(x+a)+
+            context.exponential(context.integer(2)*x+b)), x, options);
+    assert(two_symbolic_shifts.status == risch_status::elementary);
+    risch_result nonlinear_symbolic_shifts = context.integrate_elementary(
+        context.integer(2)*x/(context.integer(1)+
+            context.exponential(context.power(x, context.integer(2))+a)+
+            context.exponential(context.integer(2)*
+                context.power(x, context.integer(2))+b)), x, options);
+    assert(nonlinear_symbolic_shifts.status == risch_status::elementary);
+    exact_expr symbolic_slope_t = context.exponential(a*x);
+    risch_result symbolic_slope_linear = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+symbolic_slope_t), x, options);
+    assert(symbolic_slope_linear.status == risch_status::elementary);
+    assert(std::find(symbolic_slope_linear.conditions.begin(),
+        symbolic_slope_linear.conditions.end(), a) !=
+        symbolic_slope_linear.conditions.end());
+    risch_result symbolic_slope_quadratic = context.integrate_elementary(
+        context.integer(1)/(b+symbolic_slope_t+
+            c*context.power(symbolic_slope_t, context.integer(2))),
+        x, options);
+    assert(symbolic_slope_quadratic.status == risch_status::elementary);
+    assert(std::find(symbolic_slope_quadratic.conditions.begin(),
+        symbolic_slope_quadratic.conditions.end(), a) !=
+        symbolic_slope_quadratic.conditions.end());
+    exact_expr shifted_symbolic_slope_t = context.exponential(a*x+b);
+    risch_result shifted_symbolic_slope = context.integrate_elementary(
+        (context.integer(1)+context.power(shifted_symbolic_slope_t,
+            context.integer(4))) /
+            (context.integer(1)+shifted_symbolic_slope_t+
+             c*context.power(shifted_symbolic_slope_t,
+                 context.integer(2))), x, options);
+    assert(shifted_symbolic_slope.status == risch_status::elementary);
+    assert(std::find(shifted_symbolic_slope.conditions.begin(),
+        shifted_symbolic_slope.conditions.end(), a) !=
+        shifted_symbolic_slope.conditions.end());
     risch_result missing_chain = context.integrate_elementary(
         context.integer(1)/nonlinear_denominator, x, options);
     assert(missing_chain.status != risch_status::elementary);
