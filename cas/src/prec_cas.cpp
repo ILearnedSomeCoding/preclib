@@ -4230,6 +4230,47 @@ static bool integration_parse_expr_rational(
     return true;
 }
 
+static bool integration_formal_constant_zero(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, size_t degree, size_t generators_left = 6){
+    if(integration_expr_zero(context, expression)) return true;
+    if(generators_left == 0 || integration_depends_on(expression, variable))
+        return false;
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> visited;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!visited.insert(part.id()).second || part.is_value()) return;
+        exact_opcode op = part.operation();
+        bool arithmetic = op == exact_opcode::add ||
+            op == exact_opcode::multiply;
+        if(op == exact_opcode::power){
+            int64_t exponent = 0;
+            arithmetic = integration_signed_exponent(part.operand(1), exponent);
+        }
+        if(!arithmetic){
+            generators.push_back(part);
+            return;
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    for(const exact_expr &generator : generators){
+        integration_expr_poly n, d;
+        if(!integration_parse_expr_rational(context, expression, generator,
+                n, d, degree)) continue;
+        bool zero = true;
+        for(const exact_expr &coefficient : n)
+            if(!integration_formal_constant_zero(context, coefficient,
+                    variable, degree, generators_left - 1)){
+                zero = false;
+                break;
+            }
+        if(zero) return true;
+    }
+    return false;
+}
+
 static bool integration_normalize_expr_coefficient(
     exact_context &context, exact_expr &coefficient, const exact_expr &variable, size_t degree){
     integration_poly cn, cd;
@@ -9527,15 +9568,47 @@ risch_result exact_context::integrate_elementary_impl(
         size_t nonzero_coefficients = 0;
         for(size_t i = 0; i < denominator.size(); ++i){
             if(!exact_constant(denominator[i])) return false;
-            if(integration_expr_zero(*this, denominator[i])) continue;
+            if(integration_formal_constant_zero(*this, denominator[i], variable,
+                    verification_degree_budget)) continue;
             denominator_degree = i;
             ++nonzero_coefficients;
         }
         if(nonzero_coefficients == 0 || denominator_degree == 0) return false;
         exact_expr candidate = integer(0);
-        if(nonzero_coefficients == 1){
-            if(!integration_strictly_positive_constant(
-                    denominator[denominator_degree])) return false;
+        bool repeated_linear_pole = false;
+        if(expression.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            if(integration_signed_exponent(expression.operand(1), exponent) &&
+               exponent <= -2 && exponent >= -(int64_t)degree_budget &&
+               argument_n.size() == 2 && argument_d.size() == 1){
+                integration_expr_poly base_n, base_d;
+                if(integration_parse_expr_rational(*this, expression.operand(0),
+                        generator, base_n, base_d, degree_budget) &&
+                   base_n.size() == 2 && base_d.size() == 1 &&
+                   integration_formal_constant_zero(*this, base_d[0] - integer(1),
+                        variable, verification_degree_budget) &&
+                   exact_constant(base_n[0]) && exact_constant(base_n[1]) &&
+                   !integration_formal_constant_zero(*this, base_n[0], variable,
+                        verification_degree_budget) &&
+                   !integration_formal_constant_zero(*this, base_n[1], variable,
+                        verification_degree_budget)){
+                    size_t order = (size_t)-exponent;
+                    numeric_value slope = argument_n[1] / argument_d[0];
+                    exact_expr a = base_n[0];
+                    exact_expr pole = expression.operand(0);
+                    exact_expr a_power = power(a, integer(order));
+                    candidate = variable / a_power -
+                        natural_logarithm(pole) / (value(slope) * a_power);
+                    for(size_t k = 2; k <= order; ++k)
+                        candidate = candidate + integer(1) /
+                            (value(slope * numeric_value(k - 1)) *
+                             power(a, integer(order - k + 1)) *
+                             power(pole, integer(k - 1)));
+                    repeated_linear_pole = true;
+                }
+            }
+        }
+        if(!repeated_linear_pole && nonzero_coefficients == 1){
             for(size_t i = 0; i < numerator.size(); ++i){
                 if(integration_expr_zero(*this, numerator[i])) continue;
                 int64_t exponent = (int64_t)i - (int64_t)denominator_degree;
@@ -9558,11 +9631,10 @@ risch_result exact_context::integrate_elementary_impl(
                     return true;
                 }
             }
-        }else if(nonzero_coefficients == 2 && denominator_degree == 1 &&
+        }else if(!repeated_linear_pole && nonzero_coefficients == 2 &&
+                 denominator_degree == 1 &&
                  argument_n.size() == 2 &&
-                 argument_d.size() == 1 &&
-                 integration_strictly_positive_constant(denominator[0]) &&
-                 integration_strictly_positive_constant(denominator[1])){
+                 argument_d.size() == 1){
             numeric_value slope = argument_n[1] / argument_d[0];
             if(slope.is_zero()) return false;
             exact_expr d0 = denominator[0], d1 = denominator[1];
@@ -9585,7 +9657,7 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr proper = remainder[0] / d0;
             candidate = candidate - proper / value(slope) *
                 natural_logarithm(d0+d1*generator);
-        }else return false;
+        }else if(!repeated_linear_pole) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes){
             result.status = risch_status::resource_limit;
             result.diagnostic = "constant-coefficient exponential result node budget exceeded";
@@ -9596,35 +9668,9 @@ risch_result exact_context::integrate_elementary_impl(
         if(difference.reachable_node_count() > options.maximum_nodes ||
            !integration_parse_expr_rational(*this, difference, generator,
                 check_n, check_d, verification_degree_budget)) return false;
-        auto zero_constant_coefficient = [&](const exact_expr &coefficient) -> bool{
-            if(integration_expr_zero(*this, coefficient)) return true;
-            exact_expr constant_generator;
-            bool multiple = false;
-            std::unordered_set<uint32_t> visited;
-            auto collect_constant = [&](auto &&self, const exact_expr &part) -> void{
-                if(!visited.insert(part.id()).second) return;
-                if(part.operation() == exact_opcode::constant_e ||
-                   (part.operation() == exact_opcode::exponential &&
-                    !integration_depends_on(part, variable))){
-                    if(constant_generator.valid() && constant_generator != part)
-                        multiple = true;
-                    else constant_generator = part;
-                    return;
-                }
-                for(size_t i = 0; i < part.operand_count(); ++i)
-                    self(self, part.operand(i));
-            };
-            collect_constant(collect_constant, coefficient);
-            if(multiple || !constant_generator.valid()) return false;
-            integration_expr_poly n, d;
-            if(!integration_parse_expr_rational(*this, coefficient,
-                    constant_generator, n, d, verification_degree_budget)) return false;
-            for(const exact_expr &v : n)
-                if(!integration_expr_zero(*this, v)) return false;
-            return true;
-        };
         for(const exact_expr &coefficient : check_n)
-            if(!zero_constant_coefficient(coefficient)) return false;
+            if(!integration_formal_constant_zero(*this, coefficient, variable,
+                    verification_degree_budget)) return false;
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);
