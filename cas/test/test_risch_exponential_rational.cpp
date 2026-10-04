@@ -206,6 +206,78 @@ int main(){
     assert(shared_parameter_condition.status == risch_status::elementary);
     assert(std::count(shared_parameter_condition.conditions.begin(),
         shared_parameter_condition.conditions.end(), a) == 1);
+    risch_options tower_options;
+    tower_options.maximum_recursion_depth = 4;
+    exact_expr exp_x_squared = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr related_rde_input = context.integer(2)*x*exp_x_squared +
+        (context.integer(1)+context.integer(2)*
+            context.power(x, context.integer(2))) *
+        context.exponential(context.power(x, context.integer(2))+
+            context.integer(1));
+    risch_result related_rde = context.integrate_elementary(related_rde_input,
+        x, tower_options);
+    assert(related_rde.status == risch_status::elementary);
+    assert(related_rde.remainder == context.integer(0));
+    risch_result cancelled_nonelementary = context.integrate_elementary(
+        context.exponential(context.power(x, context.integer(2))+
+            context.integer(1)) - context.e()*exp_x_squared,
+        x, tower_options);
+    assert(cancelled_nonelementary.status == risch_status::elementary);
+    assert(cancelled_nonelementary.remainder == context.integer(0));
+    exact_expr log_x = context.natural_logarithm(x);
+    risch_result mixed_exponential_primitive = context.integrate_elementary(
+        exp_x_squared*(context.integer(2)*x*log_x +
+            context.integer(1)/x), x, tower_options);
+    assert(mixed_exponential_primitive.status == risch_status::elementary);
+    assert(mixed_exponential_primitive.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        mixed_exponential_primitive.elementary_part, x) -
+        exp_x_squared*(context.integer(2)*x*log_x +
+            context.integer(1)/x)) == context.integer(0));
+    exact_expr mixed_pole_primitive = exp_x_squared*log_x/(x+context.integer(1));
+    exact_expr mixed_pole_integrand = exp_x_squared *
+        ((context.integer(2)*x/(x+context.integer(1)) -
+          context.integer(1)/context.power(x+context.integer(1), context.integer(2))) *
+            log_x + context.integer(1)/(x*(x+context.integer(1))));
+    risch_result mixed_pole = context.integrate_elementary(
+        mixed_pole_integrand, x, tower_options);
+    assert(mixed_pole.status == risch_status::elementary);
+    assert(mixed_pole.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(mixed_pole.elementary_part, x) -
+        mixed_pole_integrand, 100000)) == context.integer(0));
+    exact_expr mixed_denominator = context.integer(1) +
+        context.exponential(x)*log_x;
+    exact_expr mixed_denominator_derivative = context.exponential(x)*
+        (log_x + context.integer(1)/x);
+    risch_result mixed_repeated_pole = context.integrate_elementary(
+        mixed_denominator_derivative /
+            context.power(mixed_denominator, context.integer(2)),
+        x, tower_options);
+    assert(mixed_repeated_pole.status == risch_status::elementary);
+    assert(mixed_repeated_pole.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(mixed_repeated_pole.elementary_part, x) -
+        mixed_denominator_derivative /
+            context.power(mixed_denominator, context.integer(2)),
+        100000)) == context.integer(0));
+    risch_result mixed_cubic_pole = context.integrate_elementary(
+        context.integer(7)*mixed_denominator_derivative /
+            context.power(mixed_denominator, context.integer(3)),
+        x, tower_options);
+    assert(mixed_cubic_pole.status == risch_status::elementary);
+    assert(mixed_cubic_pole.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(mixed_cubic_pole.elementary_part, x) -
+        context.integer(7)*mixed_denominator_derivative /
+            context.power(mixed_denominator, context.integer(3)),
+        100000)) == context.integer(0));
+    risch_result unmatched_mixed_pole = context.integrate_elementary(
+        context.exponential(x) /
+            context.power(mixed_denominator, context.integer(2)),
+        x, tower_options);
+    assert(unmatched_mixed_pole.status != risch_status::elementary);
     risch_result missing_chain = context.integrate_elementary(
         context.integer(1)/nonlinear_denominator, x, options);
     assert(missing_chain.status != risch_status::elementary);

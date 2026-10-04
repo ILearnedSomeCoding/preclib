@@ -9321,6 +9321,34 @@ risch_result exact_context::integrate_elementary_impl(
         result.diagnostic.clear();
         return true;
         };
+        // A repeated pole whose numerator is a constant multiple of D(p)
+        // has an exact primitive in any admitted differential tower.
+        std::vector<exact_expr> factors;
+        integration_factor_list(expression, factors);
+        size_t expansion_budget = std::min(options.maximum_nodes, (size_t)100000);
+        for(const exact_expr &factor : factors){
+            if(factor.operation() != exact_opcode::power) continue;
+            int64_t exponent = 0;
+            if(!integration_signed_exponent(factor.operand(1), exponent) ||
+               exponent > -2 || exponent < -(int64_t)degree_budget) continue;
+            exact_expr base = factor.operand(0);
+            if(!integration_depends_on(base, variable)) continue;
+            exact_expr derivative = simplify(expand(
+                differentiate(base, variable), expansion_budget));
+            if(derivative == integer(0)) continue;
+            exact_expr numerator = simplify(expand(
+                expression * power(base, integer(-exponent)), expansion_budget));
+            if(numerator.reachable_node_count() > options.maximum_nodes ||
+               derivative.reachable_node_count() > options.maximum_nodes)
+                continue;
+            exact_expr ratio = simplify(numerator / derivative);
+            if(integration_depends_on(ratio, variable)) continue;
+            exact_expr candidate = ratio *
+                power(base, integer(exponent + 1)) /
+                integer(exponent + 1);
+            if(candidate.reachable_node_count() > options.maximum_nodes) continue;
+            if(verify_candidate(candidate)) return true;
+        }
         exact_expr mixed_candidate = integration_mixed_primitive_exponential(
             *this, expression, variable, options);
         if(mixed_candidate.valid()){
