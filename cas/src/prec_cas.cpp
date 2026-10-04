@@ -3541,6 +3541,20 @@ static bool integration_depends_on(const exact_expr &expression,
     return false;
 }
 
+static bool integration_strictly_positive_constant(const exact_expr &part){
+    if(part.is_value()) return !part.value().is_approximate() &&
+        !part.value().is_zero() && !part.value().is_negative();
+    if(part.operation() == exact_opcode::constant_e) return true;
+    if(part.operation() == exact_opcode::exponential)
+        return part.operand(0).is_value() &&
+            !part.operand(0).value().is_approximate();
+    if(part.operation() != exact_opcode::add &&
+       part.operation() != exact_opcode::multiply) return false;
+    for(size_t i = 0; i < part.operand_count(); ++i)
+        if(!integration_strictly_positive_constant(part.operand(i))) return false;
+    return part.operand_count() != 0;
+}
+
 // A polynomial over the constant field of the integration variable. Unlike
 // integration_poly, its coefficients may be symbolic constants such as a,
 // pi, or sqrt(2). This is the coefficient domain needed by Risch differential
@@ -8985,8 +8999,10 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         };
         if(has_algebraic(has_algebraic, normalized)){
             auto algebraic = integrate_elementary(normalized, variable);
-            if(algebraic.status == risch_status::elementary) return simplify(algebraic.elementary_part);
-            if(algebraic.status == risch_status::unsupported && algebraic.elementary_part != integer(0))
+            if(algebraic.status == risch_status::elementary &&
+               algebraic.conditions.empty()) return simplify(algebraic.elementary_part);
+            if(algebraic.status == risch_status::unsupported &&
+               algebraic.conditions.empty() && algebraic.elementary_part != integer(0))
                 return simplify(algebraic.elementary_part + unresolved(algebraic.remainder.id()));
         }
     }
@@ -9001,6 +9017,62 @@ exact_expr exact_context::integrate(const exact_expr &expression,
 }
 
 risch_result exact_context::integrate_elementary(
+    const exact_expr &expression, const exact_expr &variable,
+    const risch_options &options){
+    risch_result result = integrate_elementary_impl(expression, variable, options);
+    if(!result.elementary_part.valid() || result.elementary_part == integer(0))
+        return result;
+    auto known_nonzero = [&](auto &&self, const exact_expr &part) -> bool{
+        if(part.is_value()) return !part.value().is_approximate() &&
+            !part.value().is_zero();
+        if(integration_strictly_positive_constant(part)) return true;
+        if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::exponential) return true;
+        if(part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return part.operand_count() != 0;
+        }
+        if(part.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            return integration_signed_exponent(part.operand(1), exponent) &&
+                self(self, part.operand(0));
+        }
+        return false;
+    };
+    bool invalid = false;
+    std::unordered_set<uint32_t> visited;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!visited.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            if(integration_signed_exponent(part.operand(1), exponent) &&
+               exponent < 0){
+                exact_expr base = part.operand(0);
+                if(!integration_depends_on(base, variable) &&
+                   !known_nonzero(known_nonzero, base)){
+                    if(base.is_value() && base.value().is_zero()) invalid = true;
+                    else if(std::find(result.conditions.begin(),
+                            result.conditions.end(), base) == result.conditions.end())
+                        result.conditions.push_back(base);
+                }
+            }
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, result.elementary_part);
+    if(invalid){
+        result.status = risch_status::verification_failed;
+        result.elementary_part = integer(0);
+        result.remainder = expression;
+        result.conditions.clear();
+        result.diagnostic = "candidate has a zero constant denominator";
+    }
+    return result;
+}
+
+risch_result exact_context::integrate_elementary_impl(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
     if(!expression.valid() || !variable.valid() ||
@@ -9460,22 +9532,9 @@ risch_result exact_context::integrate_elementary(
             ++nonzero_coefficients;
         }
         if(nonzero_coefficients == 0 || denominator_degree == 0) return false;
-        auto positive_constant = [&](auto &&self, const exact_expr &part) -> bool{
-            if(part.is_value()) return !part.value().is_approximate() &&
-                !part.value().is_zero() && !part.value().is_negative();
-            if(part.operation() == exact_opcode::constant_e) return true;
-            if(part.operation() == exact_opcode::exponential)
-                return part.operand(0).is_value() &&
-                    !part.operand(0).value().is_approximate();
-            if(part.operation() != exact_opcode::add &&
-               part.operation() != exact_opcode::multiply) return false;
-            for(size_t i = 0; i < part.operand_count(); ++i)
-                if(!self(self, part.operand(i))) return false;
-            return part.operand_count() != 0;
-        };
         exact_expr candidate = integer(0);
         if(nonzero_coefficients == 1){
-            if(!positive_constant(positive_constant,
+            if(!integration_strictly_positive_constant(
                     denominator[denominator_degree])) return false;
             for(size_t i = 0; i < numerator.size(); ++i){
                 if(integration_expr_zero(*this, numerator[i])) continue;
@@ -9502,8 +9561,8 @@ risch_result exact_context::integrate_elementary(
         }else if(nonzero_coefficients == 2 && denominator_degree == 1 &&
                  argument_n.size() == 2 &&
                  argument_d.size() == 1 &&
-                 positive_constant(positive_constant, denominator[0]) &&
-                 positive_constant(positive_constant, denominator[1])){
+                 integration_strictly_positive_constant(denominator[0]) &&
+                 integration_strictly_positive_constant(denominator[1])){
             numeric_value slope = argument_n[1] / argument_d[0];
             if(slope.is_zero()) return false;
             exact_expr d0 = denominator[0], d1 = denominator[1];
@@ -9600,12 +9659,12 @@ risch_result exact_context::integrate_elementary(
         risch_result lower = integrate_elementary(cofactor, variable, options);
         if(lower.status == risch_status::resource_limit ||
            lower.status == risch_status::verification_failed){
-            result = std::move(lower);
+            result.status = lower.status;
+            result.diagnostic = std::move(lower.diagnostic);
             return true;
         }
-        if(!lower.conditions.empty() ||
-           (lower.status != risch_status::elementary &&
-            (lower.status != risch_status::proven_nonelementary || !known_nonzero)))
+        if(lower.status != risch_status::elementary &&
+           (lower.status != risch_status::proven_nonelementary || !known_nonzero))
             return false;
         exact_expr elementary = constant * lower.elementary_part;
         exact_expr remainder = constant * lower.remainder;
@@ -9623,6 +9682,7 @@ risch_result exact_context::integrate_elementary(
             return false;
         exact_expr candidate = integer(0);
         exact_expr remainder = integer(0);
+        std::vector<exact_expr> conditions;
         size_t unresolved_terms = 0;
         bool sole_remainder_is_proven_nonelementary = false;
         for(size_t i = 0; i < expression.operand_count(); ++i){
@@ -9632,6 +9692,9 @@ risch_result exact_context::integrate_elementary(
                term.status != risch_status::proven_nonelementary &&
                term.status != risch_status::unsupported)
                 return false;
+            for(const exact_expr &condition : term.conditions)
+                if(std::find(conditions.begin(), conditions.end(), condition) ==
+                   conditions.end()) conditions.push_back(condition);
             candidate = candidate + term.elementary_part;
             if(term.remainder != integer(0)){
                 remainder = remainder + term.remainder;
@@ -9662,6 +9725,7 @@ risch_result exact_context::integrate_elementary(
             result.status = risch_status::unsupported;
         result.elementary_part = std::move(candidate);
         result.remainder = std::move(remainder);
+        result.conditions = std::move(conditions);
         result.diagnostic = result.status == risch_status::elementary
             ? "" : result.status == risch_status::proven_nonelementary
             ? combined_holomorphic

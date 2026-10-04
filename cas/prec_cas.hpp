@@ -184,6 +184,7 @@ struct risch_result{
     risch_status status;
     exact_expr elementary_part;
     exact_expr remainder;
+    // Each expression must be nonzero for the result to apply.
     std::vector<exact_expr> conditions;
     std::string diagnostic;
 };
@@ -233,6 +234,9 @@ class exact_context{
         const std::vector<exact_expr> &equations,
         const std::vector<exact_expr> &variables,
         double precision_bits);
+    risch_result integrate_elementary_impl(
+        const exact_expr &expression, const exact_expr &variable,
+        const risch_options &options);
 
 public:
     exact_context();

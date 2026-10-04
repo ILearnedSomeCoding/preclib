@@ -1,6 +1,7 @@
 #include"../prec_cas.hpp"
 #include"../ntheory/factor_integer.hpp"
 
+#include<algorithm>
 #include<cassert>
 #include<cstdio>
 #include<stdexcept>
@@ -322,10 +323,50 @@ int main(){
         related_exponential_budget).status == risch_status::resource_limit);
     assert(context.integrate_elementary(context.e()*exp_x_squared, x).status ==
         risch_status::proven_nonelementary);
+    exact_expr nonzero_a = context.symbol("_risch_nonzero_a");
+    exact_expr nonzero_b = context.symbol("_risch_nonzero_b");
+    auto has_condition = [](const risch_result &r, const exact_expr &condition){
+        return std::find(r.conditions.begin(), r.conditions.end(), condition) !=
+            r.conditions.end();
+    };
+    risch_result parameter_log = context.integrate_elementary(
+        context.integer(1) / (nonzero_a*x + nonzero_b), x);
+    assert(parameter_log.status == risch_status::elementary);
+    assert(has_condition(parameter_log, nonzero_a));
+    risch_result parameter_exponential = context.integrate_elementary(
+        context.exponential(nonzero_a*x), x);
+    assert(parameter_exponential.status == risch_status::elementary);
+    assert(has_condition(parameter_exponential, nonzero_a));
+    risch_result scaled_parameter_exponential = context.integrate_elementary(
+        context.e() * context.exponential(nonzero_a*x), x);
+    assert(scaled_parameter_exponential.status == risch_status::elementary);
+    assert(has_condition(scaled_parameter_exponential, nonzero_a));
+    risch_result parameter_sum = context.integrate_elementary(
+        context.exponential(nonzero_a*x) +
+        context.exponential(nonzero_b*x), x);
+    assert(parameter_sum.status == risch_status::elementary);
+    assert(has_condition(parameter_sum, nonzero_a));
+    assert(has_condition(parameter_sum, nonzero_b));
+    risch_result zero_slope = context.integrate_elementary(
+        context.exponential(context.integer(0)*x), x);
+    assert(zero_slope.status == risch_status::elementary);
+    assert(zero_slope.conditions.empty());
+    risch_result specialized_parameter = context.integrate_elementary(
+        context.integer(1) /
+            (context.integer(0)*x + context.integer(2)), x);
+    assert(specialized_parameter.status == risch_status::elementary);
+    assert(specialized_parameter.conditions.empty());
+    assert(context.simplify(context.differentiate(
+        specialized_parameter.elementary_part, x) -
+        context.rational(precq_t(precn_t(1), precn_t(2)))) ==
+        context.integer(0));
     risch_options shifted_exponential_budget;
     shifted_exponential_budget.maximum_recursion_depth = 1;
-    assert(context.integrate_elementary(context.e()*exp_x_squared, x,
-        shifted_exponential_budget).status == risch_status::resource_limit);
+    risch_result shifted_budget_result = context.integrate_elementary(
+        context.e()*exp_x_squared, x, shifted_exponential_budget);
+    assert(shifted_budget_result.status == risch_status::resource_limit);
+    assert(shifted_budget_result.elementary_part == context.integer(0));
+    assert(shifted_budget_result.remainder == context.e()*exp_x_squared);
     assert(context.integrate_elementary(
                context.exponential(x) + exp_x_squared, x).status !=
            risch_status::elementary);
