@@ -9331,13 +9331,28 @@ risch_result exact_context::integrate_elementary(
         }
 
         const auto &reference = arguments.front();
+        integration_poly reference_derivative = integration_sub(
+            integration_mul(integration_derivative_poly(reference.first),
+                reference.second),
+            integration_mul(reference.first,
+                integration_derivative_poly(reference.second)));
+        if(integration_zero_poly(reference_derivative)) return false;
 
         std::vector<numeric_value> ratios;
+        std::vector<numeric_value> offsets;
         ratios.reserve(arguments.size());
+        offsets.reserve(arguments.size());
         precz_t common_denominator(1);
         for(const auto &argument : arguments){
-            integration_poly lhs = integration_mul(argument.first, reference.second);
-            integration_poly rhs = integration_mul(reference.first, argument.second);
+            integration_poly argument_derivative = integration_sub(
+                integration_mul(integration_derivative_poly(argument.first),
+                    argument.second),
+                integration_mul(argument.first,
+                    integration_derivative_poly(argument.second)));
+            integration_poly lhs = integration_mul(argument_derivative,
+                integration_mul(reference.second, reference.second));
+            integration_poly rhs = integration_mul(reference_derivative,
+                integration_mul(argument.second, argument.second));
             size_t pivot = 0;
             while(pivot < rhs.size() && rhs[pivot].is_zero()) ++pivot;
             if(pivot == rhs.size() || pivot >= lhs.size()) return false;
@@ -9345,6 +9360,16 @@ risch_result exact_context::integrate_elementary(
             for(auto &v : rhs) v = v * ratio;
             integration_trim(rhs);
             if(lhs != rhs) return false;
+            integration_poly difference = integration_sub(
+                integration_mul(argument.first, reference.second),
+                integration_mul(integration_mul(reference.first,
+                    argument.second), integration_poly{ratio}));
+            integration_poly difference_denominator =
+                integration_mul(argument.second, reference.second);
+            if(!integration_normalize_rational(difference,
+                    difference_denominator) || difference.size() != 1 ||
+               difference_denominator.size() != 1) return false;
+            offsets.push_back(difference[0] / difference_denominator[0]);
             precq_t exact_ratio = ratio.rational();
             precz_t denominator(exact_ratio.denominator());
             common_denominator = (common_denominator /
@@ -9377,6 +9402,8 @@ risch_result exact_context::integrate_elementary(
         for(size_t i = 0; i < generators.size(); ++i){
             exact_expr replacement = powers[i] == 1 ? base_generator
                 : power(base_generator, integer(powers[i]));
+            if(!offsets[i].is_zero())
+                replacement = exponential(value(offsets[i])) * replacement;
             normalized = substitute(normalized, generators[i], replacement);
         }
         if(normalized == expression) return false;
@@ -9384,6 +9411,152 @@ risch_result exact_context::integrate_elementary(
         return true;
     };
     if(normalize_integer_related_exponentials()) return result;
+    auto classify_constant_coefficient_exponential_monomial = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        bool multiple_generators = false;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable)){
+                if(generator.valid() && generator != part)
+                    multiple_generators = true;
+                else generator = part;
+                return;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(!generator.valid() || multiple_generators) return false;
+        integration_poly argument_n, argument_d;
+        if(!integration_parse_rational(generator.operand(0), variable,
+                argument_n, argument_d, degree_budget, degree_budget) ||
+           !integration_normalize_rational(argument_n, argument_d) ||
+           (argument_n.size() == 1 && argument_d.size() == 1)) return false;
+        integration_expr_poly numerator, denominator;
+        if(!integration_parse_expr_rational(*this, expression, generator,
+                numerator, denominator, degree_budget)) return false;
+        auto exact_constant = [&](const exact_expr &coefficient) -> bool{
+            if(integration_depends_on(coefficient, variable)) return false;
+            std::unordered_set<uint32_t> visited;
+            auto exact = [&](auto &&self, const exact_expr &part) -> bool{
+                if(!visited.insert(part.id()).second) return true;
+                if(part.is_value() && part.value().is_approximate()) return false;
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    if(!self(self, part.operand(i))) return false;
+                return true;
+            };
+            return exact(exact, coefficient);
+        };
+        for(const exact_expr &coefficient : numerator)
+            if(!exact_constant(coefficient)) return false;
+        size_t denominator_degree = 0;
+        bool found = false;
+        for(size_t i = 0; i < denominator.size(); ++i){
+            if(!exact_constant(denominator[i])) return false;
+            if(integration_expr_zero(*this, denominator[i])) continue;
+            if(found) return false;
+            denominator_degree = i;
+            found = true;
+        }
+        if(!found || denominator_degree == 0) return false;
+        auto positive_constant = [&](auto &&self, const exact_expr &part) -> bool{
+            if(part.is_value()) return !part.value().is_approximate() &&
+                !part.value().is_zero() && !part.value().is_negative();
+            if(part.operation() == exact_opcode::constant_e) return true;
+            if(part.operation() == exact_opcode::exponential)
+                return part.operand(0).is_value() &&
+                    !part.operand(0).value().is_approximate();
+            if(part.operation() != exact_opcode::add &&
+               part.operation() != exact_opcode::multiply) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return part.operand_count() != 0;
+        };
+        if(!positive_constant(positive_constant,
+                denominator[denominator_degree])) return false;
+        exact_expr candidate = integer(0);
+        for(size_t i = 0; i < numerator.size(); ++i){
+            if(integration_expr_zero(*this, numerator[i])) continue;
+            int64_t exponent = (int64_t)i - (int64_t)denominator_degree;
+            exact_expr monomial = exponent == 0 ? integer(1) :
+                power(generator, integer(exponent));
+            risch_result term = integrate_elementary(monomial, variable, options);
+            if(term.status == risch_status::resource_limit ||
+               term.status == risch_status::verification_failed){
+                result.status = term.status;
+                result.diagnostic = std::move(term.diagnostic);
+                return true;
+            }
+            if(term.status != risch_status::elementary ||
+               term.remainder != integer(0) || !term.conditions.empty()) return false;
+            candidate = candidate + numerator[i] /
+                denominator[denominator_degree] * term.elementary_part;
+            if(candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "constant-coefficient exponential result node budget exceeded";
+                return true;
+            }
+        }
+        exact_expr difference = differentiate(candidate, variable) - expression;
+        integration_expr_poly check_n, check_d;
+        if(difference.reachable_node_count() > options.maximum_nodes ||
+           !integration_parse_expr_rational(*this, difference, generator,
+                check_n, check_d, verification_degree_budget)) return false;
+        for(const exact_expr &coefficient : check_n)
+            if(!integration_expr_zero(*this, coefficient)) return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_constant_coefficient_exponential_monomial()) return result;
+    auto classify_constant_multiple = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        std::vector<exact_expr> constants, dependent;
+        bool known_nonzero = true;
+        bool has_exponential_constant = false;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            exact_expr factor = expression.operand(i);
+            if(integration_depends_on(factor, variable)){
+                dependent.push_back(factor);
+                continue;
+            }
+            constants.push_back(factor);
+            has_exponential_constant |=
+                factor.operation() == exact_opcode::constant_e ||
+                factor.operation() == exact_opcode::exponential;
+            known_nonzero &= (factor.is_value() &&
+                !factor.value().is_approximate() && !factor.value().is_zero()) ||
+                factor.operation() == exact_opcode::constant_e ||
+                factor.operation() == exact_opcode::exponential;
+        }
+        if(!has_exponential_constant || dependent.empty()) return false;
+        exact_expr constant = constants.size() == 1 ? constants[0] : multiply(constants);
+        exact_expr cofactor = dependent.size() == 1 ? dependent[0] : multiply(dependent);
+        if(cofactor == expression) return false;
+        risch_result lower = integrate_elementary(cofactor, variable, options);
+        if(lower.status == risch_status::resource_limit ||
+           lower.status == risch_status::verification_failed){
+            result = std::move(lower);
+            return true;
+        }
+        if(!lower.conditions.empty() ||
+           (lower.status != risch_status::elementary &&
+            (lower.status != risch_status::proven_nonelementary || !known_nonzero)))
+            return false;
+        exact_expr elementary = constant * lower.elementary_part;
+        exact_expr remainder = constant * lower.remainder;
+        if(elementary.reachable_node_count() > options.maximum_nodes ||
+           remainder.reachable_node_count() > options.maximum_nodes) return false;
+        result = std::move(lower);
+        result.elementary_part = std::move(elementary);
+        result.remainder = std::move(remainder);
+        return true;
+    };
+    if(classify_constant_multiple()) return result;
     auto classify_additive_risch_terms = [&]() -> bool{
         if(expression.operation() != exact_opcode::add ||
            expression.operand_count() < 2)

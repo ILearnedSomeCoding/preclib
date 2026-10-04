@@ -249,6 +249,46 @@ int main(){
     assert(context.simplify(context.differentiate(
                rationally_related_exponential_result.elementary_part, x) -
            normalized_rational_exponential_sum) == context.integer(0));
+    exact_expr shifted_exponential =
+        context.exponential(x + context.integer(1));
+    exact_expr shifted_exponential_integrand = shifted_exponential /
+        context.power(context.integer(1) + context.exponential(x),
+            context.integer(2));
+    risch_result shifted_exponential_result =
+        context.integrate_elementary(shifted_exponential_integrand, x);
+    assert(shifted_exponential_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        shifted_exponential_result.elementary_part, x) -
+        context.e()*context.exponential(x)/
+        context.power(context.integer(1)+context.exponential(x),
+            context.integer(2))) == context.integer(0));
+    exact_expr related_exponential_denominator =
+        context.exponential(x) + shifted_exponential;
+    risch_result constant_quotient_result = context.integrate_elementary(
+        shifted_exponential / related_exponential_denominator, x);
+    assert(constant_quotient_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        constant_quotient_result.elementary_part, x) -
+        context.e() / (context.integer(1) + context.e())) ==
+        context.integer(0));
+    risch_result inverse_exponential_result = context.integrate_elementary(
+        context.integer(1) / related_exponential_denominator, x);
+    assert(inverse_exponential_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        inverse_exponential_result.elementary_part, x) -
+        context.integer(1) / ((context.integer(1) + context.e()) *
+            context.exponential(x))) == context.integer(0));
+    risch_options related_exponential_budget;
+    related_exponential_budget.maximum_recursion_depth = 1;
+    assert(context.integrate_elementary(
+        context.integer(1) / related_exponential_denominator, x,
+        related_exponential_budget).status == risch_status::resource_limit);
+    assert(context.integrate_elementary(context.e()*exp_x_squared, x).status ==
+        risch_status::proven_nonelementary);
+    risch_options shifted_exponential_budget;
+    shifted_exponential_budget.maximum_recursion_depth = 1;
+    assert(context.integrate_elementary(context.e()*exp_x_squared, x,
+        shifted_exponential_budget).status == risch_status::resource_limit);
     assert(context.integrate_elementary(
                context.exponential(x) + exp_x_squared, x).status !=
            risch_status::elementary);
