@@ -449,6 +449,45 @@ int main(){
             context.integer(-2)), x);
     assert(grouped_repeated_normal_poles.status == risch_status::elementary);
     assert(grouped_repeated_normal_poles.remainder == context.integer(0));
+    risch_result proportional_normal_poles = context.integrate_elementary(
+        context.power(nonzero_a + nonzero_b * context.exponential(x),
+            context.integer(-2)) /
+        ((context.integer(2) * nonzero_a +
+            context.integer(2) * nonzero_b * context.exponential(x)) *
+         (context.integer(2) + context.exponential(x))), x);
+    assert(proportional_normal_poles.status == risch_status::elementary);
+    assert(proportional_normal_poles.remainder == context.integer(0));
+    exact_expr proportional_primitive = context.substitute(context.substitute(
+        proportional_normal_poles.elementary_part,
+        nonzero_a, context.integer(3)), nonzero_b, context.integer(1));
+    exact_expr proportional_input = context.integer(1) /
+        (context.power(context.integer(3) + context.exponential(x),
+            context.integer(2)) *
+         (context.integer(6) + context.integer(2) * context.exponential(x)) *
+         (context.integer(2) + context.exponential(x)));
+    assert(context.simplify(context.substitute(
+        context.differentiate(proportional_primitive, x) - proportional_input,
+        x, context.integer(0))) == context.integer(0));
+    risch_result symbolic_proportional_poles = context.integrate_elementary(
+        context.integer(1) /
+        ((nonzero_a + nonzero_b * context.exponential(x)) *
+         (pole_c * nonzero_a + pole_c * nonzero_b * context.exponential(x)) *
+         (context.integer(2) + context.exponential(x))), x);
+    assert(symbolic_proportional_poles.status == risch_status::elementary);
+    assert(symbolic_proportional_poles.remainder == context.integer(0));
+    assert(has_condition(symbolic_proportional_poles, pole_c));
+    risch_result quadratic_normal_pole = context.integrate_elementary(
+        context.integer(1) /
+        (context.integer(1) + context.exponential(x) +
+         context.power(context.exponential(x), context.integer(2))), x);
+    assert(quadratic_normal_pole.status == risch_status::elementary);
+    assert(quadratic_normal_pole.remainder == context.integer(0));
+    risch_result cubic_normal_pole = context.integrate_elementary(
+        context.integer(1) /
+        (context.integer(1) +
+         context.power(context.exponential(x), context.integer(3))), x);
+    assert(cubic_normal_pole.status == risch_status::elementary);
+    assert(cubic_normal_pole.remainder == context.integer(0));
     risch_result repeated_specialized_pole = context.integrate_elementary(
         context.power(nonzero_b * context.exponential(x),
             context.integer(-3)), x);

@@ -9511,6 +9511,48 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr base_generator = exponential(integration_poly_expr(
             *this, base_argument, variable) /
             integration_poly_expr(*this, reference.second, variable));
+        if(base_argument.size() == 2 && reference.second.size() == 1 &&
+           std::all_of(offsets.begin(), offsets.end(),
+               [](const numeric_value &offset){ return offset.is_zero(); })){
+            numeric_value slope = base_argument[1] / reference.second[0];
+            exact_expr temporary;
+            for(size_t suffix = 0;; ++suffix){
+                temporary = symbol("_risch_related_t_" + std::to_string(suffix));
+                if(temporary != variable &&
+                   !integration_depends_on(expression, temporary)) break;
+            }
+            exact_expr transformed = expression;
+            for(size_t i = 0; i < generators.size(); ++i)
+                transformed = substitute(transformed, generators[i],
+                    power(temporary, integer(powers[i])));
+            integration_poly transformed_n, transformed_d;
+            if(!slope.is_zero() &&
+               integration_parse_rational(transformed, temporary,
+                   transformed_n, transformed_d, degree_budget, degree_budget)){
+                exact_expr rational_integrand = transformed /
+                    (value(slope) * temporary);
+                exact_expr primitive = integration_rational_antiderivative(
+                    *this, rational_integrand, temporary, degree_budget);
+                integration_poly derivative_n, derivative_d;
+                if(primitive.valid() &&
+                   integration_parse_rational(
+                       differentiate(primitive, temporary) - rational_integrand,
+                       temporary, derivative_n, derivative_d,
+                       verification_degree_budget, verification_degree_budget) &&
+                   integration_normalize_rational(derivative_n, derivative_d) &&
+                   integration_zero_poly(derivative_n)){
+                    exact_expr candidate = substitute(primitive, temporary,
+                        base_generator);
+                    if(candidate.reachable_node_count() <= options.maximum_nodes){
+                        result.status = risch_status::elementary;
+                        result.elementary_part = std::move(candidate);
+                        result.remainder = integer(0);
+                        result.diagnostic.clear();
+                        return true;
+                    }
+                }
+            }
+        }
         exact_expr normalized = expression;
         for(size_t i = 0; i < generators.size(); ++i){
             exact_expr replacement = powers[i] == 1 ? base_generator
@@ -9757,12 +9799,31 @@ risch_result exact_context::integrate_elementary_impl(
                         fn[1].is_value();
                     coefficients.emplace_back(fn[0], fn[1]);
                 }
-                for(size_t i = 0; valid && i < coefficients.size(); ++i)
-                    for(size_t j = 0; j < i; ++j)
-                        if(integration_formal_constant_zero(*this,
-                            coefficients[i].second*coefficients[j].first -
-                            coefficients[i].first*coefficients[j].second,
-                            variable, verification_degree_budget)) valid = false;
+                for(size_t i = 0; valid && i < coefficients.size(); ++i){
+                    for(size_t j = 0; j < i; ++j){
+                        if(!integration_formal_constant_zero(*this,
+                                coefficients[i].second*coefficients[j].first -
+                                coefficients[i].first*coefficients[j].second,
+                                variable, verification_degree_budget)) continue;
+                        exact_expr scale = coefficients[i].second /
+                            coefficients[j].second;
+                        if(!integration_formal_constant_zero(*this,
+                                coefficients[i].first - scale*coefficients[j].first,
+                                variable, verification_degree_budget)){
+                            valid = false;
+                            break;
+                        }
+                        exact_expr divisor = power(scale,
+                            integer(factors[i].second));
+                        for(exact_expr &coefficient : polynomial)
+                            coefficient = simplify(coefficient / divisor);
+                        factors[j].second += factors[i].second;
+                        factors.erase(factors.begin() + i);
+                        coefficients.erase(coefficients.begin() + i);
+                        --i;
+                        break;
+                    }
+                }
                 if(valid && !all_numeric){
                     integration_expr_poly denominator_product{integer(1)};
                     for(size_t i = 0; i < coefficients.size(); ++i)
@@ -9957,6 +10018,94 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr proper = remainder[0] / d0;
             candidate = candidate - proper / value(slope) *
                 natural_logarithm(d0+d1*generator);
+        }else if(!repeated_linear_pole &&
+                 argument_n.size() == 2 && argument_d.size() == 1 &&
+                 std::all_of(numerator.begin(), numerator.end(),
+                     [](const exact_expr &coefficient){
+                         return coefficient.is_value() &&
+                             !coefficient.value().is_approximate();
+                     }) &&
+                 std::all_of(denominator.begin(), denominator.end(),
+                     [](const exact_expr &coefficient){
+                         return coefficient.is_value() &&
+                             !coefficient.value().is_approximate();
+                     })){
+            numeric_value slope = argument_n[1] / argument_d[0];
+            exact_expr temporary;
+            for(size_t suffix = 0;; ++suffix){
+                temporary = symbol("_risch_normal_rational_t_" +
+                    std::to_string(suffix));
+                if(temporary != variable &&
+                   !integration_depends_on(expression, temporary)) break;
+            }
+            exact_expr rational_integrand =
+                integration_expr_poly_expr(*this, numerator, temporary) /
+                (value(slope) * temporary *
+                 integration_expr_poly_expr(*this, denominator, temporary));
+            exact_expr primitive = integration_rational_antiderivative(
+                *this, rational_integrand, temporary, degree_budget);
+            integration_expr_poly check_n, check_d;
+            if(!primitive.valid()) return false;
+            exact_expr formal_primitive = primitive;
+            std::vector<exact_expr> real_logarithms;
+            std::unordered_set<uint32_t> visited_logs;
+            auto collect_logs = [&](auto &&self, const exact_expr &part) -> void{
+                if(!visited_logs.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::natural_logarithm &&
+                   part.operand(0).operation() == exact_opcode::absolute_value)
+                    real_logarithms.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_logs(collect_logs, primitive);
+            for(const exact_expr &logarithm : real_logarithms)
+                formal_primitive = substitute(formal_primitive, logarithm,
+                    natural_logarithm(logarithm.operand(0).operand(0)));
+            exact_expr difference = differentiate(formal_primitive, temporary) -
+                rational_integrand;
+            if(!integration_parse_expr_rational(*this, difference,
+                    temporary, check_n, check_d,
+                    verification_degree_budget)) return false;
+            for(const exact_expr &coefficient : check_n){
+                exact_expr normalized = coefficient;
+                std::vector<std::pair<exact_expr, exact_expr>> rewrites;
+                std::unordered_set<uint32_t> visited;
+                auto collect_radicals = [&](auto &&self,
+                                            const exact_expr &part) -> void{
+                    if(!visited.insert(part.id()).second) return;
+                    if(part.operation() == exact_opcode::power &&
+                       part.operand(0).operation() == exact_opcode::square_root &&
+                       part.operand(0).operand(0).is_value()){
+                        int64_t exponent = 0;
+                        if(integration_signed_exponent(part.operand(1), exponent) &&
+                           exponent % 2 == 0 &&
+                           (exponent >= 0 ||
+                            !part.operand(0).operand(0).value().is_zero()))
+                            rewrites.emplace_back(part, power(
+                                part.operand(0).operand(0), integer(exponent / 2)));
+                    }
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                collect_radicals(collect_radicals, normalized);
+                for(const auto &rewrite : rewrites)
+                    normalized = substitute(normalized, rewrite.first,
+                        rewrite.second);
+                if(!integration_formal_constant_zero(*this, normalized,
+                        temporary, verification_degree_budget)) return false;
+            }
+            candidate = substitute(primitive, temporary, generator);
+            if(candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "constant-coefficient exponential result node budget exceeded";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
         }else if(!repeated_linear_pole) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes){
             result.status = risch_status::resource_limit;
