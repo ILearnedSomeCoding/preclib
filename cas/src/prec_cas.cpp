@@ -9499,12 +9499,136 @@ risch_result exact_context::integrate_elementary_impl(
             if(!exact_constant(coefficient)) return false;
         exact_expr a = denominator[0], b = denominator[1], c = denominator[2];
         exact_expr discriminant = b*b - integer(4)*a*c;
-        if(integration_formal_constant_zero(*this, a, variable,
-                verification_degree_budget) ||
-           integration_formal_constant_zero(*this, c, variable,
-                verification_degree_budget) ||
-           integration_formal_constant_zero(*this, discriminant, variable,
+        bool zero_constant = integration_formal_constant_zero(*this, a,
+            variable, verification_degree_budget);
+        if(integration_formal_constant_zero(*this, c, variable,
                 verification_degree_budget)) return false;
+        if(zero_constant && integration_formal_constant_zero(*this, b,
+                variable, verification_degree_budget)) return false;
+        integration_expr_poly divisor{integer(0), a, b, c};
+        integration_expr_poly quotient(
+            numerator.size() >= divisor.size()
+                ? numerator.size()-divisor.size()+1 : 1, integer(0));
+        integration_expr_poly remainder = numerator;
+        while(remainder.size() >= divisor.size()){
+            size_t offset = remainder.size()-divisor.size();
+            exact_expr leading = simplify(remainder.back()/c);
+            quotient[offset] = leading;
+            for(size_t j = 0; j+1 < divisor.size(); ++j)
+                remainder[offset+j] = simplify(remainder[offset+j] -
+                    leading*divisor[j]);
+            remainder.pop_back();
+        }
+        auto evaluate = [&](const exact_expr &root){
+            exact_expr value = integer(0);
+            for(size_t j = remainder.size(); j-- > 0;)
+                value = simplify(value*root + remainder[j]);
+            return value;
+        };
+        if(zero_constant){
+            exact_expr root = -b/c;
+            if(!integration_formal_constant_zero(*this, c*root+b,
+                    variable, verification_degree_budget)) return false;
+            exact_expr residue_double = remainder[0]/b;
+            exact_expr residue_zero =
+                (remainder.size() > 1 ? remainder[1] : integer(0))/b -
+                c*remainder[0]/(b*b);
+            exact_expr residue_root = evaluate(root)/(c*root*root);
+            integration_expr_poly reconstructed = integration_expr_mul(*this,
+                quotient, divisor);
+            reconstructed = integration_expr_add(*this, reconstructed,
+                {b*residue_double, c*residue_double});
+            reconstructed = integration_expr_add(*this, reconstructed,
+                {integer(0), b*residue_zero, c*residue_zero});
+            reconstructed = integration_expr_add(*this, reconstructed,
+                {integer(0), integer(0), c*residue_root});
+            reconstructed.resize(std::max(reconstructed.size(),
+                numerator.size()), integer(0));
+            for(size_t i = 0; i < reconstructed.size(); ++i)
+                if(!integration_formal_constant_zero(*this,
+                        reconstructed[i] -
+                            (i < numerator.size() ? numerator[i] : integer(0)),
+                        variable, verification_degree_budget)) return false;
+            exact_expr primitive = -residue_double/temporary +
+                residue_zero*natural_logarithm(temporary) +
+                residue_root*natural_logarithm(temporary-root);
+            for(size_t i = 0; i < quotient.size(); ++i)
+                primitive = primitive + quotient[i]*power(temporary,
+                    integer(i+1))/integer(i+1);
+            exact_expr candidate = substitute(primitive/value(slope),
+                temporary, generator);
+            if(candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "symbolic zero-constant exponential pole node budget exceeded";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            for(const exact_expr &condition : {b, c})
+                if(!(condition.is_value() && !condition.value().is_zero()))
+                    result.conditions.push_back(condition);
+            return true;
+        }
+        if(integration_formal_constant_zero(*this, discriminant, variable,
+                verification_degree_budget)){
+            exact_expr root = -b/(integer(2)*c);
+            if(!integration_formal_constant_zero(*this, c*root*root-a,
+                    variable, verification_degree_budget) ||
+               !integration_formal_constant_zero(*this, -integer(2)*c*root-b,
+                    variable, verification_degree_budget)) return false;
+            exact_expr at_root = evaluate(root);
+            exact_expr derivative = integer(0);
+            for(size_t j = remainder.size(); j-- > 1;)
+                derivative = simplify(derivative*root +
+                    integer(j)*remainder[j]);
+            exact_expr residue_zero = remainder[0]/a;
+            exact_expr residue_double = at_root/(c*root);
+            exact_expr residue_simple =
+                (root*derivative-at_root)/(c*root*root);
+            integration_expr_poly reconstructed = integration_expr_mul(*this,
+                quotient, divisor);
+            integration_expr_poly pole_zero = denominator;
+            for(exact_expr &coefficient : pole_zero)
+                coefficient = coefficient*residue_zero;
+            reconstructed = integration_expr_add(*this, reconstructed, pole_zero);
+            reconstructed = integration_expr_add(*this, reconstructed,
+                {integer(0), -c*root*residue_simple,
+                 c*residue_simple});
+            reconstructed = integration_expr_add(*this, reconstructed,
+                {integer(0), c*residue_double});
+            reconstructed.resize(std::max(reconstructed.size(),
+                numerator.size()), integer(0));
+            for(size_t i = 0; i < reconstructed.size(); ++i)
+                if(!integration_formal_constant_zero(*this,
+                        reconstructed[i] -
+                            (i < numerator.size() ? numerator[i] : integer(0)),
+                        variable, verification_degree_budget)) return false;
+            exact_expr primitive = residue_zero*natural_logarithm(temporary) +
+                residue_simple*natural_logarithm(temporary-root) -
+                residue_double/(temporary-root);
+            for(size_t i = 0; i < quotient.size(); ++i)
+                primitive = primitive + quotient[i]*power(temporary,
+                    integer(i+1))/integer(i+1);
+            exact_expr candidate = substitute(primitive/value(slope),
+                temporary, generator);
+            if(candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "symbolic repeated exponential pole node budget exceeded";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            for(const exact_expr &condition : {a, c})
+                if(!(condition.is_value() && !condition.value().is_zero()))
+                    result.conditions.push_back(condition);
+            return true;
+        }
         exact_expr radical = square_root(discriminant);
         if(radical.operation() != exact_opcode::square_root) return false;
         // a, c and Delta nonzero also keep both roots and their residues defined.
@@ -9530,26 +9654,6 @@ risch_result exact_context::integrate_elementary_impl(
         if(!algebraic_zero(c*root_plus*root_minus-a) ||
            !algebraic_zero(-c*(root_plus+root_minus)-b)) return false;
 
-        integration_expr_poly divisor{integer(0), a, b, c};
-        integration_expr_poly quotient(
-            numerator.size() >= divisor.size()
-                ? numerator.size()-divisor.size()+1 : 1, integer(0));
-        integration_expr_poly remainder = numerator;
-        while(remainder.size() >= divisor.size()){
-            size_t offset = remainder.size()-divisor.size();
-            exact_expr leading = simplify(remainder.back()/c);
-            quotient[offset] = leading;
-            for(size_t j = 0; j+1 < divisor.size(); ++j)
-                remainder[offset+j] = simplify(remainder[offset+j] -
-                    leading*divisor[j]);
-            remainder.pop_back();
-        }
-        auto evaluate = [&](const exact_expr &root){
-            exact_expr value = integer(0);
-            for(size_t j = remainder.size(); j-- > 0;)
-                value = simplify(value*root + remainder[j]);
-            return value;
-        };
         exact_expr residue_zero = remainder[0]/a;
         exact_expr residue_plus = evaluate(root_plus)/
             (root_plus*(b+integer(2)*c*root_plus));
@@ -9729,8 +9833,38 @@ risch_result exact_context::integrate_elementary_impl(
             integration_expr_poly symbolic_n, symbolic_d;
             if(integration_parse_expr_rational(*this, transformed, temporary,
                     symbolic_n, symbolic_d, degree_budget) &&
-               integrate_symbolic_quadratic_exponential(symbolic_n, symbolic_d,
-                   temporary, base_generator, slope)) return true;
+                integrate_symbolic_quadratic_exponential(symbolic_n, symbolic_d,
+                    temporary, base_generator, slope)) return true;
+        }
+        if(base_argument.size() != 2 || reference.second.size() != 1){
+            exact_expr inner_derivative = differentiate(base_generator.operand(0),
+                variable);
+            if(!integration_formal_constant_zero(*this, inner_derivative,
+                    variable, verification_degree_budget)){
+                exact_expr temporary;
+                for(size_t suffix = 0;; ++suffix){
+                    temporary = symbol("_risch_related_t_" +
+                        std::to_string(suffix));
+                    if(temporary != variable &&
+                       !integration_depends_on(expression, temporary)) break;
+                }
+                exact_expr transformed = expression / inner_derivative;
+                for(size_t i = 0; i < generators.size(); ++i){
+                    exact_expr replacement = power(temporary,
+                        integer(powers[i]));
+                    if(!offsets[i].is_zero())
+                        replacement = exponential(value(offsets[i])) *
+                            replacement;
+                    transformed = substitute(transformed, generators[i],
+                        replacement);
+                }
+                integration_expr_poly symbolic_n, symbolic_d;
+                if(integration_parse_expr_rational(*this, transformed,
+                        temporary, symbolic_n, symbolic_d, degree_budget) &&
+                   integrate_symbolic_quadratic_exponential(symbolic_n,
+                        symbolic_d, temporary, base_generator,
+                        numeric_value(1))) return true;
+            }
         }
         exact_expr normalized = expression;
         for(size_t i = 0; i < generators.size(); ++i){
@@ -10271,6 +10405,48 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
     };
     if(classify_constant_coefficient_exponential_rational()) return result;
+    auto classify_symbolic_nonlinear_exponential_substitution = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        bool multiple_generators = false;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable)){
+                if(generator.valid() && generator != part)
+                    multiple_generators = true;
+                else generator = part;
+                return;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(!generator.valid() || multiple_generators) return false;
+        integration_poly inner_n, inner_d;
+        if(!integration_parse_rational(generator.operand(0), variable,
+                inner_n, inner_d, degree_budget, degree_budget) ||
+           !integration_normalize_rational(inner_n, inner_d) ||
+           (inner_n.size() == 2 && inner_d.size() == 1)) return false;
+        exact_expr inner_derivative = differentiate(generator.operand(0), variable);
+        if(integration_formal_constant_zero(*this, inner_derivative, variable,
+                verification_degree_budget)) return false;
+        exact_expr parameter;
+        for(size_t suffix = 0;; ++suffix){
+            parameter = symbol("_risch_symbolic_exp_t_" +
+                std::to_string(suffix));
+            if(parameter != variable &&
+               !integration_depends_on(expression, parameter)) break;
+        }
+        integration_expr_poly numerator, denominator;
+        exact_expr transformed = substitute(expression / inner_derivative,
+            generator, parameter);
+        if(!integration_parse_expr_rational(*this, transformed, parameter,
+                numerator, denominator, degree_budget)) return false;
+        return integrate_symbolic_quadratic_exponential(numerator, denominator,
+            parameter, generator, numeric_value(1));
+    };
+    if(classify_symbolic_nonlinear_exponential_substitution()) return result;
     auto classify_constant_multiple = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
         std::vector<exact_expr> constants, dependent;

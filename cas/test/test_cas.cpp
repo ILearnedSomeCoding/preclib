@@ -520,6 +520,25 @@ int main(){
     assert(has_condition(symbolic_quadratic_normal, pole_c));
     assert(has_condition(symbolic_quadratic_normal,
         context.integer(1)-context.integer(4)*pole_c));
+    exact_expr expanded_repeated_normal =
+        nonzero_a*nonzero_a +
+        context.integer(2)*nonzero_a*nonzero_b*context.exponential(x) +
+        nonzero_b*nonzero_b*
+            context.exponential(context.integer(2)*x);
+    risch_result repeated_quadratic_normal = context.integrate_elementary(
+        context.integer(1)/expanded_repeated_normal,
+        x, related_rational_budget);
+    assert(repeated_quadratic_normal.status == risch_status::elementary);
+    assert(repeated_quadratic_normal.remainder == context.integer(0));
+    risch_result zero_constant_normal = context.integrate_elementary(
+        context.integer(1)/
+            (nonzero_a*context.exponential(x) +
+             nonzero_b*context.exponential(context.integer(2)*x)),
+        x, related_rational_budget);
+    assert(zero_constant_normal.status == risch_status::elementary);
+    assert(zero_constant_normal.remainder == context.integer(0));
+    assert(has_condition(zero_constant_normal, nonzero_a));
+    assert(has_condition(zero_constant_normal, nonzero_b));
     risch_result cubic_normal_pole = context.integrate_elementary(
         context.integer(1) /
         (context.integer(1) +

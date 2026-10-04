@@ -70,5 +70,63 @@ int main(){
         x, options);
     assert(shifted_quadratic.status == risch_status::elementary);
     assert(shifted_quadratic.remainder == context.integer(0));
+    exact_expr repeated_quadratic = a*a + context.integer(2)*a*b*t +
+        b*b*context.power(t, context.integer(2));
+    risch_result repeated_root = context.integrate_elementary(
+        (context.integer(1)+context.power(t, context.integer(4)))/
+            repeated_quadratic, x, options);
+    assert(repeated_root.status == risch_status::elementary);
+    assert(repeated_root.remainder == context.integer(0));
+    assert(std::find(repeated_root.conditions.begin(),
+        repeated_root.conditions.end(), a*a) != repeated_root.conditions.end());
+    assert(std::find(repeated_root.conditions.begin(),
+        repeated_root.conditions.end(), b*b) != repeated_root.conditions.end());
+    risch_result zero_constant_quadratic = context.integrate_elementary(
+        (context.integer(1)+context.power(t, context.integer(4)))/
+            (b*t+c*context.power(t, context.integer(2))), x, options);
+    assert(zero_constant_quadratic.status == risch_status::elementary);
+    assert(zero_constant_quadratic.remainder == context.integer(0));
+    assert(std::find(zero_constant_quadratic.conditions.begin(),
+        zero_constant_quadratic.conditions.end(), b) !=
+        zero_constant_quadratic.conditions.end());
+    assert(std::find(zero_constant_quadratic.conditions.begin(),
+        zero_constant_quadratic.conditions.end(), c) !=
+        zero_constant_quadratic.conditions.end());
+    exact_expr nonlinear_t = context.exponential(context.power(x,
+        context.integer(2)));
+    exact_expr nonlinear_denominator = a+b*nonlinear_t+
+        c*context.power(nonlinear_t, context.integer(2));
+    risch_result nonlinear_quadratic = context.integrate_elementary(
+        context.integer(2)*x/nonlinear_denominator, x, options);
+    assert(nonlinear_quadratic.status == risch_status::elementary);
+    assert(nonlinear_quadratic.remainder == context.integer(0));
+    assert(std::find(nonlinear_quadratic.conditions.begin(),
+        nonlinear_quadratic.conditions.end(), a) !=
+        nonlinear_quadratic.conditions.end());
+    exact_expr related_nonlinear_denominator = a+b*nonlinear_t+
+        c*context.exponential(context.integer(2)*context.power(x,
+            context.integer(2)));
+    risch_result related_nonlinear = context.integrate_elementary(
+        context.integer(2)*x/related_nonlinear_denominator, x, options);
+    assert(related_nonlinear.status == risch_status::elementary);
+    assert(related_nonlinear.remainder == context.integer(0));
+    assert(std::find(related_nonlinear.conditions.begin(),
+        related_nonlinear.conditions.end(), c) !=
+        related_nonlinear.conditions.end());
+    risch_result nonlinear_repeated = context.integrate_elementary(
+        context.integer(2)*x*(context.integer(1)+
+            context.power(nonlinear_t, context.integer(4))) /
+            (a*a+context.integer(2)*a*b*nonlinear_t+
+             b*b*context.power(nonlinear_t, context.integer(2))),
+        x, options);
+    assert(nonlinear_repeated.status == risch_status::elementary);
+    risch_result nonlinear_zero_constant = context.integrate_elementary(
+        context.integer(2)*x /
+            (b*nonlinear_t+c*context.power(nonlinear_t,
+                context.integer(2))), x, options);
+    assert(nonlinear_zero_constant.status == risch_status::elementary);
+    risch_result missing_chain = context.integrate_elementary(
+        context.integer(1)/nonlinear_denominator, x, options);
+    assert(missing_chain.status != risch_status::elementary);
     std::puts("risch exponential rational ok");
 }
