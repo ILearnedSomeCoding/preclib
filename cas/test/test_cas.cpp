@@ -413,6 +413,42 @@ int main(){
             ((nonzero_a + exp_2x) * (context.integer(2) + exp_2x)), x);
     assert(two_fast_normal_poles.status == risch_status::elementary);
     assert(two_fast_normal_poles.remainder == context.integer(0));
+    risch_result mixed_repeated_normal_poles = context.integrate_elementary(
+        (context.integer(1) + context.power(context.exponential(x),
+            context.integer(3))) *
+            context.power(nonzero_a + nonzero_b * context.exponential(x),
+                context.integer(-2)) /
+            (context.integer(2) + context.exponential(x)), x);
+    assert(mixed_repeated_normal_poles.status == risch_status::elementary);
+    assert(mixed_repeated_normal_poles.remainder == context.integer(0));
+    assert(has_condition(mixed_repeated_normal_poles,
+        context.integer(2) * nonzero_b - nonzero_a));
+    exact_expr specialized_mixed_primitive = context.substitute(
+        context.substitute(mixed_repeated_normal_poles.elementary_part,
+            nonzero_a, context.integer(3)), nonzero_b, context.integer(1));
+    exact_expr specialized_mixed_input =
+        (context.integer(1) + context.power(context.exponential(x),
+            context.integer(3))) /
+        (context.power(context.integer(3) + context.exponential(x),
+            context.integer(2)) *
+         (context.integer(2) + context.exponential(x)));
+    exact_expr specialized_mixed_error = context.simplify(context.substitute(
+        context.differentiate(specialized_mixed_primitive, x) -
+            specialized_mixed_input, x, context.integer(0)));
+    assert(specialized_mixed_error == context.integer(0));
+    risch_result double_repeated_normal_poles = context.integrate_elementary(
+        context.power(nonzero_a + nonzero_b * context.exponential(x),
+            context.integer(-2)) *
+        context.power(context.integer(2) + context.exponential(x),
+            context.integer(-2)), x);
+    assert(double_repeated_normal_poles.status == risch_status::elementary);
+    assert(double_repeated_normal_poles.remainder == context.integer(0));
+    risch_result grouped_repeated_normal_poles = context.integrate_elementary(
+        context.power((nonzero_a + nonzero_b * context.exponential(x)) *
+            (context.integer(2) + context.exponential(x)),
+            context.integer(-2)), x);
+    assert(grouped_repeated_normal_poles.status == risch_status::elementary);
+    assert(grouped_repeated_normal_poles.remainder == context.integer(0));
     risch_result repeated_specialized_pole = context.integrate_elementary(
         context.power(nonzero_b * context.exponential(x),
             context.integer(-3)), x);

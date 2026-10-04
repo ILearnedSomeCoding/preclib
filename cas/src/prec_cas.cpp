@@ -9673,22 +9673,52 @@ risch_result exact_context::integrate_elementary_impl(
         }
         if(!repeated_linear_pole &&
            argument_n.size() == 2 && argument_d.size() == 1){
-            std::vector<exact_expr> factors;
+            std::vector<std::pair<exact_expr, size_t>> factors;
             exact_expr polynomial_factor = integer(1);
+            size_t total_order = 0;
+            auto add_pole = [&](auto &&self, exact_expr base,
+                                size_t multiplicity) -> bool{
+                if(base.operation() == exact_opcode::multiply){
+                    for(size_t i = 0; i < base.operand_count(); ++i)
+                        if(!self(self, base.operand(i), multiplicity)) return false;
+                    return true;
+                }
+                if(base.operation() == exact_opcode::power){
+                    int64_t exponent = 0;
+                    if(!integration_signed_exponent(base.operand(1), exponent) ||
+                       exponent <= 0 || (size_t)exponent > 8 / multiplicity)
+                        return false;
+                    return self(self, base.operand(0),
+                        multiplicity * (size_t)exponent);
+                }
+                if(!integration_depends_on(base, generator)){
+                    polynomial_factor = polynomial_factor /
+                        power(base, integer(multiplicity));
+                    return true;
+                }
+                if(multiplicity > 8 - total_order ||
+                   total_order + multiplicity > options.maximum_degree)
+                    return false;
+                for(auto &factor : factors)
+                    if(factor.first == base){
+                        factor.second += multiplicity;
+                        total_order += multiplicity;
+                        return true;
+                    }
+                factors.emplace_back(base, multiplicity);
+                total_order += multiplicity;
+                return true;
+            };
             auto collect_factor = [&](const exact_expr &factor) -> bool{
                 int64_t exponent = 0;
                 if(factor.operation() == exact_opcode::power &&
                    integration_signed_exponent(factor.operand(1), exponent) &&
-                   exponent == -1 &&
+                   exponent < 0 && exponent >= -8 &&
                    integration_depends_on(factor.operand(0), generator)){
-                    exact_expr base = factor.operand(0);
-                    if(base.operation() == exact_opcode::multiply){
-                        for(size_t i = 0; i < base.operand_count(); ++i)
-                            factors.push_back(base.operand(i));
-                    }else factors.push_back(base);
+                    if(!add_pole(add_pole, factor.operand(0),
+                            (size_t)-exponent)) return false;
                 }else polynomial_factor = polynomial_factor * factor;
-                return factors.size() <= options.maximum_degree &&
-                    factors.size() <= 8;
+                return total_order <= 8;
             };
             bool shape = true;
             if(expression.operation() == exact_opcode::multiply){
@@ -9707,9 +9737,9 @@ risch_result exact_context::integrate_elementary_impl(
                     if(!exact_constant(coefficient)) return false;
                 std::vector<std::pair<exact_expr, exact_expr>> coefficients;
                 bool valid = true, all_numeric = true;
-                for(const exact_expr &factor : factors){
+                for(const auto &factor : factors){
                     integration_expr_poly fn, fd;
-                    if(!integration_parse_expr_rational(*this, factor, generator,
+                    if(!integration_parse_expr_rational(*this, factor.first, generator,
                             fn, fd, degree_budget) || fn.size() != 2 ||
                        fd.size() != 1 ||
                        !integration_formal_constant_zero(*this,
@@ -9735,10 +9765,11 @@ risch_result exact_context::integrate_elementary_impl(
                             variable, verification_degree_budget)) valid = false;
                 if(valid && !all_numeric){
                     integration_expr_poly denominator_product{integer(1)};
-                    for(const auto &coefficient : coefficients)
-                        denominator_product = integration_expr_mul(*this,
-                            denominator_product,
-                            {coefficient.first, coefficient.second});
+                    for(size_t i = 0; i < coefficients.size(); ++i)
+                        for(size_t k = 0; k < factors[i].second; ++k)
+                            denominator_product = integration_expr_mul(*this,
+                                denominator_product,
+                                {coefficients[i].first, coefficients[i].second});
                     if(denominator_product.size() <= degree_budget){
                         integration_expr_poly quotient(
                             polynomial.size() >= denominator_product.size()
@@ -9763,24 +9794,66 @@ risch_result exact_context::integrate_elementary_impl(
                             candidate = candidate + quotient[i] *
                                 power(generator, integer(i)) /
                                 value(slope * numeric_value(i));
-                        std::vector<exact_expr> residues;
+                        auto shifted_series = [&](const integration_expr_poly &input,
+                                                  const exact_expr &root,
+                                                  size_t count){
+                            integration_expr_poly series(count, integer(0));
+                            for(size_t j = input.size(); j-- > 0;){
+                                for(size_t k = count - 1; k > 0; --k)
+                                    series[k] = simplify(series[k] * root +
+                                        series[k - 1]);
+                                series[0] = simplify(series[0] * root + input[j]);
+                            }
+                            return series;
+                        };
+                        std::vector<integration_expr_poly> residues(factors.size());
+                        std::vector<integration_expr_poly> other_products(factors.size());
                         for(size_t i = 0; i < factors.size(); ++i){
                             exact_expr a = coefficients[i].first;
                             exact_expr b = coefficients[i].second;
                             exact_expr root = -a / b;
-                            exact_expr residue = integer(0);
-                            for(size_t j = remainder.size(); j-- > 0;)
-                                residue = simplify(residue * root + remainder[j]);
-                            residue = residue * power(b, integer(factors.size() - 1));
+                            size_t order = factors[i].second;
+                            integration_expr_poly other{integer(1)};
+                            exact_expr constant_product = integer(1);
                             for(size_t j = 0; j < factors.size(); ++j)
-                                if(i != j)
-                                    residue = residue /
-                                        (coefficients[j].first * b -
-                                         coefficients[j].second * a);
-                            residues.push_back(residue);
-                            candidate = candidate + residue *
-                                (variable / a - natural_logarithm(factors[i]) /
-                                    (value(slope) * a));
+                                if(i != j){
+                                    for(size_t k = 0; k < factors[j].second; ++k)
+                                        other = integration_expr_mul(*this, other,
+                                            {coefficients[j].first,
+                                             coefficients[j].second});
+                                    constant_product = constant_product * power(
+                                        coefficients[j].first * b -
+                                            coefficients[j].second * a,
+                                        integer(factors[j].second));
+                                }
+                            other_products[i] = other;
+                            integration_expr_poly numerator_series =
+                                shifted_series(remainder, root, order);
+                            integration_expr_poly denominator_series =
+                                shifted_series(other, root, order);
+                            denominator_series[0] = constant_product /
+                                power(b, integer(total_order - order));
+                            integration_expr_poly series(order, integer(0));
+                            for(size_t j = 0; j < order; ++j){
+                                exact_expr value = numerator_series[j];
+                                for(size_t k = 1; k <= j; ++k)
+                                    value = value - denominator_series[k] *
+                                        series[j - k];
+                                series[j] = simplify(value / denominator_series[0]);
+                            }
+                            residues[i].resize(order + 1, integer(0));
+                            exact_expr primitive = variable / a -
+                                natural_logarithm(factors[i].first) /
+                                    (value(slope) * a);
+                            for(size_t k = 1; k <= order; ++k){
+                                if(k > 1)
+                                    primitive = primitive / a + integer(1) /
+                                        (value(slope * numeric_value(k - 1)) * a *
+                                         power(factors[i].first, integer(k - 1)));
+                                residues[i][k] = series[order - k] /
+                                    power(b, integer(order - k));
+                                candidate = candidate + residues[i][k] * primitive;
+                            }
                             if(candidate.reachable_node_count() >
                                     options.maximum_nodes){
                                 result.status = risch_status::resource_limit;
@@ -9789,23 +9862,25 @@ risch_result exact_context::integrate_elementary_impl(
                                 return true;
                             }
                         }
-                        // D(t^k/(s*k)) = t^k and D(x/a-ln(L)/(s*a)) = 1/L.
+                        // D(t^k/(s*k)) = t^k; the recurrence above integrates
+                        // each L^-k. Check the partial fractions coefficientwise.
                         // Certify only the polynomial decomposition, avoiding a
                         // full expansion of the resulting sum of logarithms.
                         integration_expr_poly reconstructed =
                             integration_expr_mul(*this, quotient,
                                 denominator_product);
                         for(size_t i = 0; i < factors.size(); ++i){
-                            integration_expr_poly other{integer(1)};
-                            for(size_t j = 0; j < factors.size(); ++j)
-                                if(i != j)
-                                    other = integration_expr_mul(*this, other,
-                                        {coefficients[j].first,
-                                         coefficients[j].second});
-                            for(exact_expr &coefficient : other)
-                                coefficient = coefficient * residues[i];
-                            reconstructed = integration_expr_add(*this,
-                                reconstructed, other);
+                            integration_expr_poly basis = other_products[i];
+                            for(size_t k = factors[i].second; k > 0; --k){
+                                integration_expr_poly term = basis;
+                                for(exact_expr &coefficient : term)
+                                    coefficient = coefficient * residues[i][k];
+                                reconstructed = integration_expr_add(*this,
+                                    reconstructed, term);
+                                basis = integration_expr_mul(*this, basis,
+                                    {coefficients[i].first,
+                                     coefficients[i].second});
+                            }
                         }
                         bool certified = true;
                         reconstructed.resize(std::max(reconstructed.size(),
