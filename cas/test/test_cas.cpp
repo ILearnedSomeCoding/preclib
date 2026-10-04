@@ -510,6 +510,16 @@ int main(){
         x, related_rational_budget);
     assert(fractional_exponential_pole.status == risch_status::elementary);
     assert(fractional_exponential_pole.remainder == context.integer(0));
+    risch_result symbolic_quadratic_normal = context.integrate_elementary(
+        context.integer(1) /
+            (context.integer(1) + context.exponential(x) +
+             pole_c * context.exponential(context.integer(2)*x)),
+        x, related_rational_budget);
+    assert(symbolic_quadratic_normal.status == risch_status::elementary);
+    assert(symbolic_quadratic_normal.remainder == context.integer(0));
+    assert(has_condition(symbolic_quadratic_normal, pole_c));
+    assert(has_condition(symbolic_quadratic_normal,
+        context.integer(1)-context.integer(4)*pole_c));
     risch_result cubic_normal_pole = context.integrate_elementary(
         context.integer(1) /
         (context.integer(1) +
