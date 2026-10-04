@@ -172,6 +172,40 @@ int main(){
     assert(std::find(shifted_symbolic_slope.conditions.begin(),
         shifted_symbolic_slope.conditions.end(), a) !=
         shifted_symbolic_slope.conditions.end());
+    risch_result related_symbolic_slopes = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+symbolic_slope_t+
+            context.exponential(context.integer(2)*a*x+b)), x, options);
+    assert(related_symbolic_slopes.status == risch_status::elementary);
+    assert(std::find(related_symbolic_slopes.conditions.begin(),
+        related_symbolic_slopes.conditions.end(), a) !=
+        related_symbolic_slopes.conditions.end());
+    risch_result fractional_symbolic_slopes = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+
+            context.exponential(a*x/context.integer(2))+
+            symbolic_slope_t), x, options);
+    assert(fractional_symbolic_slopes.status == risch_status::elementary);
+    assert(!fractional_symbolic_slopes.conditions.empty());
+    risch_result opposite_symbolic_slopes = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+symbolic_slope_t+
+            context.exponential(-a*x)), x, options);
+    assert(opposite_symbolic_slopes.status == risch_status::elementary);
+    exact_expr related_numeric_denominator = context.integer(1)+
+        symbolic_slope_t+context.exponential(context.integer(2)*a*x);
+    risch_result repeated_related_numeric = context.integrate_elementary(
+        context.integer(1)/context.power(related_numeric_denominator,
+            context.integer(2)), x, options);
+    assert(repeated_related_numeric.status == risch_status::elementary);
+    assert(!repeated_related_numeric.conditions.empty());
+    risch_result independent_symbolic_slopes = context.integrate_elementary(
+        context.integer(1)/(context.integer(1)+symbolic_slope_t+
+            context.exponential(b*x)), x, options);
+    assert(independent_symbolic_slopes.status != risch_status::elementary);
+    risch_result shared_parameter_condition = context.integrate_elementary(
+        context.integer(1)/(a+symbolic_slope_t+
+            context.exponential(context.integer(2)*a*x)), x, options);
+    assert(shared_parameter_condition.status == risch_status::elementary);
+    assert(std::count(shared_parameter_condition.conditions.begin(),
+        shared_parameter_condition.conditions.end(), a) == 1);
     risch_result missing_chain = context.integrate_elementary(
         context.integer(1)/nonlinear_denominator, x, options);
     assert(missing_chain.status != risch_status::elementary);

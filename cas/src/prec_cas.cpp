@@ -9974,6 +9974,150 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
     };
     if(normalize_integer_related_exponentials()) return result;
+    // Symbolic affine slopes share a generator only after an exact rational
+    // ratio and its coefficient identity have both been certified.
+    auto normalize_symbolic_affine_exponentials = [&]() -> bool{
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable))
+                generators.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(generators.size() < 2) return false;
+        std::vector<integration_expr_poly> arguments;
+        arguments.reserve(generators.size());
+        for(const exact_expr &generator : generators){
+            integration_expr_poly n, d;
+            if(!integration_parse_expr_rational(*this, generator.operand(0),
+                    variable, n, d, degree_budget) || n.size() != 2 ||
+               d.size() != 1 || !d[0].is_value() ||
+               d[0].value().is_approximate() || d[0].value().is_zero())
+                return false;
+            if(d[0] != integer(1))
+                for(exact_expr &coefficient : n)
+                    coefficient = simplify(coefficient/d[0]);
+            if(integration_formal_constant_zero(*this, n[1], variable,
+                    verification_degree_budget)) return false;
+            for(const exact_expr &coefficient : n){
+                if(integration_depends_on(coefficient, variable)) return false;
+                std::unordered_set<uint32_t> visited;
+                auto exact = [&](auto &&self, const exact_expr &part) -> bool{
+                    if(!visited.insert(part.id()).second) return true;
+                    if(part.is_value() && part.value().is_approximate())
+                        return false;
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        if(!self(self, part.operand(i))) return false;
+                    return true;
+                };
+                if(!exact(exact, coefficient)) return false;
+            }
+            arguments.push_back(std::move(n));
+        }
+        exact_expr reference_slope = arguments.front()[1];
+        std::vector<numeric_value> ratios;
+        ratios.reserve(arguments.size());
+        precz_t common_denominator(1);
+        for(const integration_expr_poly &argument : arguments){
+            exact_expr quotient = simplify(argument[1]/reference_slope);
+            if(!quotient.is_value() || quotient.value().is_approximate() ||
+               quotient.value().is_zero() ||
+               !integration_formal_constant_zero(*this,
+                   argument[1]-quotient*reference_slope, variable,
+                   verification_degree_budget)) return false;
+            numeric_value ratio = quotient.value();
+            precz_t denominator(ratio.rational().denominator());
+            common_denominator = (common_denominator /
+                ::gcd(common_denominator, denominator)) * denominator;
+            int64_t bounded_denominator = 0;
+            if(!integer_i64(numeric_value(common_denominator),
+                    bounded_denominator)) return false;
+            ratios.push_back(std::move(ratio));
+        }
+        std::vector<int64_t> powers;
+        powers.reserve(ratios.size());
+        for(const numeric_value &ratio : ratios){
+            int64_t exponent = 0;
+            if(!integer_i64(ratio*numeric_value(common_denominator),
+                    exponent) || exponent == 0 ||
+               exponent < -(int64_t)degree_budget ||
+               exponent > (int64_t)degree_budget) return false;
+            powers.push_back(exponent);
+        }
+        exact_expr base_slope = reference_slope /
+            value(numeric_value(common_denominator));
+        exact_expr base_generator = exponential(base_slope*variable);
+        exact_expr temporary;
+        for(size_t suffix = 0;; ++suffix){
+            temporary = symbol("_risch_symbolic_related_t_" +
+                std::to_string(suffix));
+            if(temporary != variable &&
+               !integration_depends_on(expression, temporary)) break;
+        }
+        exact_expr transformed = expression;
+        for(size_t i = 0; i < generators.size(); ++i){
+            exact_expr replacement = power(temporary, integer(powers[i]));
+            if(!integration_formal_constant_zero(*this, arguments[i][0],
+                    variable, verification_degree_budget))
+                replacement = exponential(arguments[i][0])*replacement;
+            transformed = substitute(transformed, generators[i], replacement);
+        }
+        auto add_slope_condition = [&](){
+            if(!(base_slope.is_value() && !base_slope.value().is_zero()) &&
+               !integration_strictly_positive_constant(base_slope) &&
+               base_slope.operation() != exact_opcode::exponential &&
+               std::find(result.conditions.begin(), result.conditions.end(),
+                   base_slope) == result.conditions.end())
+                result.conditions.push_back(base_slope);
+        };
+        integration_poly rational_n, rational_d;
+        if(integration_parse_rational(transformed, temporary, rational_n,
+                rational_d, degree_budget, degree_budget)){
+            exact_expr rational_integrand = transformed/temporary;
+            exact_expr primitive = integration_rational_antiderivative(*this,
+                rational_integrand, temporary, degree_budget);
+            if(certify_exponential_rational_primitive(primitive,
+                    rational_integrand, temporary)){
+                exact_expr candidate = substitute(primitive, temporary,
+                    base_generator)/base_slope;
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "symbolic related exponential result node budget exceeded";
+                    return true;
+                }
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                add_slope_condition();
+                return true;
+            }
+        }
+        integration_expr_poly numerator, denominator;
+        if(!integration_parse_expr_rational(*this, transformed, temporary,
+                numerator, denominator, degree_budget) ||
+           !integrate_symbolic_low_degree_exponential(numerator, denominator,
+                temporary, base_generator, numeric_value(1))) return false;
+        if(result.status != risch_status::elementary) return true;
+        exact_expr candidate = result.elementary_part/base_slope;
+        if(candidate.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "symbolic related exponential result node budget exceeded";
+            return true;
+        }
+        result.elementary_part = std::move(candidate);
+        add_slope_condition();
+        return true;
+    };
+    if(normalize_symbolic_affine_exponentials()) return result;
     auto classify_constant_coefficient_exponential_rational = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
@@ -10556,7 +10700,9 @@ risch_result exact_context::integrate_elementary_impl(
         result.elementary_part = std::move(candidate);
         if(!(slope.is_value() && !slope.value().is_zero()) &&
            !integration_strictly_positive_constant(slope) &&
-           slope.operation() != exact_opcode::exponential)
+           slope.operation() != exact_opcode::exponential &&
+           std::find(result.conditions.begin(), result.conditions.end(),
+               slope) == result.conditions.end())
             result.conditions.push_back(slope);
         return true;
     };
