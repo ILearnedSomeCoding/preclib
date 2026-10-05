@@ -72,5 +72,41 @@ int main(){
         context.integer(2)*p, context.integer(2)));
     assert(!integration_mixed_linear_poles_primitive(context,
         repeated, x, risch_options()).valid());
+
+    // For p=x*exp(x), D(p)/p=1+1/x.  The lower-field RDE
+    // y'-(1+1/x)y = 1/x-(1+1/x)log(x) has y=log(x).
+    exact_expr special_pole = x*t;
+    exact_expr lambda = context.integer(1)+context.integer(1)/x;
+    exact_expr lower_solution = l;
+    exact_expr special_rhs = context.differentiate(lower_solution, x) -
+        lambda*lower_solution;
+    exact_expr special_input = special_rhs/special_pole;
+    exact_expr special_candidate = integration_mixed_linear_special_pole_primitive(
+        context, special_input, special_pole, {special_rhs}, 1,
+        context.integer(0), x, context.integer(1), context.integer(0), x,
+        risch_options());
+    assert(special_candidate.valid());
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(special_candidate, x)-special_input,
+        x, 64, 100000));
+
+    exact_expr special_rhs_2 = context.integer(1)/x -
+        context.integer(2)*lambda*lower_solution;
+    exact_expr special_rhs_1 = context.integer(1) -
+        (x+context.integer(1))*lower_solution;
+    exact_expr repeated_special_numerator = special_rhs_2 +
+        special_rhs_1*t;
+    exact_expr repeated_special_input = repeated_special_numerator/
+        context.power(special_pole, context.integer(2));
+    exact_expr repeated_special_candidate =
+        integration_mixed_linear_special_pole_primitive(context,
+            repeated_special_input, special_pole,
+            {special_rhs_2, special_rhs_1}, 2,
+            context.integer(0), x, context.integer(1), context.integer(0), x,
+            risch_options());
+    assert(repeated_special_candidate.valid());
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(repeated_special_candidate, x)-
+            repeated_special_input, x, 64, 100000));
     std::puts("risch mixed linear poles ok");
 }

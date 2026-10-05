@@ -4835,22 +4835,6 @@ static exact_expr integration_mixed_linear_poles_primitive(
         }
         if(!usable) continue;
         std::vector<integration_expr_poly> parts(poles.size());
-        integration_expr_poly full_denominator{context.integer(1)};
-        for(const integration_expr_poly &power : powers){
-            full_denominator = integration_expr_mul(context,
-                full_denominator, power);
-            if(full_denominator.size() > degree + 1){
-                usable = false;
-                break;
-            }
-            for(const exact_expr &entry : full_denominator)
-                if(entry.reachable_node_count() > nodes){
-                    usable = false;
-                    break;
-                }
-            if(!usable) break;
-        }
-        if(!usable) continue;
         integration_expr_poly working = numerator;
         for(size_t i = 0; i + 1 < poles.size() && usable; ++i){
             const size_t order = poles[i].second;
@@ -5003,8 +4987,7 @@ static exact_expr integration_mixed_linear_poles_primitive(
                 last_power = integration_expr_mul(context, last_power,
                     linear[last]);
         }
-        if(!usable || parts.back().size() > last_order ||
-           working.size() > degree + 1) continue;
+        if(!usable || working.size() > degree + 1) continue;
         integration_expr_poly polynomial_part = std::move(working);
         for(const exact_expr &entry : polynomial_part)
             if(entry.reachable_node_count() > nodes){
@@ -5012,15 +4995,19 @@ static exact_expr integration_mixed_linear_poles_primitive(
                 break;
             }
         if(!usable) continue;
-        integration_expr_poly reconstruction = integration_expr_mul(context,
-            polynomial_part, full_denominator);
-        if(reconstruction.size() > degree + 1){ usable = false; continue; }
-        for(const exact_expr &entry : reconstruction)
+        // Keep the polynomial quotient attached to the final pole component.
+        // It may cancel a non-elementary-looking part of that component, so
+        // integrating it separately is not valid.
+        integration_expr_poly quotient_part = integration_expr_mul(context,
+            polynomial_part, powers[last]);
+        parts.back() = integration_expr_add(context, parts.back(), quotient_part);
+        for(const exact_expr &entry : parts.back())
             if(entry.reachable_node_count() > nodes){
                 usable = false;
                 break;
             }
         if(!usable) continue;
+        integration_expr_poly reconstruction{context.integer(0)};
         for(size_t i = 0; i < poles.size(); ++i){
             integration_expr_poly cofactor{context.integer(1)};
             for(size_t j = 0; j < poles.size(); ++j)
@@ -5049,16 +5036,6 @@ static exact_expr integration_mixed_linear_poles_primitive(
         }
         if(!exact_split) continue;
         exact_expr candidate = context.integer(0);
-        exact_expr polynomial = integration_expr_poly_expr(context,
-            polynomial_part, t);
-        if(context.simplify(polynomial) != context.integer(0)){
-            risch_result lower = context.integrate_elementary(
-                polynomial, variable, options);
-            if(lower.status != risch_status::elementary ||
-               lower.remainder != context.integer(0) ||
-               !lower.conditions.empty()) continue;
-            candidate = lower.elementary_part;
-        }
         for(size_t i = 0; i < poles.size(); ++i){
             exact_expr component = integration_expr_poly_expr(context,
                 parts[i], t)/context.power(poles[i].first,
@@ -7518,6 +7495,18 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
         return exact_expr();
     exact_expr lambda = context.simplify(
         (context.differentiate(b, variable) + b*slope)/b);
+    auto exact_tree = [&](const exact_expr &root){
+        std::unordered_set<uint32_t> seen;
+        auto visit = [&](auto &&self, const exact_expr &part) -> bool{
+            if(!seen.insert(part.id()).second) return true;
+            if(part.is_value() && part.value().is_approximate()) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return true;
+        };
+        return visit(visit, root);
+    };
+    if(!exact_tree(lambda)) return exact_expr();
     integration_expr_poly right(pole_order, context.integer(0));
     for(size_t k = 0; k < numerator.size(); ++k){
         if(context.simplify(numerator[k]) == context.integer(0)) continue;
@@ -7543,30 +7532,73 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
     exact_expr candidate = context.integer(0);
     for(size_t r = 1; r <= pole_order; ++r){
         if(context.simplify(right[r-1]) == context.integer(0)) continue;
-        integration_poly an, ad, cn, cd;
-        if(!integration_parse_rational(-context.integer((long long)r)*lambda,
-                variable, an, ad, degree, degree) ||
-           !integration_parse_rational(right[r-1], variable, cn, cd,
-                degree, degree) ||
-           !integration_normalize_rational(an, ad) ||
-           !integration_normalize_rational(cn, cd)) return exact_expr();
-        std::vector<integration_parametric_rational_basis> basis;
-        if(integration_parametric_rde_gauged(context, an, ad, {{cn, cd}},
-                variable, basis, options) !=
-           integration_parametric_rde_status::solved) return exact_expr();
+        exact_expr rde_coefficient = -context.integer((long long)r)*lambda;
         exact_expr term_primitive;
-        for(const auto &entry : basis){
-            if(entry.constants.size() != 1 || entry.constants[0].is_zero())
-                continue;
-            integration_poly solution_n = entry.numerator;
-            for(auto &coefficient : solution_n)
-                coefficient = coefficient/entry.constants[0];
-            exact_expr solution = integration_poly_expr(context, solution_n,
-                variable)/integration_poly_expr(context, entry.denominator,
-                variable);
-            term_primitive = solution/context.power(pole,
-                context.integer((long long)r));
-            break;
+        integration_poly an, ad, cn, cd;
+        bool rhs_rational = exact_tree(right[r-1]) &&
+            integration_parse_rational(right[r-1], variable, cn, cd,
+                degree, degree) && integration_normalize_rational(cn, cd);
+        if(!integration_parse_rational(rde_coefficient, variable, an, ad,
+                degree, degree) || !integration_normalize_rational(an, ad))
+            return exact_expr();
+        if(rhs_rational){
+            std::vector<integration_parametric_rational_basis> basis;
+            if(integration_parametric_rde_gauged(context, an, ad, {{cn, cd}},
+                    variable, basis, options) !=
+               integration_parametric_rde_status::solved) return exact_expr();
+            for(const auto &entry : basis){
+                if(entry.constants.size() != 1 || entry.constants[0].is_zero())
+                    continue;
+                integration_poly solution_n = entry.numerator;
+                for(auto &coefficient : solution_n)
+                    coefficient = coefficient/entry.constants[0];
+                exact_expr solution = integration_poly_expr(context, solution_n,
+                    variable)/integration_poly_expr(context, entry.denominator,
+                    variable);
+                term_primitive = solution/context.power(pole,
+                    context.integer((long long)r));
+                break;
+            }
+        }else{
+            std::vector<exact_expr> logarithms;
+            std::unordered_set<uint32_t> seen;
+            auto collect_logs = [&](auto &&self, const exact_expr &part) -> void{
+                if(!seen.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::natural_logarithm &&
+                   integration_depends_on(part, variable))
+                    logarithms.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_logs(collect_logs, right[r-1]);
+            if(logarithms.size() != 1) return exact_expr();
+            exact_expr log_generator = logarithms[0];
+            integration_poly log_dn, log_dd;
+            if(!integration_parse_rational(context.differentiate(log_generator,
+                    variable), variable, log_dn, log_dd, degree, degree) ||
+               !integration_normalize_rational(log_dn, log_dd) ||
+               !exact_tree(log_generator)) return exact_expr();
+            integration_expr_poly log_n, log_d;
+            if(!integration_parse_expr_rational(context, right[r-1],
+                    log_generator, log_n, log_d, degree) || log_d.size() != 1 ||
+               !exact_tree(log_d[0])) return exact_expr();
+            for(exact_expr &coefficient : log_n){
+                coefficient = context.simplify(coefficient/log_d[0]);
+                integration_poly check_n, check_d;
+                if(!exact_tree(coefficient) ||
+                   !integration_parse_rational(coefficient, variable,
+                        check_n, check_d, degree, degree)) return exact_expr();
+            }
+            if(log_n.empty() || log_n.size() > degree + 1)
+                return exact_expr();
+            size_t count = std::min(degree + 1, log_n.size() + 1);
+            log_n.resize(count, context.integer(0));
+            term_primitive = integration_parametric_primitive_grid(context,
+                log_n, {log_generator}, {count}, variable, options,
+                rde_coefficient);
+            if(term_primitive.valid())
+                term_primitive = term_primitive/context.power(pole,
+                    context.integer((long long)r));
         }
         if(!term_primitive.valid()) return exact_expr();
         candidate = context.simplify(candidate + term_primitive);
