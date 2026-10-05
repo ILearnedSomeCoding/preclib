@@ -15,7 +15,7 @@ int main(){
 
     exact_expr numerator = t*(p-derivative)*q2 + t*(q-derivative)*p2;
     exact_expr input = numerator/(p2*q2);
-    exact_expr primitive = integration_mixed_linear_two_pole_primitive(
+    exact_expr primitive = integration_mixed_linear_poles_primitive(
         context, input, x, risch_options());
     assert(primitive.valid());
     assert(integration_tower_rational_zero(context,
@@ -32,7 +32,7 @@ int main(){
     exact_expr different_input =
         (t*(p-derivative)*different2 +
          t*(different-different_derivative)*p2)/(p2*different2);
-    exact_expr different_primitive = integration_mixed_linear_two_pole_primitive(
+    exact_expr different_primitive = integration_mixed_linear_poles_primitive(
         context, different_input, x, risch_options());
     assert(different_primitive.valid());
     assert(integration_tower_rational_zero(context,
@@ -43,7 +43,7 @@ int main(){
     exact_expr unequal_input =
         (t*(p-derivative)*q3 +
          t*(q-context.integer(2)*derivative)*p2)/(p2*q3);
-    exact_expr unequal_primitive = integration_mixed_linear_two_pole_primitive(
+    exact_expr unequal_primitive = integration_mixed_linear_poles_primitive(
         context, unequal_input, x, risch_options());
     assert(unequal_primitive.valid());
     exact_expr known = t/p + t/q2;
@@ -57,12 +57,12 @@ int main(){
 
     risch_options small_degree;
     small_degree.maximum_degree = 4;
-    assert(!integration_mixed_linear_two_pole_primitive(context,
+    assert(!integration_mixed_linear_poles_primitive(context,
         unequal_input, x, small_degree).valid());
     exact_expr proportional = context.integer(2)*p;
     exact_expr noncoprime_input = t/(p2*context.power(proportional,
         context.integer(2)));
-    assert(!integration_mixed_linear_two_pole_primitive(context,
+    assert(!integration_mixed_linear_poles_primitive(context,
         noncoprime_input, x, risch_options()).valid());
     std::puts("risch mixed two poles ok");
 }
