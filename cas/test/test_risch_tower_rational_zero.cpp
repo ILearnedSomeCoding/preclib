@@ -84,6 +84,19 @@ int main(){
             context.integer(root))) == context.integer(0));
     }
     assert(integration_tower_nonzero_witness(context, sampled_w, x, 64));
+    assert(integration_rational_tower_polynomial_nonzero(t,
+        {context.integer(1), coefficient}, x, 64));
+    assert(!integration_rational_tower_polynomial_nonzero(t,
+        {context.natural_logarithm(x)}, x, 64));
+    exact_expr sampled_p = context.integer(1) + t*coefficient;
+    exact_expr sampled_input = -context.differentiate(sampled_p, x)/
+        context.power(sampled_p, context.integer(2));
+    exact_expr sampled_primitive = integration_mixed_linear_hermite_primitive(
+        context, sampled_input, x, risch_options());
+    assert(sampled_primitive.valid());
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(sampled_primitive, x)-sampled_input,
+        x, 64, 100000));
     std::vector<exact_expr> stress_terms;
     for(int i = 1; i <= 512; ++i)
         stress_terms.push_back(context.power(x + context.integer(i),

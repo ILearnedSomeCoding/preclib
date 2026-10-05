@@ -4284,11 +4284,14 @@ static bool integration_normalize_expr_coefficient(
 static bool integration_tower_nonzero_witness(
     exact_context &, const exact_expr &, const exact_expr &, size_t);
 
-static bool integration_primitive_polynomial_nonzero(
+static bool integration_rational_tower_polynomial_nonzero(
     const exact_expr &generator, const integration_expr_poly &coefficients,
     const exact_expr &variable, size_t degree){
-    if(generator.operation() != exact_opcode::natural_logarithm) return false;
+    if(generator.operation() != exact_opcode::natural_logarithm &&
+       generator.operation() != exact_opcode::exponential) return false;
     integration_poly a, b;
+    // For nonconstant rational g, log(g) and exp(g) are transcendental
+    // over Q(x); a nonzero polynomial with Q(x) coefficients cannot vanish.
     if(!integration_parse_rational(generator.operand(0), variable, a, b,
             degree, degree) || !integration_normalize_rational(a, b) ||
        integration_zero_poly(integration_sub(
@@ -4343,7 +4346,7 @@ static bool integration_tower_rational_zero(
             context, d, generator);
         if(!integration_tower_nonzero_witness(context, actual_denominator,
                 variable, degree) &&
-           !integration_primitive_polynomial_nonzero(generator, d,
+           !integration_rational_tower_polynomial_nonzero(generator, d,
                 variable, degree)) continue;
         bool zero = true;
         for(const exact_expr &coefficient : n)
@@ -4419,9 +4422,9 @@ static exact_expr integration_reduce_in_primitive_field(
         exact_expr output = integration_expr_poly_expr(context, reduced_n,
             generator) / integration_expr_poly_expr(context, reduced_d,
                 generator);
-        if(!integration_primitive_polynomial_nonzero(generator, d,
+        if(!integration_rational_tower_polynomial_nonzero(generator, d,
                 variable, degree) ||
-           !integration_primitive_polynomial_nonzero(generator, reduced_d,
+           !integration_rational_tower_polynomial_nonzero(generator, reduced_d,
                 variable, degree)) continue;
         integration_expr_poly left = integration_expr_mul(context, n, reduced_d);
         integration_expr_poly right = integration_expr_mul(context, reduced_n, d);
