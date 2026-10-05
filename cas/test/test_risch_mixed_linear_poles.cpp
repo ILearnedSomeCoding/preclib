@@ -128,6 +128,12 @@ int main(){
     assert(integration_tower_rational_zero(context,
         context.differentiate(product_candidate, x)-product_input,
         x, 64, 100000));
+    risch_result product_result = context.integrate_elementary(product_input, x);
+    assert(product_result.status == risch_status::elementary);
+    assert(product_result.remainder == context.integer(0));
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(product_result.elementary_part, x)-product_input,
+        x, 64, 100000));
 
     exact_expr approximate = context.value(numeric_value(Number(0.5)));
     exact_expr approximate_rhs = approximate*lower_solution;
