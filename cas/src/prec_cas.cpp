@@ -7560,6 +7560,7 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
                 break;
             }
         }else{
+            if(!exact_tree(right[r-1])) return exact_expr();
             std::vector<exact_expr> logarithms;
             std::unordered_set<uint32_t> seen;
             auto collect_logs = [&](auto &&self, const exact_expr &part) -> void{
@@ -7571,31 +7572,39 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
                     self(self, part.operand(i));
             };
             collect_logs(collect_logs, right[r-1]);
-            if(logarithms.size() != 1) return exact_expr();
-            exact_expr log_generator = logarithms[0];
-            integration_poly log_dn, log_dd;
-            if(!integration_parse_rational(context.differentiate(log_generator,
-                    variable), variable, log_dn, log_dd, degree, degree) ||
-               !integration_normalize_rational(log_dn, log_dd) ||
-               !exact_tree(log_generator)) return exact_expr();
-            integration_expr_poly log_n, log_d;
-            if(!integration_parse_expr_rational(context, right[r-1],
-                    log_generator, log_n, log_d, degree) || log_d.size() != 1 ||
-               !exact_tree(log_d[0])) return exact_expr();
-            for(exact_expr &coefficient : log_n){
-                coefficient = context.simplify(coefficient/log_d[0]);
-                integration_poly check_n, check_d;
-                if(!exact_tree(coefficient) ||
-                   !integration_parse_rational(coefficient, variable,
-                        check_n, check_d, degree, degree)) return exact_expr();
+            if(logarithms.empty()) return exact_expr();
+            for(const exact_expr &log_generator : logarithms){
+                integration_poly log_dn, log_dd;
+                if(!exact_tree(log_generator) ||
+                   !integration_parse_rational(context.differentiate(log_generator,
+                        variable), variable, log_dn, log_dd, degree, degree) ||
+                   !integration_normalize_rational(log_dn, log_dd))
+                    return exact_expr();
             }
-            if(log_n.empty() || log_n.size() > degree + 1)
-                return exact_expr();
-            size_t count = std::min(degree + 1, log_n.size() + 1);
-            log_n.resize(count, context.integer(0));
-            term_primitive = integration_parametric_primitive_grid(context,
-                log_n, {log_generator}, {count}, variable, options,
-                rde_coefficient);
+            if(logarithms.size() == 1){
+                integration_expr_poly log_n, log_d;
+                if(!integration_parse_expr_rational(context, right[r-1],
+                        logarithms[0], log_n, log_d, degree) ||
+                   log_d.size() != 1 || !exact_tree(log_d[0]))
+                    return exact_expr();
+                for(exact_expr &coefficient : log_n){
+                    coefficient = context.simplify(coefficient/log_d[0]);
+                    integration_poly check_n, check_d;
+                    if(!exact_tree(coefficient) ||
+                       !integration_parse_rational(coefficient, variable,
+                            check_n, check_d, degree, degree)) return exact_expr();
+                }
+                if(log_n.empty() || log_n.size() > degree + 1)
+                    return exact_expr();
+                size_t count = std::min(degree + 1, log_n.size() + 1);
+                log_n.resize(count, context.integer(0));
+                term_primitive = integration_parametric_primitive_grid(context,
+                    log_n, {logarithms[0]}, {count}, variable, options,
+                    rde_coefficient);
+            }else{
+                term_primitive = integration_joint_primitives(context,
+                    right[r-1], variable, options, rde_coefficient);
+            }
             if(term_primitive.valid())
                 term_primitive = term_primitive/context.power(pole,
                     context.integer((long long)r));

@@ -89,6 +89,12 @@ int main(){
     assert(integration_tower_rational_zero(context,
         context.differentiate(special_candidate, x)-special_input,
         x, 64, 100000));
+    risch_result special_result = context.integrate_elementary(special_input, x);
+    assert(special_result.status == risch_status::elementary);
+    assert(special_result.remainder == context.integer(0));
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(special_result.elementary_part, x)-special_input,
+        x, 64, 100000));
 
     exact_expr special_rhs_2 = context.integer(1)/x -
         context.integer(2)*lambda*lower_solution;
@@ -108,5 +114,26 @@ int main(){
     assert(integration_tower_rational_zero(context,
         context.differentiate(repeated_special_candidate, x)-
             repeated_special_input, x, 64, 100000));
+
+    exact_expr log_x1 = context.natural_logarithm(x+context.integer(1));
+    exact_expr product_solution = lower_solution*log_x1;
+    exact_expr product_rhs = context.differentiate(product_solution, x) -
+        lambda*product_solution;
+    exact_expr product_input = product_rhs/special_pole;
+    exact_expr product_candidate = integration_mixed_linear_special_pole_primitive(
+        context, product_input, special_pole, {product_rhs}, 1,
+        context.integer(0), x, context.integer(1), context.integer(0), x,
+        risch_options());
+    assert(product_candidate.valid());
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(product_candidate, x)-product_input,
+        x, 64, 100000));
+
+    exact_expr approximate = context.value(numeric_value(Number(0.5)));
+    exact_expr approximate_rhs = approximate*lower_solution;
+    assert(!integration_mixed_linear_special_pole_primitive(context,
+        approximate_rhs/special_pole, special_pole, {approximate_rhs}, 1,
+        context.integer(0), x, context.integer(1), context.integer(0), x,
+        risch_options()).valid());
     std::puts("risch mixed linear poles ok");
 }
