@@ -4621,8 +4621,15 @@ static exact_expr integration_mixed_linear_hermite_primitive(
     return exact_expr();
 }
 
-// Integrate a simple linear exponential pole when its differential residue
-// is a constant in the lower field.
+// Integrate a simple linear exponential pole through its normal residue or
+// the lower-field RDE for a special pole.
+static exact_expr integration_mixed_linear_special_pole_primitive(
+    exact_context &context, const exact_expr &input, const exact_expr &pole,
+    const integration_expr_poly &numerator, size_t pole_order,
+    const exact_expr &a, const exact_expr &b, const exact_expr &slope,
+    const exact_expr &w,
+    const exact_expr &variable, const risch_options &options);
+
 static exact_expr integration_mixed_linear_simple_pole_primitive(
     exact_context &context, const exact_expr &input,
     const exact_expr &variable, const risch_options &options){
@@ -4680,8 +4687,14 @@ static exact_expr integration_mixed_linear_simple_pole_primitive(
         exact_expr slope = context.differentiate(t.operand(0), variable);
         exact_expr w = context.simplify(b*context.differentiate(a, variable) -
             a*(context.differentiate(b, variable) + b*slope));
-        if(!integration_tower_nonzero_witness(context, w, variable, degree))
+        if(!integration_tower_nonzero_witness(context, w, variable, degree)){
+            exact_expr special = integration_mixed_linear_special_pole_primitive(
+                context, input, pole, numerator, 1, a, b, slope, w, variable,
+                options);
+            if(special.valid()) return special;
             continue;
+        }
+        // At the root t=-a/b, D(a+b*t)=w/b, so the residue is r*b/w.
         exact_expr residue = integration_reduce_in_primitive_field(context,
             context.simplify(numerator[0]*b/w), variable, degree, nodes);
         if(residue.reachable_node_count() > nodes ||
@@ -4719,7 +4732,7 @@ static exact_expr integration_mixed_linear_simple_pole_primitive(
     return exact_expr();
 }
 
-// Split coprime linear normal poles over the lower primitive field.
+// Split coprime linear exponential poles over the lower primitive field.
 // For each pole, truncated binomial series invert the other factors locally.
 static exact_expr integration_mixed_linear_poles_primitive(
     exact_context &context, const exact_expr &input,
@@ -4739,7 +4752,7 @@ static exact_expr integration_mixed_linear_poles_primitive(
             poles.emplace_back(factor.operand(0), (size_t)(-exponent));
         else numerator_factors.push_back(factor);
     }
-    if(poles.size() < 2 || poles.size() > 4) return exact_expr();
+    if(poles.empty() || poles.size() > nodes) return exact_expr();
     size_t total_order = 0;
     for(size_t i = 0; i < poles.size(); ++i){
         if(poles[i].second > degree - total_order) return exact_expr();
@@ -4822,6 +4835,22 @@ static exact_expr integration_mixed_linear_poles_primitive(
         }
         if(!usable) continue;
         std::vector<integration_expr_poly> parts(poles.size());
+        integration_expr_poly full_denominator{context.integer(1)};
+        for(const integration_expr_poly &power : powers){
+            full_denominator = integration_expr_mul(context,
+                full_denominator, power);
+            if(full_denominator.size() > degree + 1){
+                usable = false;
+                break;
+            }
+            for(const exact_expr &entry : full_denominator)
+                if(entry.reachable_node_count() > nodes){
+                    usable = false;
+                    break;
+                }
+            if(!usable) break;
+        }
+        if(!usable) continue;
         integration_expr_poly working = numerator;
         for(size_t i = 0; i + 1 < poles.size() && usable; ++i){
             const size_t order = poles[i].second;
@@ -4948,8 +4977,50 @@ static exact_expr integration_mixed_linear_poles_primitive(
             if(usable) working = std::move(remaining);
         }
         if(!usable) continue;
-        parts.back() = std::move(working);
-        integration_expr_poly reconstruction{context.integer(0)};
+        const size_t last = poles.size()-1;
+        const size_t last_order = poles[last].second;
+        parts.back() = {context.integer(0)};
+        integration_expr_poly last_power{context.integer(1)};
+        for(size_t k = 0; k < last_order; ++k){
+            integration_expr_poly quotient;
+            exact_expr remainder;
+            if(!divide_linear(working, linear[last], quotient, remainder)){
+                usable = false;
+                break;
+            }
+            integration_expr_poly term = last_power;
+            for(exact_expr &entry : term)
+                entry = context.simplify(entry*remainder);
+            parts.back() = integration_expr_add(context, parts.back(), term);
+            for(const exact_expr &entry : parts.back())
+                if(entry.reachable_node_count() > nodes){
+                    usable = false;
+                    break;
+                }
+            if(!usable) break;
+            working = std::move(quotient);
+            if(k + 1 < last_order)
+                last_power = integration_expr_mul(context, last_power,
+                    linear[last]);
+        }
+        if(!usable || parts.back().size() > last_order ||
+           working.size() > degree + 1) continue;
+        integration_expr_poly polynomial_part = std::move(working);
+        for(const exact_expr &entry : polynomial_part)
+            if(entry.reachable_node_count() > nodes){
+                usable = false;
+                break;
+            }
+        if(!usable) continue;
+        integration_expr_poly reconstruction = integration_expr_mul(context,
+            polynomial_part, full_denominator);
+        if(reconstruction.size() > degree + 1){ usable = false; continue; }
+        for(const exact_expr &entry : reconstruction)
+            if(entry.reachable_node_count() > nodes){
+                usable = false;
+                break;
+            }
+        if(!usable) continue;
         for(size_t i = 0; i < poles.size(); ++i){
             integration_expr_poly cofactor{context.integer(1)};
             for(size_t j = 0; j < poles.size(); ++j)
@@ -4975,22 +5046,40 @@ static exact_expr integration_mixed_linear_poles_primitive(
                     variable, degree, nodes)){
                 exact_split = false;
                 break;
-            }
+        }
         if(!exact_split) continue;
         exact_expr candidate = context.integer(0);
+        exact_expr polynomial = integration_expr_poly_expr(context,
+            polynomial_part, t);
+        if(context.simplify(polynomial) != context.integer(0)){
+            risch_result lower = context.integrate_elementary(
+                polynomial, variable, options);
+            if(lower.status != risch_status::elementary ||
+               lower.remainder != context.integer(0) ||
+               !lower.conditions.empty()) continue;
+            candidate = lower.elementary_part;
+        }
         for(size_t i = 0; i < poles.size(); ++i){
             exact_expr component = integration_expr_poly_expr(context,
                 parts[i], t)/context.power(poles[i].first,
                 context.integer((long long)poles[i].second));
             if(context.simplify(component) == context.integer(0)) continue;
-            exact_expr primitive;
-            if(poles[i].second > 1)
-                primitive = integration_mixed_linear_hermite_primitive(
-                    context, component, variable, options);
-            else
-                primitive = integration_mixed_linear_simple_pole_primitive(
-                    context, component, variable, options);
+            exact_expr a = linear[i][0], b = linear[i][1];
+            exact_expr slope = context.differentiate(t.operand(0), variable);
+            exact_expr w = context.simplify(b*context.differentiate(a, variable) -
+                a*(context.differentiate(b, variable) + b*slope));
+            exact_expr primitive = integration_mixed_linear_special_pole_primitive(
+                context, component, poles[i].first, parts[i], poles[i].second,
+                a, b, slope, w, variable, options);
             if(!primitive.valid()){
+                if(poles[i].second > 1)
+                    primitive = integration_mixed_linear_hermite_primitive(
+                        context, component, variable, options);
+                else
+                    primitive = integration_mixed_linear_simple_pole_primitive(
+                        context, component, variable, options);
+            }
+            if(!primitive.valid() && poles.size() > 1){
                 risch_result lower = context.integrate_elementary(
                     component, variable, options);
                 if(lower.status == risch_status::elementary &&
@@ -7411,6 +7500,82 @@ static integration_parametric_rde_status integration_parametric_rde_gauged(
         }
     }
     return status;
+}
+
+static exact_expr integration_mixed_linear_special_pole_primitive(
+    exact_context &context, const exact_expr &input, const exact_expr &pole,
+    const integration_expr_poly &numerator, size_t pole_order,
+    const exact_expr &a, const exact_expr &b, const exact_expr &slope,
+    const exact_expr &w,
+    const exact_expr &variable, const risch_options &options){
+    const size_t nodes = options.maximum_nodes;
+    const size_t degree = std::min(std::min(options.maximum_degree, nodes),
+                                   (size_t)INT64_MAX);
+    // D(a+b*t)=lambda*(a+b*t) exactly when w=0.
+    if(pole_order == 0 || pole_order > degree || numerator.empty() ||
+       numerator.size() > pole_order ||
+       !integration_tower_rational_zero(context, w, variable, degree, nodes))
+        return exact_expr();
+    exact_expr lambda = context.simplify(
+        (context.differentiate(b, variable) + b*slope)/b);
+    integration_expr_poly right(pole_order, context.integer(0));
+    for(size_t k = 0; k < numerator.size(); ++k){
+        if(context.simplify(numerator[k]) == context.integer(0)) continue;
+        exact_expr b_power = context.power(b, context.integer((long long)k));
+        exact_expr choose = context.integer(1);
+        for(size_t j = 0; j <= k; ++j){
+            size_t denominator_power = pole_order - j;
+            exact_expr term = context.simplify(numerator[k]*choose*
+                context.power(-a, context.integer((long long)(k-j))) /
+                b_power);
+            if(term.reachable_node_count() > nodes) return exact_expr();
+            right[denominator_power - 1] = context.simplify(
+                right[denominator_power - 1] + term);
+            if(right[denominator_power - 1].reachable_node_count() > nodes)
+                return exact_expr();
+            if(j < k)
+                choose = context.simplify(choose *
+                    context.integer((long long)(k-j)) /
+                    context.integer((long long)(j+1)));
+        }
+    }
+
+    exact_expr candidate = context.integer(0);
+    for(size_t r = 1; r <= pole_order; ++r){
+        if(context.simplify(right[r-1]) == context.integer(0)) continue;
+        integration_poly an, ad, cn, cd;
+        if(!integration_parse_rational(-context.integer((long long)r)*lambda,
+                variable, an, ad, degree, degree) ||
+           !integration_parse_rational(right[r-1], variable, cn, cd,
+                degree, degree) ||
+           !integration_normalize_rational(an, ad) ||
+           !integration_normalize_rational(cn, cd)) return exact_expr();
+        std::vector<integration_parametric_rational_basis> basis;
+        if(integration_parametric_rde_gauged(context, an, ad, {{cn, cd}},
+                variable, basis, options) !=
+           integration_parametric_rde_status::solved) return exact_expr();
+        exact_expr term_primitive;
+        for(const auto &entry : basis){
+            if(entry.constants.size() != 1 || entry.constants[0].is_zero())
+                continue;
+            integration_poly solution_n = entry.numerator;
+            for(auto &coefficient : solution_n)
+                coefficient = coefficient/entry.constants[0];
+            exact_expr solution = integration_poly_expr(context, solution_n,
+                variable)/integration_poly_expr(context, entry.denominator,
+                variable);
+            term_primitive = solution/context.power(pole,
+                context.integer((long long)r));
+            break;
+        }
+        if(!term_primitive.valid()) return exact_expr();
+        candidate = context.simplify(candidate + term_primitive);
+        if(candidate.reachable_node_count() > nodes) return exact_expr();
+    }
+    if(candidate == context.integer(0)) return exact_expr();
+    return integration_tower_rational_zero(context,
+        context.differentiate(candidate, variable) - input,
+        variable, degree, nodes) ? candidate : exact_expr();
 }
 
 // Rescale z=h*w so w^n has a polynomial, n-th-power-free radicand.
