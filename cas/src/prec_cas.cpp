@@ -4281,6 +4281,270 @@ static bool integration_normalize_expr_coefficient(
     return true;
 }
 
+static bool integration_tower_nonzero_witness(
+    exact_context &, const exact_expr &, const exact_expr &);
+
+static bool integration_primitive_polynomial_nonzero(
+    const exact_expr &generator, const integration_expr_poly &coefficients,
+    const exact_expr &variable, size_t degree){
+    if(generator.operation() != exact_opcode::natural_logarithm) return false;
+    integration_poly a, b;
+    if(!integration_parse_rational(generator.operand(0), variable, a, b,
+            degree, degree) || !integration_normalize_rational(a, b) ||
+       integration_zero_poly(integration_sub(
+           integration_mul(integration_derivative_poly(a), b),
+           integration_mul(a, integration_derivative_poly(b))))) return false;
+    bool nonzero = false;
+    for(const exact_expr &coefficient : coefficients){
+        integration_poly n, d;
+        if(!integration_parse_rational(coefficient, variable, n, d,
+                degree, degree) || !integration_normalize_rational(n, d))
+            return false;
+        if(!integration_zero_poly(n)) nonzero = true;
+    }
+    return nonzero;
+}
+
+// Prove an identity by treating transcendental nodes as formal generators.
+// A concrete nonzero sample certifies that a formal denominator is not the
+// zero function even when generator independence is not yet established.
+static bool integration_tower_rational_zero(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, size_t degree, size_t nodes,
+    size_t remaining_generators = 4){
+    exact_expr normalized = context.simplify(expression);
+    if(normalized == context.integer(0)) return true;
+    if(normalized.reachable_node_count() > nodes) return false;
+    integration_poly numerator, denominator;
+    if(integration_parse_rational(normalized, variable, numerator, denominator,
+            degree, degree) &&
+       integration_normalize_rational(numerator, denominator))
+        return integration_zero_poly(numerator);
+    if(!remaining_generators) return false;
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if((part.operation() == exact_opcode::natural_logarithm ||
+            part.operation() == exact_opcode::exponential) &&
+           integration_depends_on(part, variable)){
+            generators.push_back(part);
+            return;
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, normalized);
+    for(const exact_expr &generator : generators){
+        integration_expr_poly n, d;
+        if(!integration_parse_expr_rational(context, normalized, generator,
+                n, d, degree)) continue;
+        exact_expr actual_denominator = integration_expr_poly_expr(
+            context, d, generator);
+        if(!integration_tower_nonzero_witness(context, actual_denominator,
+                variable) &&
+           !integration_primitive_polynomial_nonzero(generator, d,
+                variable, degree)) continue;
+        bool zero = true;
+        for(const exact_expr &coefficient : n)
+            if(!integration_tower_rational_zero(context, coefficient, variable,
+                    degree, nodes, remaining_generators - 1)){
+                zero = false;
+                break;
+            }
+        if(zero) return true;
+    }
+    return false;
+}
+
+static bool integration_tower_nonzero_witness(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable){
+    for(int derivative_order = 0; derivative_order < 2; ++derivative_order){
+        exact_expr checked = derivative_order
+            ? context.differentiate(expression, variable) : expression;
+        for(int sample : {1, 2, 3}){
+            try{
+                exact_expr value = context.simplify(context.substitute(
+                    checked, variable, context.integer(sample)));
+                if(value.is_value() && !value.value().is_approximate() &&
+                   !value.value().is_zero()) return true;
+            }catch(const std::exception &){
+                // Try another regular point.
+            }
+        }
+    }
+    return false;
+}
+
+static bool integration_expr_gcd_rational_coefficients(
+    exact_context &, integration_expr_poly, integration_expr_poly,
+    const exact_expr &, size_t, integration_expr_poly &);
+static bool integration_expr_divide_rational_coefficients(
+    exact_context &, integration_expr_poly, integration_expr_poly,
+    const exact_expr &, size_t, integration_expr_poly &);
+
+static exact_expr integration_reduce_in_primitive_field(
+    exact_context &context, const exact_expr &input,
+    const exact_expr &variable, size_t degree, size_t nodes){
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part, variable))
+            generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, input);
+    for(const exact_expr &generator : generators){
+        integration_poly argument_n, argument_d;
+        if(!integration_parse_rational(generator.operand(0), variable,
+                argument_n, argument_d, degree, degree)) continue;
+        integration_expr_poly n, d, gcd, reduced_n, reduced_d;
+        if(!integration_parse_expr_rational(context, input, generator,
+                n, d, degree, &variable) ||
+           !integration_expr_gcd_rational_coefficients(context, n, d,
+                variable, degree, gcd) ||
+           !integration_expr_divide_rational_coefficients(context, n, gcd,
+                variable, degree, reduced_n) ||
+           !integration_expr_divide_rational_coefficients(context, d, gcd,
+                variable, degree, reduced_d)) continue;
+        exact_expr output = integration_expr_poly_expr(context, reduced_n,
+            generator) / integration_expr_poly_expr(context, reduced_d,
+                generator);
+        if(!integration_primitive_polynomial_nonzero(generator, d,
+                variable, degree) ||
+           !integration_primitive_polynomial_nonzero(generator, reduced_d,
+                variable, degree)) continue;
+        integration_expr_poly left = integration_expr_mul(context, n, reduced_d);
+        integration_expr_poly right = integration_expr_mul(context, reduced_n, d);
+        left.resize(std::max(left.size(), right.size()), context.integer(0));
+        bool equal = true;
+        for(size_t i = 0; i < right.size(); ++i)
+            left[i] = left[i] - right[i];
+        for(exact_expr &coefficient : left)
+            if(!integration_normalize_expr_coefficient(context, coefficient,
+                    variable, degree) || coefficient != context.integer(0)){
+                equal = false;
+                break;
+            }
+        if(output.reachable_node_count() < input.reachable_node_count() &&
+           output.reachable_node_count() <= nodes && equal) return output;
+    }
+    return input;
+}
+
+// One normal Hermite step for a linear exponential factor over a lower
+// primitive field. The lower-field quotient is kept symbolic and every
+// division and final derivative is independently certified.
+static exact_expr integration_mixed_linear_hermite_primitive(
+    exact_context &context, const exact_expr &input,
+    const exact_expr &variable, const risch_options &options){
+    const size_t degree = options.maximum_degree;
+    const size_t nodes = options.maximum_nodes;
+    const size_t expansion = std::min(nodes, (size_t)100000);
+    std::vector<exact_expr> factors;
+    integration_factor_list(input, factors);
+    for(const exact_expr &factor : factors){
+        if(factor.operation() != exact_opcode::power ||
+           factor.operand(1) != context.integer(-2)) continue;
+        exact_expr p = factor.operand(0);
+        std::vector<exact_expr> generators;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part, variable)){
+                generators.push_back(part);
+                return;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, p);
+        for(const exact_expr &t : generators){
+            integration_poly inner_n, inner_d;
+            if(!integration_parse_rational(t.operand(0), variable,
+                    inner_n, inner_d, degree, degree)) continue;
+            integration_expr_poly pc;
+            if(!integration_parse_expr_poly(context, p, t, pc) ||
+               pc.size() != 2) continue;
+            exact_expr a = pc[0], b = pc[1];
+            if(!integration_tower_nonzero_witness(context, b, variable))
+                continue;
+            exact_expr slope = context.differentiate(t.operand(0), variable);
+            exact_expr w = context.simplify(
+                b*context.differentiate(a, variable) -
+                a*(context.differentiate(b, variable) + b*slope));
+            if(!integration_tower_nonzero_witness(context, w, variable))
+                continue;
+            exact_expr n = context.simplify(context.expand(
+                context.simplify(input*context.power(p, context.integer(2))),
+                expansion));
+            integration_expr_poly nc;
+            if(n.reachable_node_count() > nodes ||
+               !integration_parse_expr_poly(context, n, t, nc) ||
+               nc.size() > degree + 1 ||
+               !integration_tower_rational_zero(context,
+                   input - n/context.power(p, context.integer(2)),
+                   variable, degree, nodes)) continue;
+            exact_expr root = -a/b;
+            exact_expr at_root = integration_expr_poly_expr(context, nc, root);
+            exact_expr coefficient = context.simplify(-at_root*b/w);
+            coefficient = integration_reduce_in_primitive_field(context,
+                coefficient, variable, degree, nodes);
+            exact_expr exact_part = coefficient/p;
+            exact_expr residual_n = context.simplify(context.expand(
+                n - context.differentiate(coefficient, variable)*p +
+                    coefficient*context.differentiate(p, variable), expansion));
+            integration_expr_poly rc;
+            if(residual_n.reachable_node_count() > nodes ||
+               !integration_parse_expr_poly(context, residual_n, t, rc) ||
+               rc.size() > degree + 1) continue;
+            auto divide_linear = [&](integration_expr_poly dividend,
+                                     integration_expr_poly &quotient) -> bool{
+                if(dividend.size() < 2) return false;
+                integration_expr_poly original = dividend;
+                quotient.assign(dividend.size()-1, context.integer(0));
+                for(size_t i = dividend.size()-1; i > 0; --i){
+                    exact_expr term = context.simplify(dividend[i]/b);
+                    quotient[i-1] = term;
+                    dividend[i] = context.simplify(dividend[i] - b*term);
+                    dividend[i-1] = context.simplify(dividend[i-1] - a*term);
+                }
+                if(!integration_tower_rational_zero(context, dividend[0],
+                        variable, degree, nodes)) return false;
+                return integration_tower_rational_zero(context,
+                    integration_expr_poly_expr(context, original, t) -
+                    p*integration_expr_poly_expr(context, quotient, t),
+                    variable, degree, nodes);
+            };
+            integration_expr_poly quotient;
+            if(!divide_linear(rc, quotient)) continue;
+            exact_expr lower_input = integration_expr_poly_expr(context,
+                quotient, t)/p;
+            integration_expr_poly lower_quotient;
+            if(quotient.size() >= 2 &&
+               divide_linear(quotient, lower_quotient))
+                lower_input = integration_expr_poly_expr(context,
+                    lower_quotient, t);
+            risch_result lower = context.integrate_elementary(
+                lower_input, variable, options);
+            if(lower.status != risch_status::elementary ||
+               lower.remainder != context.integer(0) ||
+               !lower.conditions.empty()) continue;
+            exact_expr candidate = exact_part + lower.elementary_part;
+            if(candidate.reachable_node_count() <= nodes &&
+               integration_tower_rational_zero(context,
+                   context.differentiate(candidate, variable) - input,
+                   variable, degree, nodes)) return candidate;
+        }
+    }
+    return exact_expr();
+}
+
 // Euclidean division in Q(x)[t], normalizing coefficient arithmetic in Q(x).
 static bool integration_expr_divmod_rational_coefficients(
     exact_context &context, integration_expr_poly n, integration_expr_poly d,
@@ -9045,6 +9309,11 @@ exact_expr exact_context::integrate(const exact_expr &expression,
             if(algebraic.status == risch_status::unsupported &&
                algebraic.conditions.empty() && algebraic.elementary_part != integer(0))
                 return simplify(algebraic.elementary_part + unresolved(algebraic.remainder.id()));
+        }else{
+            auto strict = integrate_elementary(normalized, variable);
+            if(strict.status == risch_status::elementary &&
+               strict.remainder == integer(0) && strict.conditions.empty())
+                return simplify(strict.elementary_part);
         }
     }
 
@@ -9250,6 +9519,10 @@ risch_result exact_context::integrate_elementary_impl(
             differentiate(candidate, variable) - expression, 100000));
         if(error != integer(0))
             error = simplify(expand(trig_reduce(error), 100000));
+        if(error != integer(0) && integration_tower_rational_zero(
+                *this, error, variable, degree_budget,
+                options.maximum_nodes))
+            error = integer(0);
         if(error != integer(0)){
             std::vector<exact_expr> generators;
             std::unordered_set<uint32_t> generator_ids;
@@ -9348,6 +9621,16 @@ risch_result exact_context::integrate_elementary_impl(
                 integer(exponent + 1);
             if(candidate.reachable_node_count() > options.maximum_nodes) continue;
             if(verify_candidate(candidate)) return true;
+        }
+        exact_expr mixed_hermite_candidate =
+            integration_mixed_linear_hermite_primitive(*this, expression,
+                variable, options);
+        if(mixed_hermite_candidate.valid()){
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(mixed_hermite_candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
         }
         exact_expr mixed_candidate = integration_mixed_primitive_exponential(
             *this, expression, variable, options);
@@ -16100,7 +16383,10 @@ public:
         auto cached = memo_.find(expression);
         if(cached != memo_.end()) return cached->second;
         exact_node source = storage_.node(expression);
-        const uint32_t *args = storage_.children(source);
+        const uint32_t *child_data = storage_.children(source);
+        std::vector<uint32_t> args;
+        if(source.operand_count)
+            args.assign(child_data, child_data + source.operand_count);
 
         uint32_t result = expression;
         if(source.op == exact_opcode::bounded_sum){
@@ -16120,7 +16406,7 @@ public:
             if(target_ == args[1]) return expression;
             if(contains(expression, target_) && contains(replacement_, args[1]))
                 throw std::invalid_argument("substitution would capture an algebraic root parameter");
-            std::vector<uint32_t> children(args, args + 5);
+            std::vector<uint32_t> children = args;
             for(size_t i = 2; i < 5; ++i) children[i] = rewrite(children[i]);
             result = storage_.intern_compound(source.op, children);
         }else if(source.op == exact_opcode::rule){
