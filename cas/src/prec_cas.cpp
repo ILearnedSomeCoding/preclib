@@ -4474,8 +4474,9 @@ static exact_expr integration_reduce_in_primitive_field(
 static exact_expr integration_mixed_linear_hermite_primitive(
     exact_context &context, const exact_expr &input,
     const exact_expr &variable, const risch_options &options){
-    const size_t degree = std::min(options.maximum_degree, (size_t)INT64_MAX);
     const size_t nodes = options.maximum_nodes;
+    const size_t degree = std::min(std::min(options.maximum_degree, nodes),
+                                   (size_t)INT64_MAX);
     const size_t expansion = std::min(nodes, (size_t)100000);
     std::vector<exact_expr> factors;
     integration_factor_list(input, factors);
@@ -4620,13 +4621,112 @@ static exact_expr integration_mixed_linear_hermite_primitive(
     return exact_expr();
 }
 
+// Integrate a simple linear exponential pole when its differential residue
+// is a constant in the lower field.
+static exact_expr integration_mixed_linear_simple_pole_primitive(
+    exact_context &context, const exact_expr &input,
+    const exact_expr &variable, const risch_options &options){
+    const size_t nodes = options.maximum_nodes;
+    const size_t degree = std::min(std::min(options.maximum_degree, nodes),
+                                   (size_t)INT64_MAX);
+    std::vector<exact_expr> factors, numerator_factors;
+    integration_factor_list(input, factors);
+    exact_expr pole;
+    for(const exact_expr &factor : factors){
+        int64_t exponent = 0;
+        if(factor.operation() == exact_opcode::power &&
+           integration_signed_exponent(factor.operand(1), exponent) &&
+           exponent == -1){
+            if(pole.valid()) return exact_expr();
+            pole = factor.operand(0);
+        }else numerator_factors.push_back(factor);
+    }
+    if(!pole.valid()) return exact_expr();
+
+    std::vector<exact_expr> generators;
+    std::unordered_set<uint32_t> seen;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::exponential &&
+           integration_depends_on(part, variable)){
+            generators.push_back(part);
+            return;
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, pole);
+    for(const exact_expr &t : generators){
+        integration_poly inner_n, inner_d;
+        if(!integration_parse_rational(t.operand(0), variable,
+                inner_n, inner_d, degree, degree)) continue;
+        integration_expr_poly p, numerator, dp;
+        if(!integration_parse_expr_poly(context, pole, t, p) || p.size() != 2 ||
+           !integration_tower_nonzero_witness(context, p[1], variable, degree) ||
+           !integration_tower_nonzero_witness(context, pole, variable, degree))
+            continue;
+        exact_expr raw_n = numerator_factors.empty() ? context.integer(1) :
+            context.simplify(context.expand(context.multiply(numerator_factors),
+                std::min(nodes, (size_t)100000)));
+        if(raw_n.reachable_node_count() > nodes ||
+           !integration_parse_expr_poly(context, raw_n, t, numerator) ||
+           numerator.size() != 1 ||
+           !integration_parse_expr_poly(context,
+                context.expand(context.differentiate(pole, variable),
+                    std::min(nodes, (size_t)100000)), t, dp) || dp.size() > 2)
+            continue;
+        dp.resize(2, context.integer(0));
+        exact_expr a = p[0], b = p[1];
+        exact_expr slope = context.differentiate(t.operand(0), variable);
+        exact_expr w = context.simplify(b*context.differentiate(a, variable) -
+            a*(context.differentiate(b, variable) + b*slope));
+        if(!integration_tower_nonzero_witness(context, w, variable, degree))
+            continue;
+        exact_expr residue = integration_reduce_in_primitive_field(context,
+            context.simplify(numerator[0]*b/w), variable, degree, nodes);
+        if(residue.reachable_node_count() > nodes ||
+           !integration_tower_rational_zero(context,
+                context.differentiate(residue, variable), variable, degree, nodes))
+            continue;
+
+        integration_expr_poly remainder{numerator[0]};
+        for(size_t i = 0; i < 2; ++i){
+            if(remainder.size() <= i) remainder.resize(i+1, context.integer(0));
+            remainder[i] = context.simplify(remainder[i]-residue*dp[i]);
+        }
+        exact_expr quotient_coefficient = context.simplify(remainder[1]/b);
+        if(quotient_coefficient.reachable_node_count() > nodes ||
+           !integration_tower_rational_zero(context,
+                remainder[0]-a*quotient_coefficient, variable, degree, nodes))
+            continue;
+        exact_expr polynomial_part = quotient_coefficient;
+        exact_expr polynomial_primitive = context.integer(0);
+        if(context.simplify(polynomial_part) != context.integer(0)){
+            risch_result lower = context.integrate_elementary(
+                polynomial_part, variable, options);
+            if(lower.status != risch_status::elementary ||
+               lower.remainder != context.integer(0) ||
+               !lower.conditions.empty()) continue;
+            polynomial_primitive = lower.elementary_part;
+        }
+        exact_expr candidate = residue*context.natural_logarithm(pole) +
+            polynomial_primitive;
+        if(candidate.reachable_node_count() <= nodes &&
+           integration_tower_rational_zero(context,
+                context.differentiate(candidate, variable)-input,
+                variable, degree, nodes)) return candidate;
+    }
+    return exact_expr();
+}
+
 // Split coprime linear normal poles over the lower primitive field.
 // For each pole, truncated binomial series invert the other factors locally.
 static exact_expr integration_mixed_linear_poles_primitive(
     exact_context &context, const exact_expr &input,
     const exact_expr &variable, const risch_options &options){
-    const size_t degree = std::min(options.maximum_degree, (size_t)INT64_MAX);
     const size_t nodes = options.maximum_nodes;
+    const size_t degree = std::min(std::min(options.maximum_degree, nodes),
+                                   (size_t)INT64_MAX);
     const size_t expansion = std::min(nodes, (size_t)100000);
     std::vector<exact_expr> factors, numerator_factors;
     std::vector<std::pair<exact_expr, size_t>> poles;
@@ -4635,7 +4735,7 @@ static exact_expr integration_mixed_linear_poles_primitive(
         int64_t exponent = 0;
         if(factor.operation() == exact_opcode::power &&
            integration_signed_exponent(factor.operand(1), exponent) &&
-           exponent <= -2 && exponent >= -(int64_t)degree)
+           exponent <= -1 && exponent >= -(int64_t)degree)
             poles.emplace_back(factor.operand(0), (size_t)(-exponent));
         else numerator_factors.push_back(factor);
     }
@@ -4708,9 +4808,19 @@ static exact_expr integration_mixed_linear_poles_primitive(
         std::vector<integration_expr_poly> powers(poles.size());
         for(size_t i = 0; i < poles.size(); ++i){
             powers[i] = {context.integer(1)};
-            for(size_t k = 0; k < poles[i].second; ++k)
+            for(size_t k = 0; k < poles[i].second; ++k){
                 powers[i] = integration_expr_mul(context, powers[i], linear[i]);
+                if(powers[i].size() > degree + 1){ usable = false; break; }
+                for(const exact_expr &entry : powers[i])
+                    if(entry.reachable_node_count() > nodes){
+                        usable = false;
+                        break;
+                    }
+                if(!usable) break;
+            }
+            if(!usable) break;
         }
+        if(!usable) continue;
         std::vector<integration_expr_poly> parts(poles.size());
         integration_expr_poly working = numerator;
         for(size_t i = 0; i + 1 < poles.size() && usable; ++i){
@@ -4724,14 +4834,19 @@ static exact_expr integration_mixed_linear_poles_primitive(
                 exact_expr q0 = integration_reduce_in_primitive_field(context,
                     context.simplify(linear[j][0]-lambda*linear[i][0]),
                     variable, degree, nodes);
-                if(!integration_tower_nonzero_witness(context, q0, variable,
-                        degree)){
+                if(lambda.reachable_node_count() > nodes ||
+                   q0.reachable_node_count() > nodes ||
+                   !integration_tower_nonzero_witness(context, q0, variable, degree)){
                     usable = false;
                     break;
                 }
                 std::vector<exact_expr> factor_series(order, context.integer(0));
                 exact_expr coefficient = context.power(q0,
                     context.integer(-(long long)poles[j].second));
+                if(coefficient.reachable_node_count() > nodes){
+                    usable = false;
+                    break;
+                }
                 for(size_t k = 0; k < order; ++k){
                     factor_series[k] = coefficient;
                     if(k + 1 == order) break;
@@ -4752,6 +4867,11 @@ static exact_expr integration_mixed_linear_poles_primitive(
                         product[a+b] = context.simplify(product[a+b] +
                             inverse_series[a]*factor_series[b]);
                 inverse_series = std::move(product);
+                for(const exact_expr &entry : inverse_series)
+                    if(entry.reachable_node_count() > nodes){
+                        usable = false;
+                        break;
+                    }
             }
             if(!usable) break;
             integration_expr_poly inverse{context.integer(0)};
@@ -4761,12 +4881,24 @@ static exact_expr integration_mixed_linear_poles_primitive(
                 for(exact_expr &entry : term)
                     entry = context.simplify(entry*inverse_series[k]);
                 inverse = integration_expr_add(context, inverse, term);
+                for(const exact_expr &entry : inverse)
+                    if(entry.reachable_node_count() > nodes){
+                        usable = false;
+                        break;
+                    }
                 if(k + 1 < order) power = integration_expr_mul(context,
                     power, linear[i]);
             }
+            if(!usable) break;
             integration_expr_poly weighted = integration_expr_mul(context,
                 working, inverse);
             if(weighted.size() > degree*2 + 1){ usable = false; break; }
+            for(const exact_expr &entry : weighted)
+                if(entry.reachable_node_count() > nodes){
+                    usable = false;
+                    break;
+                }
+            if(!usable) break;
             parts[i] = {context.integer(0)};
             power = {context.integer(1)};
             for(size_t k = 0; k < order; ++k){
@@ -4780,6 +4912,12 @@ static exact_expr integration_mixed_linear_poles_primitive(
                 for(exact_expr &entry : term)
                     entry = context.simplify(entry*remainder);
                 parts[i] = integration_expr_add(context, parts[i], term);
+                for(const exact_expr &entry : parts[i])
+                    if(entry.reachable_node_count() > nodes){
+                        usable = false;
+                        break;
+                    }
+                if(!usable) break;
                 weighted = std::move(quotient);
                 if(k + 1 < order) power = integration_expr_mul(context,
                     power, linear[i]);
@@ -4819,7 +4957,14 @@ static exact_expr integration_mixed_linear_poles_primitive(
                     cofactor, powers[j]);
             reconstruction = integration_expr_add(context, reconstruction,
                 integration_expr_mul(context, parts[i], cofactor));
+            if(reconstruction.size() > degree + 1){ usable = false; break; }
+            for(const exact_expr &entry : reconstruction)
+                if(entry.reachable_node_count() > nodes){
+                    usable = false;
+                    break;
+                }
         }
+        if(!usable) continue;
         reconstruction.resize(std::max(reconstruction.size(),
             numerator.size()), context.integer(0));
         for(size_t i = 0; i < numerator.size(); ++i)
@@ -4837,13 +4982,31 @@ static exact_expr integration_mixed_linear_poles_primitive(
             exact_expr component = integration_expr_poly_expr(context,
                 parts[i], t)/context.power(poles[i].first,
                 context.integer((long long)poles[i].second));
-            exact_expr primitive = integration_mixed_linear_hermite_primitive(
-                context, component, variable, options);
+            if(context.simplify(component) == context.integer(0)) continue;
+            exact_expr primitive;
+            if(poles[i].second > 1)
+                primitive = integration_mixed_linear_hermite_primitive(
+                    context, component, variable, options);
+            else
+                primitive = integration_mixed_linear_simple_pole_primitive(
+                    context, component, variable, options);
+            if(!primitive.valid()){
+                risch_result lower = context.integrate_elementary(
+                    component, variable, options);
+                if(lower.status == risch_status::elementary &&
+                   lower.remainder == context.integer(0) &&
+                   lower.conditions.empty())
+                    primitive = lower.elementary_part;
+            }
             if(!primitive.valid()){
                 usable = false;
                 break;
             }
             candidate = candidate + primitive;
+            if(candidate.reachable_node_count() > nodes){
+                usable = false;
+                break;
+            }
         }
         if(!usable) continue;
         // The coefficient identity and certified sub-integrals prove the
