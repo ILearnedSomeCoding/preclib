@@ -41,6 +41,49 @@ int main(){
     assert(integration_tower_rational_zero(context,
         context.differentiate(shifted.elementary_part, x) - shifted_input,
         x, 64, 100000));
+    for(int order : {3, 4}){
+        exact_expr pole = context.power(p, context.integer(order));
+        exact_expr higher_input = t*(p-context.integer(order-1)*derivative)/pole;
+        risch_result higher = context.integrate_elementary(higher_input, x);
+        assert(higher.status == risch_status::elementary);
+        assert(higher.remainder == context.integer(0));
+        assert(integration_tower_rational_zero(context,
+            context.differentiate(higher.elementary_part, x)-higher_input,
+            x, 64, 100000));
+    }
+    exact_expr p2 = context.power(p, context.integer(2));
+    exact_expr p3 = context.power(p, context.integer(3));
+    exact_expr p4 = context.power(p, context.integer(4));
+    exact_expr two_step_numerator =
+        t*(p-context.integer(3)*derivative) +
+        t*p*(p-context.integer(2)*derivative);
+    exact_expr two_step_input = two_step_numerator/p4;
+    risch_result two_step = context.integrate_elementary(two_step_input, x);
+    assert(two_step.status == risch_status::elementary);
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(two_step.elementary_part, x)-two_step_input,
+        x, 64, 100000));
+    assert(integration_tower_rational_zero(context,
+        two_step_input-context.differentiate(t/p3+t/p2, x),
+        x, 64, 100000));
+    exact_expr vanishing = context.integer(1);
+    for(int root : {1, 2, 3})
+        vanishing = vanishing*context.power(x-context.integer(root),
+            context.integer(2));
+    exact_expr coefficient = context.integer(0), derivative_term = vanishing;
+    for(int i = 0; i <= 6; ++i){
+        coefficient = coefficient + (i % 2 ? -derivative_term : derivative_term);
+        derivative_term = context.differentiate(derivative_term, x);
+    }
+    exact_expr sampled_w = -context.differentiate(coefficient, x)-coefficient;
+    for(int root : {1, 2, 3}){
+        assert(context.simplify(context.substitute(sampled_w, x,
+            context.integer(root))) == context.integer(0));
+        assert(context.simplify(context.substitute(
+            context.differentiate(sampled_w, x), x,
+            context.integer(root))) == context.integer(0));
+    }
+    assert(integration_tower_nonzero_witness(context, sampled_w, x, 64));
     std::vector<exact_expr> stress_terms;
     for(int i = 1; i <= 512; ++i)
         stress_terms.push_back(context.power(x + context.integer(i),

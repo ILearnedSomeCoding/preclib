@@ -4282,7 +4282,7 @@ static bool integration_normalize_expr_coefficient(
 }
 
 static bool integration_tower_nonzero_witness(
-    exact_context &, const exact_expr &, const exact_expr &);
+    exact_context &, const exact_expr &, const exact_expr &, size_t);
 
 static bool integration_primitive_polynomial_nonzero(
     const exact_expr &generator, const integration_expr_poly &coefficients,
@@ -4342,7 +4342,7 @@ static bool integration_tower_rational_zero(
         exact_expr actual_denominator = integration_expr_poly_expr(
             context, d, generator);
         if(!integration_tower_nonzero_witness(context, actual_denominator,
-                variable) &&
+                variable, degree) &&
            !integration_primitive_polynomial_nonzero(generator, d,
                 variable, degree)) continue;
         bool zero = true;
@@ -4359,7 +4359,12 @@ static bool integration_tower_rational_zero(
 
 static bool integration_tower_nonzero_witness(
     exact_context &context, const exact_expr &expression,
-    const exact_expr &variable){
+    const exact_expr &variable, size_t degree){
+    integration_poly numerator, denominator;
+    if(integration_parse_rational(expression, variable, numerator,
+            denominator, degree, degree) &&
+       integration_normalize_rational(numerator, denominator))
+        return !integration_zero_poly(numerator);
     for(int derivative_order = 0; derivative_order < 2; ++derivative_order){
         exact_expr checked = derivative_order
             ? context.differentiate(expression, variable) : expression;
@@ -4436,20 +4441,22 @@ static exact_expr integration_reduce_in_primitive_field(
     return input;
 }
 
-// One normal Hermite step for a linear exponential factor over a lower
-// primitive field. The lower-field quotient is kept symbolic and every
-// division and final derivative is independently certified.
+// Repeated normal Hermite steps for a linear exponential factor over a lower
+// primitive field. Every order reduction and final derivative is certified.
 static exact_expr integration_mixed_linear_hermite_primitive(
     exact_context &context, const exact_expr &input,
     const exact_expr &variable, const risch_options &options){
-    const size_t degree = options.maximum_degree;
+    const size_t degree = std::min(options.maximum_degree, (size_t)INT64_MAX);
     const size_t nodes = options.maximum_nodes;
     const size_t expansion = std::min(nodes, (size_t)100000);
     std::vector<exact_expr> factors;
     integration_factor_list(input, factors);
     for(const exact_expr &factor : factors){
-        if(factor.operation() != exact_opcode::power ||
-           factor.operand(1) != context.integer(-2)) continue;
+        if(factor.operation() != exact_opcode::power) continue;
+        int64_t exponent = 0;
+        if(!integration_signed_exponent(factor.operand(1), exponent) ||
+           exponent > -2 || exponent < -(int64_t)degree) continue;
+        size_t pole_order = (size_t)(-exponent);
         exact_expr p = factor.operand(0);
         std::vector<exact_expr> generators;
         std::unordered_set<uint32_t> seen;
@@ -4472,39 +4479,35 @@ static exact_expr integration_mixed_linear_hermite_primitive(
             if(!integration_parse_expr_poly(context, p, t, pc) ||
                pc.size() != 2) continue;
             exact_expr a = pc[0], b = pc[1];
-            if(!integration_tower_nonzero_witness(context, b, variable))
+            if(!integration_tower_nonzero_witness(context, b, variable,
+                    degree))
                 continue;
             exact_expr slope = context.differentiate(t.operand(0), variable);
             exact_expr w = context.simplify(
                 b*context.differentiate(a, variable) -
                 a*(context.differentiate(b, variable) + b*slope));
-            if(!integration_tower_nonzero_witness(context, w, variable))
+            if(!integration_tower_nonzero_witness(context, w, variable,
+                    degree))
                 continue;
             exact_expr n = context.simplify(context.expand(
-                context.simplify(input*context.power(p, context.integer(2))),
+                context.simplify(input*context.power(p, context.integer(exponent*-1))),
                 expansion));
-            integration_expr_poly nc;
+            integration_expr_poly current;
             if(n.reachable_node_count() > nodes ||
-               !integration_parse_expr_poly(context, n, t, nc) ||
-               nc.size() > degree + 1 ||
+               !integration_parse_expr_poly(context, n, t, current) ||
+               current.size() > degree + 1 ||
                !integration_tower_rational_zero(context,
-                   input - n/context.power(p, context.integer(2)),
+                   input - n/context.power(p, context.integer((long long)pole_order)),
                    variable, degree, nodes)) continue;
             exact_expr root = -a/b;
-            exact_expr at_root = integration_expr_poly_expr(context, nc, root);
-            exact_expr coefficient = context.simplify(-at_root*b/w);
-            coefficient = integration_reduce_in_primitive_field(context,
-                coefficient, variable, degree, nodes);
-            exact_expr exact_part = coefficient/p;
-            exact_expr residual_n = context.simplify(context.expand(
-                n - context.differentiate(coefficient, variable)*p +
-                    coefficient*context.differentiate(p, variable), expansion));
-            integration_expr_poly rc;
-            if(residual_n.reachable_node_count() > nodes ||
-               !integration_parse_expr_poly(context, residual_n, t, rc) ||
-               rc.size() > degree + 1) continue;
             auto divide_linear = [&](integration_expr_poly dividend,
                                      integration_expr_poly &quotient) -> bool{
+                if(dividend.size() == 1 &&
+                   integration_tower_rational_zero(context, dividend[0],
+                       variable, degree, nodes)){
+                    quotient = {context.integer(0)};
+                    return true;
+                }
                 if(dividend.size() < 2) return false;
                 integration_expr_poly original = dividend;
                 quotient.assign(dividend.size()-1, context.integer(0));
@@ -4521,13 +4524,57 @@ static exact_expr integration_mixed_linear_hermite_primitive(
                     p*integration_expr_poly_expr(context, quotient, t),
                     variable, degree, nodes);
             };
-            integration_expr_poly quotient;
-            if(!divide_linear(rc, quotient)) continue;
+            exact_expr exact_part = context.integer(0);
+            bool reduced = true;
+            for(size_t order = pole_order; order > 1; --order){
+                exact_expr current_expr = integration_expr_poly_expr(
+                    context, current, t);
+                exact_expr at_root = integration_expr_poly_expr(context,
+                    current, root);
+                exact_expr coefficient = context.simplify(
+                    -at_root*b/(context.integer((long long)order-1)*w));
+                coefficient = integration_reduce_in_primitive_field(context,
+                    coefficient, variable, degree, nodes);
+                exact_expr term = coefficient/context.power(p,
+                    context.integer((long long)order-1));
+                exact_expr residual_n = context.simplify(context.expand(
+                    current_expr - context.differentiate(coefficient,
+                        variable)*p + context.integer((long long)order-1)*
+                        coefficient*context.differentiate(p, variable),
+                    expansion));
+                integration_expr_poly rc, quotient;
+                if(residual_n.reachable_node_count() > nodes ||
+                   !integration_parse_expr_poly(context, residual_n, t, rc) ||
+                   rc.size() > degree + 1 ||
+                   !divide_linear(rc, quotient)){
+                    reduced = false;
+                    break;
+                }
+                exact_expr next_expr = integration_expr_poly_expr(context,
+                    quotient, t);
+                if(!integration_tower_rational_zero(context,
+                        current_expr/context.power(p,
+                            context.integer((long long)order)) -
+                        context.differentiate(term, variable) -
+                        next_expr/context.power(p,
+                            context.integer((long long)order-1)),
+                        variable, degree, nodes)){
+                    reduced = false;
+                    break;
+                }
+                exact_part = exact_part + term;
+                current = std::move(quotient);
+                if(exact_part.reachable_node_count() > nodes){
+                    reduced = false;
+                    break;
+                }
+            }
+            if(!reduced) continue;
             exact_expr lower_input = integration_expr_poly_expr(context,
-                quotient, t)/p;
+                current, t)/p;
             integration_expr_poly lower_quotient;
-            if(quotient.size() >= 2 &&
-               divide_linear(quotient, lower_quotient))
+            if(current.size() >= 2 &&
+               divide_linear(current, lower_quotient))
                 lower_input = integration_expr_poly_expr(context,
                     lower_quotient, t);
             risch_result lower = context.integrate_elementary(
