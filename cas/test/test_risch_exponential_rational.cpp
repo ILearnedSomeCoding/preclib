@@ -70,6 +70,70 @@ int main(){
         x, options);
     assert(shifted_quadratic.status == risch_status::elementary);
     assert(shifted_quadratic.remainder == context.integer(0));
+    exact_expr reciprocal_x = context.integer(1) / x;
+    exact_expr shifted_reciprocal = context.exponential(reciprocal_x +
+        context.integer(1));
+    exact_expr twice_shifted_reciprocal = context.exponential(
+        context.integer(2) * reciprocal_x + context.integer(3));
+    exact_expr shifted_reciprocal_denominator = context.integer(1) +
+        shifted_reciprocal + twice_shifted_reciprocal;
+    exact_expr shifted_reciprocal_derivative = -(
+        shifted_reciprocal + context.integer(2) * twice_shifted_reciprocal) /
+        (context.power(x, context.integer(2)) *
+         shifted_reciprocal_denominator);
+    risch_result related_rational_shifts = context.integrate_elementary(
+        shifted_reciprocal_derivative, x, options);
+    assert(related_rational_shifts.status == risch_status::elementary);
+    assert(related_rational_shifts.remainder == context.integer(0));
+    assert(related_rational_shifts.elementary_part.reachable_node_count() > 0);
+    exact_expr shifted_exp = context.exponential(x + context.integer(1));
+    exact_expr shifted_exp_input = shifted_exp /
+        context.power(context.integer(1) + context.exponential(x),
+                      context.integer(2));
+    risch_result shifted_exp_result = context.integrate_elementary(
+        shifted_exp_input, x, options);
+    assert(shifted_exp_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        shifted_exp_result.elementary_part, x) -
+        context.e() * context.exponential(x) /
+            context.power(context.integer(1) + context.exponential(x),
+                          context.integer(2))) == context.integer(0));
+    exact_expr inner_exponential = context.exponential(x);
+    exact_expr outer_exponential = context.exponential(inner_exponential);
+    exact_expr nested_polynomial_input = outer_exponential *
+        (inner_exponential + context.integer(2) *
+         context.power(inner_exponential, context.integer(2)));
+    risch_result nested_polynomial = context.integrate_elementary(
+        nested_polynomial_input, x, options);
+    assert(nested_polynomial.status == risch_status::elementary);
+    assert(nested_polynomial.remainder == context.integer(0));
+    exact_expr nested_expected = outer_exponential *
+        (context.integer(2) * inner_exponential - context.integer(1));
+    assert(context.simplify(nested_polynomial.elementary_part -
+        nested_expected) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        nested_polynomial.elementary_part, x) - nested_polynomial_input) ==
+        context.integer(0));
+    exact_expr three_halves = context.rational(
+        precq_t(precn_t(3), precn_t(2)));
+    exact_expr shifted_inner = context.exponential(
+        three_halves * x + context.integer(1));
+    exact_expr shifted_outer = context.exponential(shifted_inner);
+    exact_expr shifted_nested_input = shifted_outer *
+        (shifted_inner + context.integer(2) *
+         context.power(shifted_inner, context.integer(2)));
+    risch_result shifted_nested = context.integrate_elementary(
+        shifted_nested_input, x, options);
+    assert(shifted_nested.status == risch_status::elementary);
+    assert(shifted_nested.remainder == context.integer(0));
+    exact_expr shifted_nested_expected = shifted_outer *
+        (context.rational(precq_t(precn_t(4), precn_t(3))) * shifted_inner -
+         context.rational(precq_t(precn_t(2), precn_t(3))));
+    assert(context.simplify(shifted_nested.elementary_part -
+        shifted_nested_expected) == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        shifted_nested.elementary_part, x) - shifted_nested_input) ==
+        context.integer(0));
     exact_expr repeated_quadratic = a*a + context.integer(2)*a*b*t +
         b*b*context.power(t, context.integer(2));
     risch_result repeated_root = context.integrate_elementary(

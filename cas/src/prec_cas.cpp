@@ -13496,6 +13496,81 @@ risch_result exact_context::integrate_elementary_impl(
         return false;
     };
     if(classify_exponential_laurent()) return result;
+    auto classify_nested_exponential_polynomial = [&]() -> bool{
+        exact_expr outer;
+        exact_expr cofactor = integer(1);
+        if(expression.operation() == exact_opcode::exponential){
+            outer = expression;
+        }else if(expression.operation() == exact_opcode::multiply){
+            std::vector<exact_expr> other_factors;
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr factor = expression.operand(i);
+                if(factor.operation() == exact_opcode::exponential &&
+                   factor.operand(0).operation() == exact_opcode::exponential){
+                    if(outer.valid()) return false;
+                    outer = factor;
+                }else other_factors.push_back(factor);
+            }
+            if(!outer.valid()) return false;
+            if(!other_factors.empty()) cofactor = multiply(other_factors);
+        }else return false;
+
+        exact_expr inner = outer.operand(0);
+        exact_expr inner_argument = inner.operand(0);
+        integration_poly argument_numerator, argument_denominator;
+        if(!integration_parse_rational(inner_argument, variable,
+                argument_numerator, argument_denominator, degree_budget,
+                degree_budget) ||
+           !integration_normalize_rational(argument_numerator,
+                argument_denominator) || argument_numerator.size() != 2 ||
+           argument_denominator.size() != 1 ||
+           argument_denominator[0].is_zero()) return false;
+        for(const numeric_value &coefficient : argument_numerator)
+            if(coefficient.is_approximate()) return false;
+        for(const numeric_value &coefficient : argument_denominator)
+            if(coefficient.is_approximate()) return false;
+        numeric_value slope = argument_numerator[1] /
+                              argument_denominator[0];
+        if(slope.is_zero() || slope.is_approximate()) return false;
+
+        integration_poly numerator, denominator;
+        if(!integration_parse_rational(cofactor, inner, numerator, denominator,
+                degree_budget, degree_budget) ||
+           !integration_normalize_rational(numerator, denominator) ||
+           denominator.size() != 1 || denominator[0].is_zero()) return false;
+        for(numeric_value &coefficient : numerator){
+            coefficient = coefficient / denominator[0];
+            if(coefficient.is_approximate()) return false;
+        }
+        if(numerator.empty() || !numerator[0].is_zero()) return false;
+
+        integration_poly primitive_coefficients(numerator.size(),
+                                                 numeric_value(0));
+        for(size_t k = numerator.size() - 1; k > 0; --k){
+            primitive_coefficients[k - 1] = numerator[k] / slope -
+                numeric_value(k) * primitive_coefficients[k];
+        }
+
+        // Certify a*t*(P' + P) = R coefficient by coefficient.
+        integration_poly reconstructed(numerator.size(), numeric_value(0));
+        for(size_t k = 1; k < reconstructed.size(); ++k){
+            reconstructed[k] = slope * (numeric_value(k) *
+                primitive_coefficients[k] + primitive_coefficients[k - 1]);
+        }
+        if(reconstructed != numerator) return false;
+
+        exact_expr primitive_polynomial = integration_poly_expr(
+            *this, primitive_coefficients, inner);
+        exact_expr candidate = outer * primitive_polynomial;
+        if(candidate.reachable_node_count() > options.maximum_nodes)
+            return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_nested_exponential_polynomial()) return result;
     auto classify_rational_hyperexponential = [&]() -> bool{
         exact_expr exponential_factor;
         exact_expr cofactor = integer(1);
