@@ -135,11 +135,34 @@ int main(){
         context.differentiate(product_result.elementary_part, x)-product_input,
         x, 64, 100000));
 
+    exact_expr log_x2 = context.natural_logarithm(
+        context.power(x, context.integer(2)));
+    exact_expr related_solution = lower_solution*log_x2;
+    exact_expr related_rhs = context.differentiate(related_solution, x) -
+        lambda*related_solution;
+    exact_expr related_input = related_rhs/special_pole;
+    exact_expr related_candidate = integration_mixed_linear_special_pole_primitive(
+        context, related_input, special_pole, {related_rhs}, 1,
+        context.integer(0), x, context.integer(1), context.integer(0), x,
+        risch_options());
+    assert(related_candidate.valid());
+    assert(integration_tower_rational_zero(context,
+        context.differentiate(related_candidate, x)-related_input,
+        x, 64, 100000));
+
     exact_expr approximate = context.value(numeric_value(Number(0.5)));
     exact_expr approximate_rhs = approximate*lower_solution;
     assert(!integration_mixed_linear_special_pole_primitive(context,
         approximate_rhs/special_pole, special_pole, {approximate_rhs}, 1,
         context.integer(0), x, context.integer(1), context.integer(0), x,
         risch_options()).valid());
+    assert(!integration_joint_primitives(context,
+        approximate*lower_solution*log_x1, x, risch_options()).valid());
+    assert(!integration_parametric_primitive_grid(context,
+        {approximate_rhs, context.integer(0)}, {l}, {2}, x,
+        risch_options(), context.integer(0)).valid());
+    assert(context.integrate_elementary(
+        approximate*lower_solution*log_x1, x).status !=
+        risch_status::elementary);
     std::puts("risch mixed linear poles ok");
 }

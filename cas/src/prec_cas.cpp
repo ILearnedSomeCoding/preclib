@@ -3562,6 +3562,19 @@ static bool integration_strictly_positive_constant(const exact_expr &part){
 // elementary integrals such as x*exp(a*x).
 using integration_expr_poly = std::vector<exact_expr>;
 
+static bool integration_exact_expression_tree(const exact_expr &root){
+    if(!root.valid()) return false;
+    std::unordered_set<uint32_t> seen;
+    auto visit = [&](auto &&self, const exact_expr &part) -> bool{
+        if(!seen.insert(part.id()).second) return true;
+        if(part.is_value() && part.value().is_approximate()) return false;
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            if(!self(self, part.operand(i))) return false;
+        return true;
+    };
+    return visit(visit, root);
+}
+
 static bool integration_expr_zero(exact_context &context,
                                   const exact_expr &value){
     return context.simplify(value) == context.integer(0);
@@ -3942,6 +3955,12 @@ static exact_expr integration_joint_primitive_grid(
     const risch_options &options,
     const exact_expr &rde_coefficient = exact_expr()){
     if(generators.empty() || counts.size() != generators.size()) return exact_expr();
+    for(const exact_expr &coefficient : input)
+        if(!integration_exact_expression_tree(coefficient)) return exact_expr();
+    for(const exact_expr &generator : generators)
+        if(!integration_exact_expression_tree(generator)) return exact_expr();
+    if(rde_coefficient.valid() &&
+       !integration_exact_expression_tree(rde_coefficient)) return exact_expr();
     if(generators.size() > 1){
         exact_expr parametric = integration_parametric_primitive_grid(context, input,
             generators, counts, variable, options,
@@ -4122,6 +4141,9 @@ static exact_expr integration_joint_primitive_polynomial(
 static exact_expr integration_joint_primitives(
     exact_context &context, const exact_expr &expression, const exact_expr &variable,
     const risch_options &options, const exact_expr &rde_coefficient = exact_expr()){
+    if(!integration_exact_expression_tree(expression) ||
+       (rde_coefficient.valid() &&
+        !integration_exact_expression_tree(rde_coefficient))) return exact_expr();
     std::vector<exact_expr> generators;
     std::unordered_set<uint32_t> seen;
     auto collect = [&](auto &&self, const exact_expr &part) -> void{
@@ -7495,18 +7517,7 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
         return exact_expr();
     exact_expr lambda = context.simplify(
         (context.differentiate(b, variable) + b*slope)/b);
-    auto exact_tree = [&](const exact_expr &root){
-        std::unordered_set<uint32_t> seen;
-        auto visit = [&](auto &&self, const exact_expr &part) -> bool{
-            if(!seen.insert(part.id()).second) return true;
-            if(part.is_value() && part.value().is_approximate()) return false;
-            for(size_t i = 0; i < part.operand_count(); ++i)
-                if(!self(self, part.operand(i))) return false;
-            return true;
-        };
-        return visit(visit, root);
-    };
-    if(!exact_tree(lambda)) return exact_expr();
+    if(!integration_exact_expression_tree(lambda)) return exact_expr();
     integration_expr_poly right(pole_order, context.integer(0));
     for(size_t k = 0; k < numerator.size(); ++k){
         if(context.simplify(numerator[k]) == context.integer(0)) continue;
@@ -7535,7 +7546,7 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
         exact_expr rde_coefficient = -context.integer((long long)r)*lambda;
         exact_expr term_primitive;
         integration_poly an, ad, cn, cd;
-        bool rhs_rational = exact_tree(right[r-1]) &&
+        bool rhs_rational = integration_exact_expression_tree(right[r-1]) &&
             integration_parse_rational(right[r-1], variable, cn, cd,
                 degree, degree) && integration_normalize_rational(cn, cd);
         if(!integration_parse_rational(rde_coefficient, variable, an, ad,
@@ -7560,7 +7571,7 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
                 break;
             }
         }else{
-            if(!exact_tree(right[r-1])) return exact_expr();
+            if(!integration_exact_expression_tree(right[r-1])) return exact_expr();
             std::vector<exact_expr> logarithms;
             std::unordered_set<uint32_t> seen;
             auto collect_logs = [&](auto &&self, const exact_expr &part) -> void{
@@ -7575,7 +7586,7 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
             if(logarithms.empty()) return exact_expr();
             for(const exact_expr &log_generator : logarithms){
                 integration_poly log_dn, log_dd;
-                if(!exact_tree(log_generator) ||
+                if(!integration_exact_expression_tree(log_generator) ||
                    !integration_parse_rational(context.differentiate(log_generator,
                         variable), variable, log_dn, log_dd, degree, degree) ||
                    !integration_normalize_rational(log_dn, log_dd))
@@ -7585,12 +7596,13 @@ static exact_expr integration_mixed_linear_special_pole_primitive(
                 integration_expr_poly log_n, log_d;
                 if(!integration_parse_expr_rational(context, right[r-1],
                         logarithms[0], log_n, log_d, degree) ||
-                   log_d.size() != 1 || !exact_tree(log_d[0]))
+                   log_d.size() != 1 ||
+                   !integration_exact_expression_tree(log_d[0]))
                     return exact_expr();
                 for(exact_expr &coefficient : log_n){
                     coefficient = context.simplify(coefficient/log_d[0]);
                     integration_poly check_n, check_d;
-                    if(!exact_tree(coefficient) ||
+                    if(!integration_exact_expression_tree(coefficient) ||
                        !integration_parse_rational(coefficient, variable,
                             check_n, check_d, degree, degree)) return exact_expr();
                 }
@@ -8501,6 +8513,11 @@ static exact_expr integration_parametric_primitive_grid(
     const exact_expr &variable,
     const risch_options &options, const exact_expr &a){
     if(generators.empty() || generators.size() != counts.size()) return exact_expr();
+    for(const exact_expr &coefficient : input)
+        if(!integration_exact_expression_tree(coefficient)) return exact_expr();
+    for(const exact_expr &generator : generators)
+        if(!integration_exact_expression_tree(generator)) return exact_expr();
+    if(!integration_exact_expression_tree(a)) return exact_expr();
     std::vector<integration_primitive_derivative_relation> relations;
     if(generators.size() > 1 && integration_primitive_derivative_relations(context,
         generators, variable, options, relations) != integration_parametric_rde_status::solved)
