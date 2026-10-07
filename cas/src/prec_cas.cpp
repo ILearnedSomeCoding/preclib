@@ -13502,20 +13502,169 @@ risch_result exact_context::integrate_elementary_impl(
         if(expression.operation() == exact_opcode::exponential){
             outer = expression;
         }else if(expression.operation() == exact_opcode::multiply){
-            std::vector<exact_expr> other_factors;
+            std::vector<exact_expr> factors, candidates;
             for(size_t i = 0; i < expression.operand_count(); ++i){
                 exact_expr factor = expression.operand(i);
                 if(factor.operation() == exact_opcode::exponential &&
                    factor.operand(0).operation() == exact_opcode::exponential){
-                    if(outer.valid()) return false;
-                    outer = factor;
-                }else other_factors.push_back(factor);
+                    candidates.push_back(factor);
+                }
+                factors.push_back(factor);
             }
-            if(!outer.valid()) return false;
-            if(!other_factors.empty()) cofactor = multiply(other_factors);
+            if(candidates.empty()) return false;
+            size_t selected = SIZE_MAX;
+            if(candidates.size() == 1){
+                for(size_t i = 0; i < factors.size(); ++i)
+                    if(factors[i] == candidates[0]){ selected = i; break; }
+            }else{
+                auto contains = [&](auto &&self, const exact_expr &root,
+                                    const exact_expr &target) -> bool{
+                    if(root == target) return true;
+                    for(size_t i = 0; i < root.operand_count(); ++i)
+                        if(self(self, root.operand(i), target)) return true;
+                    return false;
+                };
+                for(const exact_expr &candidate : candidates){
+                    bool contains_all = true;
+                    for(const exact_expr &other : candidates)
+                        if(candidate != other &&
+                           !contains(contains, candidate.operand(0), other)){
+                            contains_all = false;
+                            break;
+                        }
+                    if(contains_all){
+                        if(selected != SIZE_MAX) return false;
+                        for(size_t i = 0; i < factors.size(); ++i)
+                            if(factors[i] == candidate){ selected = i; break; }
+                    }
+                }
+            }
+            if(selected == SIZE_MAX) return false;
+            outer = factors[selected];
+            factors.erase(factors.begin() + selected);
+            if(!factors.empty()) cofactor = multiply(factors);
         }else return false;
 
         exact_expr inner = outer.operand(0);
+        auto try_nested_chain_rational = [&]() -> bool{
+            exact_expr inner_derivative = simplify(expand(
+                differentiate(inner, variable),
+                std::min(options.maximum_nodes, (size_t)100000)));
+            if(inner_derivative == integer(0) ||
+               inner_derivative.reachable_node_count() > options.maximum_nodes)
+                return false;
+            std::vector<exact_expr> cofactor_factors, derivative_factors;
+            auto collect_multiplicative_factors = [&](auto &&self,
+                    const exact_expr &part, std::vector<exact_expr> &factors) -> bool{
+                if(part.operation() == exact_opcode::multiply){
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        if(!self(self, part.operand(i), factors)) return false;
+                }else if(part.operation() == exact_opcode::power){
+                    size_t exponent = 0;
+                    if(integration_exponent(part.operand(1), exponent) &&
+                       exponent > 0 && exponent <= options.maximum_degree &&
+                       factors.size() < options.maximum_nodes &&
+                       exponent <= options.maximum_nodes - factors.size()){
+                        for(size_t i = 0; i < exponent; ++i)
+                            if(!self(self, part.operand(0), factors)) return false;
+                    }else{
+                        if(factors.size() >= options.maximum_nodes) return false;
+                        factors.push_back(part);
+                    }
+                }else{
+                    if(factors.size() >= options.maximum_nodes) return false;
+                    factors.push_back(part);
+                }
+                return true;
+            };
+            if(!collect_multiplicative_factors(collect_multiplicative_factors,
+                    cofactor, cofactor_factors) ||
+               !collect_multiplicative_factors(collect_multiplicative_factors,
+                    inner_derivative, derivative_factors)) return false;
+            for(const exact_expr &factor : derivative_factors){
+                auto match = std::find(cofactor_factors.begin(),
+                                       cofactor_factors.end(), factor);
+                if(match == cofactor_factors.end()) return false;
+                cofactor_factors.erase(match);
+            }
+            exact_expr rational_rhs = cofactor_factors.empty()
+                ? integer(1) : multiply(cofactor_factors);
+            rational_rhs = simplify(rational_rhs);
+            integration_poly rhs_numerator, rhs_denominator;
+            if(!integration_parse_rational(rational_rhs, inner,
+                    rhs_numerator, rhs_denominator, degree_budget,
+                    degree_budget) ||
+               !integration_normalize_rational(rhs_numerator, rhs_denominator) ||
+               integration_zero_poly(rhs_denominator)){
+                return false;
+            }
+            for(const numeric_value &coefficient : rhs_numerator)
+                if(coefficient.is_approximate()) return false;
+            for(const numeric_value &coefficient : rhs_denominator)
+                if(coefficient.is_approximate()) return false;
+
+            // Removing the exact derivative factors above certifies
+            // cofactor = D(inner) * R(inner) without expanding the tower.
+            std::vector<integration_parametric_rational_basis> basis;
+            auto state = integration_parametric_rde_rational(
+                integration_poly{numeric_value(1)},
+                {{rhs_numerator, rhs_denominator}}, basis,
+                options.maximum_matrix_entries);
+            if(state == integration_parametric_rde_status::resource_limit){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "nested exponential chain RDE budget exhausted";
+                return true;
+            }
+            if(state != integration_parametric_rde_status::solved) return false;
+
+            for(const auto &entry : basis){
+                if(entry.constants.empty() || entry.constants[0].is_zero())
+                    continue;
+                integration_poly primitive_numerator = entry.numerator;
+                for(numeric_value &coefficient : primitive_numerator)
+                    coefficient = coefficient / entry.constants[0];
+                const integration_poly &primitive_denominator =
+                    entry.denominator;
+                integration_poly derivative_numerator = integration_sub(
+                    integration_mul(integration_derivative_poly(
+                        primitive_numerator), primitive_denominator),
+                    integration_mul(primitive_numerator,
+                        integration_derivative_poly(primitive_denominator)));
+                integration_poly differential_numerator = integration_add(
+                    derivative_numerator,
+                    integration_mul(primitive_numerator,
+                        primitive_denominator));
+                integration_poly lhs_denominator = integration_mul(
+                    primitive_denominator, primitive_denominator);
+                if(integration_mul(differential_numerator,
+                        rhs_denominator) !=
+                   integration_mul(rhs_numerator, lhs_denominator)){
+                    result.status = risch_status::verification_failed;
+                    result.diagnostic =
+                        "nested exponential chain RDE failed verification";
+                    return true;
+                }
+
+                exact_expr candidate = outer *
+                    (integration_poly_expr(*this, primitive_numerator, inner) /
+                     integration_poly_expr(*this, primitive_denominator, inner));
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "nested exponential chain primitive node budget exhausted";
+                    return true;
+                }
+                // The verified identity P' + P = R and the exact factor
+                // cancellation above certify D(exp(inner)*P(inner)) = input.
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+            return false;
+        };
         exact_expr inner_argument = inner.operand(0);
         integration_poly argument_numerator, argument_denominator;
         if(!integration_parse_rational(inner_argument, variable,
@@ -13524,14 +13673,18 @@ risch_result exact_context::integrate_elementary_impl(
            !integration_normalize_rational(argument_numerator,
                 argument_denominator) || argument_numerator.size() != 2 ||
            argument_denominator.size() != 1 ||
-           argument_denominator[0].is_zero()) return false;
+           argument_denominator[0].is_zero())
+            return try_nested_chain_rational();
         for(const numeric_value &coefficient : argument_numerator)
-            if(coefficient.is_approximate()) return false;
+            if(coefficient.is_approximate())
+                return try_nested_chain_rational();
         for(const numeric_value &coefficient : argument_denominator)
-            if(coefficient.is_approximate()) return false;
+            if(coefficient.is_approximate())
+                return try_nested_chain_rational();
         numeric_value slope = argument_numerator[1] /
                               argument_denominator[0];
-        if(slope.is_zero() || slope.is_approximate()) return false;
+        if(slope.is_zero() || slope.is_approximate())
+            return try_nested_chain_rational();
 
         integration_poly numerator, denominator;
         if(!integration_parse_rational(cofactor, inner, numerator, denominator,

@@ -132,6 +132,58 @@ int main(){
         (context.integer(1) + inner_exponential);
     assert(context.simplify(nested_rational.elementary_part -
         nested_rational_expected) == context.integer(0));
+    exact_expr nested_chain_inner = context.exponential(inner_exponential);
+    exact_expr nested_chain_outer = context.exponential(nested_chain_inner);
+    exact_expr nested_chain_derivative =
+        nested_chain_inner * inner_exponential;
+    exact_expr nested_chain_input = nested_chain_outer *
+        nested_chain_derivative * nested_chain_inner /
+        context.power(context.integer(1) + nested_chain_inner,
+                      context.integer(2));
+    risch_result nested_chain = context.integrate_elementary(
+        nested_chain_input, x, options);
+    assert(nested_chain.status == risch_status::elementary);
+    assert(nested_chain.remainder == context.integer(0));
+    exact_expr nested_chain_expected = nested_chain_outer /
+        (context.integer(1) + nested_chain_inner);
+    assert(context.simplify(nested_chain.elementary_part -
+        nested_chain_expected) == context.integer(0));
+    exact_expr nonlinear_chain_inner = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr nonlinear_chain_outer = context.exponential(
+        nonlinear_chain_inner);
+    exact_expr nonlinear_chain_input = nonlinear_chain_outer *
+        (context.integer(2) * x * nonlinear_chain_inner) *
+        nonlinear_chain_inner /
+        context.power(context.integer(1) + nonlinear_chain_inner,
+                      context.integer(2));
+    risch_result nonlinear_chain = context.integrate_elementary(
+        nonlinear_chain_input, x, options);
+    assert(nonlinear_chain.status == risch_status::elementary);
+    assert(nonlinear_chain.remainder == context.integer(0));
+    assert(context.simplify(nonlinear_chain.elementary_part -
+        nonlinear_chain_outer /
+            (context.integer(1) + nonlinear_chain_inner)) ==
+        context.integer(0));
+    exact_expr tower_inner = context.exponential(nested_chain_inner);
+    exact_expr tower_outer = context.exponential(tower_inner);
+    exact_expr tower_inner_derivative =
+        tower_inner * nested_chain_inner * inner_exponential;
+    exact_expr tower_input = tower_outer * tower_inner_derivative * tower_inner /
+        context.power(context.integer(1) + tower_inner, context.integer(2));
+    risch_result tower_result = context.integrate_elementary(
+        tower_input, x, options);
+    assert(tower_result.status == risch_status::elementary);
+    assert(tower_result.remainder == context.integer(0));
+    assert(context.simplify(tower_result.elementary_part - tower_outer /
+        (context.integer(1) + tower_inner)) == context.integer(0));
+
+    exact_expr no_rational_primitive = nested_chain_outer *
+        nested_chain_derivative /
+        context.power(context.integer(1) + nested_chain_inner,
+                      context.integer(2));
+    assert(context.integrate_elementary(no_rational_primitive, x, options).status !=
+        risch_status::proven_nonelementary);
     risch_options nested_rational_tiny_budget;
     nested_rational_tiny_budget.maximum_matrix_entries = 1;
     assert(context.integrate_elementary(nested_rational_input, x,
