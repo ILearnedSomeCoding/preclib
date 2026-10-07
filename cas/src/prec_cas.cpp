@@ -13537,12 +13537,83 @@ risch_result exact_context::integrate_elementary_impl(
         if(!integration_parse_rational(cofactor, inner, numerator, denominator,
                 degree_budget, degree_budget) ||
            !integration_normalize_rational(numerator, denominator) ||
-           denominator.size() != 1 || denominator[0].is_zero()) return false;
+           integration_zero_poly(denominator)) return false;
         for(numeric_value &coefficient : numerator){
-            coefficient = coefficient / denominator[0];
             if(coefficient.is_approximate()) return false;
         }
-        if(numerator.empty() || !numerator[0].is_zero()) return false;
+        for(const numeric_value &coefficient : denominator)
+            if(coefficient.is_approximate()) return false;
+        if(numerator.empty()) return false;
+
+        if(denominator.size() > 1){
+            integration_poly t_polynomial{numeric_value(0), numeric_value(1)};
+            integration_poly rde_denominator = integration_mul(
+                integration_mul(denominator, t_polynomial),
+                integration_poly{slope});
+            std::vector<integration_parametric_rational_basis> basis;
+            auto state = integration_parametric_rde_rational(
+                integration_poly{numeric_value(1)},
+                {{numerator, rde_denominator}}, basis,
+                options.maximum_matrix_entries);
+            if(state == integration_parametric_rde_status::resource_limit){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "nested exponential rational RDE budget exhausted";
+                return true;
+            }
+            if(state != integration_parametric_rde_status::solved)
+                return false;
+
+            for(const auto &entry : basis){
+                if(entry.constants.empty() || entry.constants[0].is_zero())
+                    continue;
+                integration_poly primitive_numerator = entry.numerator;
+                for(numeric_value &coefficient : primitive_numerator)
+                    coefficient = coefficient / entry.constants[0];
+                const integration_poly &primitive_denominator = entry.denominator;
+                integration_poly derivative_numerator = integration_sub(
+                    integration_mul(integration_derivative_poly(
+                        primitive_numerator), primitive_denominator),
+                    integration_mul(primitive_numerator,
+                        integration_derivative_poly(primitive_denominator)));
+                integration_poly differential_numerator = integration_add(
+                    derivative_numerator,
+                    integration_mul(primitive_numerator,
+                        primitive_denominator));
+                integration_poly lhs_numerator = integration_mul(
+                    integration_mul(integration_poly{slope}, t_polynomial),
+                    differential_numerator);
+                integration_poly lhs_denominator = integration_mul(
+                    primitive_denominator, primitive_denominator);
+                if(integration_mul(lhs_numerator, denominator) !=
+                   integration_mul(numerator, lhs_denominator)){
+                    result.status = risch_status::verification_failed;
+                    result.diagnostic =
+                        "nested exponential rational RDE failed verification";
+                    return true;
+                }
+                exact_expr primitive_rational = integration_poly_expr(
+                    *this, primitive_numerator, inner) /
+                    integration_poly_expr(*this, primitive_denominator, inner);
+                exact_expr candidate = outer * primitive_rational;
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "nested exponential primitive node budget exhausted";
+                    return true;
+                }
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+            return false;
+        }
+
+        for(numeric_value &coefficient : numerator)
+            coefficient = coefficient / denominator[0];
+        if(!numerator[0].is_zero()) return false;
 
         integration_poly primitive_coefficients(numerator.size(),
                                                  numeric_value(0));

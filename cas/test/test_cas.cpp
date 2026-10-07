@@ -258,11 +258,10 @@ int main(){
     risch_result shifted_exponential_result =
         context.integrate_elementary(shifted_exponential_integrand, x);
     assert(shifted_exponential_result.status == risch_status::elementary);
-    assert(context.simplify(context.differentiate(
-        shifted_exponential_result.elementary_part, x) -
-        context.e()*context.exponential(x)/
-        context.power(context.integer(1)+context.exponential(x),
-            context.integer(2))) == context.integer(0));
+    assert(context.simplify(shifted_exponential_result.elementary_part -
+        shifted_exponential /
+            (context.integer(1) + context.exponential(x))) ==
+        context.integer(0));
     exact_expr related_exponential_denominator =
         context.exponential(x) + shifted_exponential;
     risch_result constant_quotient_result = context.integrate_elementary(
@@ -275,10 +274,9 @@ int main(){
     risch_result inverse_exponential_result = context.integrate_elementary(
         context.integer(1) / related_exponential_denominator, x);
     assert(inverse_exponential_result.status == risch_status::elementary);
-    assert(context.simplify(context.differentiate(
-        inverse_exponential_result.elementary_part, x) -
-        context.integer(1) / ((context.integer(1) + context.e()) *
-            context.exponential(x))) == context.integer(0));
+    assert(context.simplify(inverse_exponential_result.elementary_part +
+        context.integer(1) / related_exponential_denominator) ==
+        context.integer(0));
     exact_expr normal_exponential_denominator =
         context.integer(1) + related_exponential_denominator;
     exact_expr normalized_normal_denominator =

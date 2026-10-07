@@ -98,6 +98,12 @@ int main(){
         context.e() * context.exponential(x) /
             context.power(context.integer(1) + context.exponential(x),
                           context.integer(2))) == context.integer(0));
+    risch_result shifted_exp_default = context.integrate_elementary(
+        shifted_exp_input, x);
+    assert(shifted_exp_default.status == risch_status::elementary);
+    assert(context.simplify(shifted_exp_default.elementary_part -
+        shifted_exp / (context.integer(1) + context.exponential(x))) ==
+        context.integer(0));
     exact_expr inner_exponential = context.exponential(x);
     exact_expr outer_exponential = context.exponential(inner_exponential);
     exact_expr nested_polynomial_input = outer_exponential *
@@ -114,6 +120,22 @@ int main(){
     assert(context.simplify(context.differentiate(
         nested_polynomial.elementary_part, x) - nested_polynomial_input) ==
         context.integer(0));
+    exact_expr nested_rational_input = outer_exponential *
+        context.power(inner_exponential, context.integer(2)) /
+        context.power(context.integer(1) + inner_exponential,
+                      context.integer(2));
+    risch_result nested_rational = context.integrate_elementary(
+        nested_rational_input, x, options);
+    assert(nested_rational.status == risch_status::elementary);
+    assert(nested_rational.remainder == context.integer(0));
+    exact_expr nested_rational_expected = outer_exponential /
+        (context.integer(1) + inner_exponential);
+    assert(context.simplify(nested_rational.elementary_part -
+        nested_rational_expected) == context.integer(0));
+    risch_options nested_rational_tiny_budget;
+    nested_rational_tiny_budget.maximum_matrix_entries = 1;
+    assert(context.integrate_elementary(nested_rational_input, x,
+        nested_rational_tiny_budget).status == risch_status::resource_limit);
     exact_expr three_halves = context.rational(
         precq_t(precn_t(3), precn_t(2)));
     exact_expr shifted_inner = context.exponential(
