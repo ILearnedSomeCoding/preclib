@@ -14123,10 +14123,20 @@ risch_result exact_context::integrate_elementary_impl(
 
         exact_expr power_factor = factors[selected];
         exact_expr base = power_factor.operand(0);
-        if(!base.is_value() || base.value().is_approximate() ||
-           base.value().is_negative() || base.value().is_zero() ||
-           base.value().is_one())
-            return false;
+        bool base_positive = false;
+        if(base.is_value()){
+            if(base.value().is_approximate() || base.value().is_negative() ||
+               base.value().is_zero() || base.value().is_one())
+                return false;
+            base_positive = true;
+        }else if(base.operation() == exact_opcode::constant_e ||
+                 base.operation() == exact_opcode::constant_pi){
+            base_positive = true;
+        }else if(base.operation() == exact_opcode::symbol){
+            base_positive = storage_->has_assumption(
+                base.root_, exact_storage::assumed_positive);
+        }
+        if(!base_positive) return false;
 
         factors.erase(factors.begin() + selected);
         exact_expr coefficient = factors.empty() ? integer(1)

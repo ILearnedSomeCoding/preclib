@@ -8,6 +8,9 @@ int main(){
     exact_context context;
     exact_expr x = context.symbol("x");
     exact_expr a = context.symbol("a");
+    exact_expr b = context.symbol("b");
+    exact_expr q = context.symbol("q");
+    context.assume(q, "positive");
     exact_expr t = context.exponential(x);
     risch_options options;
     options.maximum_recursion_depth = 1;
@@ -38,10 +41,28 @@ int main(){
     assert(context.simplify(context.differentiate(
         shifted_power_result.elementary_part, x) - shifted_power) ==
         context.integer(0));
+    exact_expr e_to_x = context.power(context.e(), x);
+    risch_result e_to_x_result = context.integrate_elementary(e_to_x, x);
+    assert(e_to_x_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        e_to_x_result.elementary_part, x) - e_to_x) == context.integer(0));
     risch_result scaled_power = context.integrate_elementary(a * two_to_x, x);
     assert(scaled_power.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
         scaled_power.elementary_part, x) - a * two_to_x) == context.integer(0));
+    exact_expr symbolic_base_power = context.power(q, b * x);
+    risch_result symbolic_base_result = context.integrate_elementary(
+        symbolic_base_power, x);
+    assert(symbolic_base_result.status == risch_status::elementary);
+    assert(std::find(symbolic_base_result.conditions.begin(),
+        symbolic_base_result.conditions.end(), b) !=
+        symbolic_base_result.conditions.end());
+    assert(std::find(symbolic_base_result.conditions.begin(),
+        symbolic_base_result.conditions.end(), context.natural_logarithm(q)) !=
+        symbolic_base_result.conditions.end());
+    assert(context.simplify(context.differentiate(
+        symbolic_base_result.elementary_part, x) - symbolic_base_power) ==
+        context.integer(0));
     risch_result symbolic_quadratic = context.integrate_elementary(
         context.integer(1) /
             (context.integer(1) + t +
@@ -65,7 +86,7 @@ int main(){
         (context.integer(1)+context.power(t, context.integer(4)))/quadratic,
         x, options);
     assert(long_numerator.status == risch_status::elementary);
-    exact_expr b = context.symbol("b"), c = context.symbol("c");
+    exact_expr c = context.symbol("c");
     risch_result general_quadratic = context.integrate_elementary(
         context.integer(1)/(a+b*t+c*context.power(t, context.integer(2))),
         x, options);
