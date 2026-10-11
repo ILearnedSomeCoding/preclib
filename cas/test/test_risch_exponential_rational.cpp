@@ -225,6 +225,52 @@ int main(){
         rational_offset_outer /
             (context.integer(1) + nested_chain_inner)) == context.integer(0));
 
+    exact_expr constant_exponential = context.exponential(context.integer(3));
+    exact_expr constant_exponential_input = constant_exponential *
+        nested_chain_derivative /
+        (context.integer(1) + nested_chain_inner);
+    risch_options constant_chain_options;
+    risch_result constant_exponential_chain = context.integrate_elementary(
+        constant_exponential_input, x, constant_chain_options);
+    if(constant_exponential_chain.status != risch_status::elementary)
+        std::fprintf(stderr, "constant exponential chain: status=%d, %s\n",
+            (int)constant_exponential_chain.status,
+            constant_exponential_chain.diagnostic.c_str());
+    assert(constant_exponential_chain.status == risch_status::elementary);
+    assert(constant_exponential_chain.remainder == context.integer(0));
+    exact_expr constant_exponential_expected = constant_exponential *
+        context.natural_logarithm(context.integer(1) + nested_chain_inner);
+    exact_expr constant_chain_difference = context.simplify(
+        constant_exponential_chain.elementary_part -
+        constant_exponential_expected);
+    if(constant_chain_difference != context.integer(0))
+        std::fprintf(stderr, "constant exponential primitive: %s\n",
+            constant_exponential_chain.elementary_part.to_string().c_str());
+    assert(constant_chain_difference == context.integer(0));
+    exact_expr constant_exponential_normal_input = constant_exponential *
+        nested_chain_derivative /
+        (context.power(nested_chain_inner, context.integer(5)) -
+         nested_chain_inner + context.integer(1));
+    risch_result constant_exponential_normal = context.integrate_elementary(
+        constant_exponential_normal_input, x, constant_chain_options);
+    assert(constant_exponential_normal.status == risch_status::elementary);
+    assert(constant_exponential_normal.remainder == context.integer(0));
+    assert(constant_exponential_normal.elementary_part.valid());
+    exact_expr constant_exponential_polynomial_input = constant_exponential *
+        nested_chain_derivative *
+        (context.integer(1) +
+         context.power(nested_chain_inner, context.integer(2)));
+    risch_result constant_exponential_polynomial = context.integrate_elementary(
+        constant_exponential_polynomial_input, x, constant_chain_options);
+    assert(constant_exponential_polynomial.status == risch_status::elementary);
+    assert(constant_exponential_polynomial.remainder == context.integer(0));
+    exact_expr constant_exponential_polynomial_expected = constant_exponential *
+        (nested_chain_inner +
+         context.power(nested_chain_inner, context.integer(3)) /
+             context.integer(3));
+    assert(context.simplify(constant_exponential_polynomial.elementary_part -
+        constant_exponential_polynomial_expected) == context.integer(0));
+
     exact_expr no_rational_primitive = nested_chain_outer *
         nested_chain_derivative /
         context.power(context.integer(1) + nested_chain_inner,

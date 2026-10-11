@@ -13848,6 +13848,201 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
     };
     if(classify_nested_exponential_polynomial()) return result;
+    auto classify_constant_exponential_chain = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        std::vector<exact_expr> factors;
+        factors.reserve(expression.operand_count());
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            factors.push_back(expression.operand(i));
+        for(size_t constant_index = 0; constant_index < factors.size();
+            ++constant_index){
+            const exact_expr &constant_factor = factors[constant_index];
+            if(constant_factor.operation() != exact_opcode::exponential)
+                continue;
+            integration_poly constant_numerator, constant_denominator;
+            if(!integration_parse_rational(constant_factor.operand(0), variable,
+                    constant_numerator, constant_denominator, degree_budget,
+                    degree_budget) ||
+               !integration_normalize_rational(constant_numerator,
+                                                constant_denominator) ||
+               constant_numerator.size() != 1 ||
+               constant_denominator.size() != 1 ||
+               constant_denominator[0].is_zero() ||
+               constant_numerator[0].is_approximate() ||
+               constant_denominator[0].is_approximate())
+                continue;
+
+            std::vector<exact_expr> cofactor_factors;
+            std::vector<exact_expr> generators;
+            std::unordered_set<uint32_t> seen;
+            bool generator_budget_exceeded = false;
+            auto collect = [&](auto &&self, const exact_expr &part) -> void{
+                if(seen.find(part.id()) != seen.end()) return;
+                if(seen.size() >= options.maximum_nodes){
+                    generator_budget_exceeded = true;
+                    return;
+                }
+                seen.insert(part.id());
+                if(part.operation() == exact_opcode::exponential &&
+                   integration_depends_on(part, variable))
+                    generators.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            for(size_t i = 0; i < factors.size(); ++i){
+                if(i == constant_index) continue;
+                cofactor_factors.push_back(factors[i]);
+                collect(collect, factors[i]);
+            }
+            if(generator_budget_exceeded){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "constant exponential chain generator budget exhausted";
+                return true;
+            }
+            if(generators.empty()) continue;
+            exact_expr cofactor = cofactor_factors.empty() ? integer(1)
+                : cofactor_factors.size() == 1 ? cofactor_factors[0]
+                : multiply(cofactor_factors);
+
+            for(const exact_expr &generator : generators){
+                exact_expr generator_derivative = simplify(expand(
+                    differentiate(generator, variable),
+                    std::min(options.maximum_nodes, (size_t)100000)));
+                if(generator_derivative == integer(0) ||
+                   generator_derivative.reachable_node_count() >
+                       options.maximum_nodes)
+                    continue;
+
+                std::vector<exact_expr> numerator_factors, derivative_factors;
+                auto collect_factors = [&](auto &&self, const exact_expr &part,
+                                           std::vector<exact_expr> &out) -> bool{
+                    if(part.operation() == exact_opcode::multiply){
+                        for(size_t i = 0; i < part.operand_count(); ++i)
+                            if(!self(self, part.operand(i), out)) return false;
+                    }else if(part.operation() == exact_opcode::power){
+                        size_t exponent = 0;
+                        if(integration_exponent(part.operand(1), exponent) &&
+                           exponent > 0 && exponent <= options.maximum_degree &&
+                           exponent <= options.maximum_nodes -
+                               std::min(out.size(), options.maximum_nodes)){
+                            for(size_t i = 0; i < exponent; ++i)
+                                if(!self(self, part.operand(0), out)) return false;
+                        }else{
+                            if(out.size() >= options.maximum_nodes) return false;
+                            out.push_back(part);
+                        }
+                    }else{
+                        if(out.size() >= options.maximum_nodes) return false;
+                        out.push_back(part);
+                    }
+                    return true;
+                };
+                if(!collect_factors(collect_factors, cofactor,
+                                    numerator_factors) ||
+                   !collect_factors(collect_factors, generator_derivative,
+                                    derivative_factors))
+                    continue;
+                bool exact_chain_factor = true;
+                for(const exact_expr &factor : derivative_factors){
+                    auto found = std::find(numerator_factors.begin(),
+                                           numerator_factors.end(), factor);
+                    if(found == numerator_factors.end()){
+                        exact_chain_factor = false;
+                        break;
+                    }
+                    numerator_factors.erase(found);
+                }
+                if(!exact_chain_factor) continue;
+
+                exact_expr rational_rhs = numerator_factors.empty()
+                    ? integer(1) : numerator_factors.size() == 1
+                    ? numerator_factors[0] : multiply(numerator_factors);
+                rational_rhs = simplify(rational_rhs);
+                integration_poly rhs_numerator, rhs_denominator;
+                if(!integration_parse_rational(rational_rhs, generator,
+                        rhs_numerator, rhs_denominator, degree_budget,
+                        degree_budget) ||
+                   !integration_normalize_rational(rhs_numerator,
+                                                    rhs_denominator) ||
+                   integration_zero_poly(rhs_denominator))
+                    continue;
+                bool exact_coefficients = true;
+                for(const numeric_value &coefficient : rhs_numerator)
+                    exact_coefficients = exact_coefficients &&
+                        !coefficient.is_approximate();
+                for(const numeric_value &coefficient : rhs_denominator)
+                    exact_coefficients = exact_coefficients &&
+                        !coefficient.is_approximate();
+                if(!exact_coefficients) continue;
+
+                exact_expr parameter;
+                for(size_t suffix = 0;; ++suffix){
+                    parameter = symbol("_risch_const_exp_t" +
+                                       std::to_string(suffix));
+                    if(parameter != variable &&
+                       !integration_depends_on(expression, parameter)) break;
+                }
+                exact_expr rhs_expression = integration_poly_expr(
+                    *this, rhs_numerator, parameter) /
+                    integration_poly_expr(*this, rhs_denominator, parameter);
+                exact_expr parameter_primitive =
+                    integration_rational_antiderivative(
+                        *this, rhs_expression, parameter, degree_budget);
+                if(!parameter_primitive.valid() ||
+                   parameter_primitive.operation() == exact_opcode::integral)
+                    continue;
+
+                exact_expr verification_primitive = parameter_primitive;
+                std::vector<exact_expr> absolute_logarithms;
+                std::unordered_set<uint32_t> logarithm_seen;
+                auto collect_absolute_logs = [&](auto &&self,
+                        const exact_expr &part) -> void{
+                    if(!logarithm_seen.insert(part.id()).second) return;
+                    if(part.operation() == exact_opcode::natural_logarithm &&
+                       part.operand(0).operation() ==
+                           exact_opcode::absolute_value)
+                        absolute_logarithms.push_back(part);
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                collect_absolute_logs(collect_absolute_logs,
+                                      parameter_primitive);
+                for(const exact_expr &logarithm : absolute_logarithms)
+                    verification_primitive = substitute(
+                        verification_primitive, logarithm,
+                        natural_logarithm(logarithm.operand(0).operand(0)));
+                exact_expr parameter_derivative = differentiate(
+                    verification_primitive, parameter);
+                integration_poly check_numerator, check_denominator;
+                if(!integration_parse_rational(parameter_derivative, parameter,
+                        check_numerator, check_denominator, degree_budget,
+                        degree_budget) ||
+                   !integration_normalize_rational(check_numerator,
+                                                    check_denominator) ||
+                   integration_mul(check_numerator, rhs_denominator) !=
+                   integration_mul(rhs_numerator, check_denominator))
+                    continue;
+
+                exact_expr candidate = constant_factor * substitute(
+                    parameter_primitive, parameter, generator);
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "constant exponential chain primitive node budget exhausted";
+                    return true;
+                }
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.conditions.clear();
+                result.diagnostic.clear();
+                return true;
+            }
+        }
+        return false;
+    };
+    if(classify_constant_exponential_chain()) return result;
     auto classify_rational_hyperexponential = [&]() -> bool{
         exact_expr exponential_factor;
         exact_expr cofactor = integer(1);
