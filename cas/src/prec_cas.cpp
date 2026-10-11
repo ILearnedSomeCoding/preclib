@@ -13631,15 +13631,28 @@ risch_result exact_context::integrate_elementary_impl(
                     cofactor, cofactor_factors) ||
                !collect_multiplicative_factors(collect_multiplicative_factors,
                     inner_derivative, derivative_factors)) return false;
+            bool explicit_chain_factor = true;
             for(const exact_expr &factor : derivative_factors){
                 auto match = std::find(cofactor_factors.begin(),
                                        cofactor_factors.end(), factor);
-                if(match == cofactor_factors.end()) return false;
+                if(match == cofactor_factors.end()){
+                    explicit_chain_factor = false;
+                    break;
+                }
                 cofactor_factors.erase(match);
             }
-            exact_expr rational_rhs = cofactor_factors.empty()
-                ? integer(1) : multiply(cofactor_factors);
+            exact_expr rational_rhs = explicit_chain_factor
+                ? (cofactor_factors.empty() ? integer(1)
+                   : cofactor_factors.size() == 1 ? cofactor_factors[0]
+                   : multiply(cofactor_factors))
+                : simplify(cofactor / inner_derivative);
             rational_rhs = simplify(rational_rhs);
+            if(rational_rhs.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "nested exponential chain quotient node budget exhausted";
+                return true;
+            }
             integration_poly rhs_numerator, rhs_denominator;
             if(!integration_parse_rational(rational_rhs, inner,
                     rhs_numerator, rhs_denominator, degree_budget,
@@ -13653,8 +13666,26 @@ risch_result exact_context::integrate_elementary_impl(
             for(const numeric_value &coefficient : rhs_denominator)
                 if(coefficient.is_approximate()) return false;
 
-            // Removing the exact derivative factors above certifies
-            // cofactor = D(inner) * R(inner) without expanding the tower.
+            exact_expr rational_rhs_certificate = integration_poly_expr(
+                *this, rhs_numerator, inner) /
+                integration_poly_expr(*this, rhs_denominator, inner);
+            if(!explicit_chain_factor){
+                exact_expr chain_error = simplify(cofactor -
+                    inner_derivative * rational_rhs_certificate);
+                if(chain_error.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "nested exponential chain verification budget exhausted";
+                    return true;
+                }
+                if(chain_error != integer(0) &&
+                   !integration_tower_rational_zero(*this, chain_error,
+                        variable, degree_budget, options.maximum_nodes))
+                    return false;
+            }
+
+            // Exact factor removal or the quotient identity certifies
+            // cofactor = D(inner) * R(inner).
             std::vector<integration_parametric_rational_basis> basis;
             auto state = integration_parametric_rde_rational(
                 integration_poly{outer_scale},
@@ -13943,22 +13974,29 @@ risch_result exact_context::integrate_elementary_impl(
                    !collect_factors(collect_factors, generator_derivative,
                                     derivative_factors))
                     continue;
-                bool exact_chain_factor = true;
+                bool explicit_chain_factor = true;
                 for(const exact_expr &factor : derivative_factors){
                     auto found = std::find(numerator_factors.begin(),
                                            numerator_factors.end(), factor);
                     if(found == numerator_factors.end()){
-                        exact_chain_factor = false;
+                        explicit_chain_factor = false;
                         break;
                     }
                     numerator_factors.erase(found);
                 }
-                if(!exact_chain_factor) continue;
 
-                exact_expr rational_rhs = numerator_factors.empty()
-                    ? integer(1) : numerator_factors.size() == 1
-                    ? numerator_factors[0] : multiply(numerator_factors);
+                exact_expr rational_rhs = explicit_chain_factor
+                    ? (numerator_factors.empty() ? integer(1)
+                       : numerator_factors.size() == 1 ? numerator_factors[0]
+                       : multiply(numerator_factors))
+                    : simplify(cofactor / generator_derivative);
                 rational_rhs = simplify(rational_rhs);
+                if(rational_rhs.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "constant exponential chain quotient budget exhausted";
+                    return true;
+                }
                 integration_poly rhs_numerator, rhs_denominator;
                 if(!integration_parse_rational(rational_rhs, generator,
                         rhs_numerator, rhs_denominator, degree_budget,
@@ -13975,6 +14013,25 @@ risch_result exact_context::integrate_elementary_impl(
                     exact_coefficients = exact_coefficients &&
                         !coefficient.is_approximate();
                 if(!exact_coefficients) continue;
+
+                exact_expr rational_rhs_certificate = integration_poly_expr(
+                    *this, rhs_numerator, generator) /
+                    integration_poly_expr(*this, rhs_denominator, generator);
+                if(!explicit_chain_factor){
+                    exact_expr chain_error = simplify(cofactor -
+                        generator_derivative * rational_rhs_certificate);
+                    if(chain_error.reachable_node_count() >
+                       options.maximum_nodes){
+                        result.status = risch_status::resource_limit;
+                        result.diagnostic =
+                            "constant exponential chain verification budget exhausted";
+                        return true;
+                    }
+                    if(chain_error != integer(0) &&
+                       !integration_tower_rational_zero(*this, chain_error,
+                            variable, degree_budget, options.maximum_nodes))
+                        continue;
+                }
 
                 exact_expr parameter;
                 for(size_t suffix = 0;; ++suffix){

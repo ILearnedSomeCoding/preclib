@@ -225,6 +225,47 @@ int main(){
         rational_offset_outer /
             (context.integer(1) + nested_chain_inner)) == context.integer(0));
 
+    exact_expr affine_chain_inner = context.exponential(
+        context.integer(2) * x + context.integer(1));
+    exact_expr affine_chain_outer = context.exponential(
+        context.integer(3) * affine_chain_inner + five_sevenths);
+    exact_expr expanded_chain_cofactor =
+        context.integer(4) * affine_chain_inner +
+        context.integer(6) * context.power(affine_chain_inner,
+                                           context.integer(2));
+    exact_expr expanded_chain_input = affine_chain_outer *
+        expanded_chain_cofactor /
+        context.power(context.integer(1) + affine_chain_inner,
+                      context.integer(2));
+    risch_result expanded_chain = context.integrate_elementary(
+        expanded_chain_input, x, options);
+    assert(expanded_chain.status == risch_status::elementary);
+    assert(expanded_chain.remainder == context.integer(0));
+    assert(context.simplify(expanded_chain.elementary_part -
+        affine_chain_outer /
+            (context.integer(1) + affine_chain_inner)) == context.integer(0));
+    exact_expr affine_chain_nonfactor_input = affine_chain_outer *
+        (context.integer(6) - context.integer(2) / affine_chain_inner);
+    risch_result affine_chain_nonfactor = context.integrate_elementary(
+        affine_chain_nonfactor_input, x, options);
+    assert(affine_chain_nonfactor.status == risch_status::elementary);
+    assert(affine_chain_nonfactor.remainder == context.integer(0));
+    assert(context.simplify(affine_chain_nonfactor.elementary_part -
+        affine_chain_outer / affine_chain_inner) == context.integer(0));
+
+    exact_expr nonlinear_chain_scaled_outer = context.exponential(
+        context.integer(3) * nonlinear_chain_inner + five_sevenths);
+    exact_expr nonlinear_chain_expanded_input = nonlinear_chain_scaled_outer *
+        (context.integer(6) * x -
+         context.integer(2) * x / nonlinear_chain_inner);
+    risch_result nonlinear_chain_expanded = context.integrate_elementary(
+        nonlinear_chain_expanded_input, x, options);
+    assert(nonlinear_chain_expanded.status == risch_status::elementary);
+    assert(nonlinear_chain_expanded.remainder == context.integer(0));
+    assert(context.simplify(nonlinear_chain_expanded.elementary_part -
+        nonlinear_chain_scaled_outer / nonlinear_chain_inner) ==
+        context.integer(0));
+
     exact_expr constant_exponential = context.exponential(context.integer(3));
     exact_expr constant_exponential_input = constant_exponential *
         nested_chain_derivative /
@@ -247,6 +288,25 @@ int main(){
         std::fprintf(stderr, "constant exponential primitive: %s\n",
             constant_exponential_chain.elementary_part.to_string().c_str());
     assert(constant_chain_difference == context.integer(0));
+    exact_expr constant_affine_chain_input = constant_exponential *
+        (context.integer(6) - context.integer(2) / affine_chain_inner);
+    risch_result constant_affine_chain = context.integrate_elementary(
+        constant_affine_chain_input, x, constant_chain_options);
+    assert(constant_affine_chain.status == risch_status::elementary);
+    assert(constant_affine_chain.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        constant_affine_chain.elementary_part, x) -
+        constant_affine_chain_input) == context.integer(0));
+    exact_expr constant_nonlinear_chain_input = constant_exponential *
+        (context.integer(6) * x -
+         context.integer(2) * x / nonlinear_chain_inner);
+    risch_result constant_nonlinear_chain = context.integrate_elementary(
+        constant_nonlinear_chain_input, x, constant_chain_options);
+    assert(constant_nonlinear_chain.status == risch_status::elementary);
+    assert(constant_nonlinear_chain.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        constant_nonlinear_chain.elementary_part, x) -
+        constant_nonlinear_chain_input) == context.integer(0));
     exact_expr constant_exponential_normal_input = constant_exponential *
         nested_chain_derivative /
         (context.power(nested_chain_inner, context.integer(5)) -
