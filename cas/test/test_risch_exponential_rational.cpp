@@ -33,6 +33,38 @@ int main(){
     assert(two_to_x_result.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
         two_to_x_result.elementary_part, x) - two_to_x) == context.integer(0));
+    exact_expr two_to_x_legacy = context.integrate(two_to_x, x);
+    assert(two_to_x_legacy.operation() != exact_opcode::integral);
+    assert(context.simplify(context.differentiate(two_to_x_legacy, x) -
+        two_to_x) == context.integer(0));
+    exact_expr polynomial_times_two_to_x = x * two_to_x;
+    risch_result polynomial_power_result = context.integrate_elementary(
+        polynomial_times_two_to_x, x);
+    assert(polynomial_power_result.status == risch_status::elementary);
+    exact_expr polynomial_power_error = context.simplify(context.expand(
+        context.differentiate(polynomial_power_result.elementary_part, x) -
+        polynomial_times_two_to_x, 100000));
+    assert(polynomial_power_error == context.integer(0));
+    exact_expr polynomial_power_legacy = context.integrate(
+        polynomial_times_two_to_x, x);
+    assert(polynomial_power_legacy.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(polynomial_power_legacy, x) -
+        polynomial_times_two_to_x, 100000)) == context.integer(0));
+    exact_expr cubic_power_coefficient = (a + context.integer(1)) *
+        context.power(x, context.integer(3)) -
+        context.integer(2) * x + context.integer(5);
+    exact_expr cubic_power_input = cubic_power_coefficient * two_to_x;
+    risch_result cubic_power_result = context.integrate_elementary(
+        cubic_power_input, x);
+    assert(cubic_power_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(
+        context.differentiate(cubic_power_result.elementary_part, x) -
+        cubic_power_input, 100000)) == context.integer(0));
+    risch_options constant_rate_tiny_budget;
+    constant_rate_tiny_budget.maximum_matrix_entries = 1;
+    assert(context.integrate_elementary(cubic_power_input, x,
+        constant_rate_tiny_budget).status == risch_status::resource_limit);
     exact_expr shifted_power = context.power(context.integer(2),
         context.integer(3) * x + context.integer(1));
     risch_result shifted_power_result = context.integrate_elementary(

@@ -14141,7 +14141,6 @@ risch_result exact_context::integrate_elementary_impl(
         factors.erase(factors.begin() + selected);
         exact_expr coefficient = factors.empty() ? integer(1)
             : factors.size() == 1 ? factors[0] : multiply(factors);
-        if(integration_depends_on(coefficient, variable)) return false;
 
         exact_expr rate = simplify(differentiate(power_factor.operand(1),
                                                   variable));
@@ -14154,7 +14153,63 @@ risch_result exact_context::integrate_elementary_impl(
         if(logarithmic_rate == integer(0) ||
            logarithmic_rate.reachable_node_count() > options.maximum_nodes)
             return false;
-        exact_expr candidate = coefficient * power_factor / logarithmic_rate;
+        std::unordered_set<uint32_t> rate_nodes;
+        auto exact_rate = [&](auto &&self, const exact_expr &part) -> bool{
+            if(!rate_nodes.insert(part.id()).second) return true;
+            if(part.is_value() && part.value().is_approximate()) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return true;
+        };
+        if(!exact_rate(exact_rate, logarithmic_rate) ||
+           !exact_rate(exact_rate, power_factor)) return false;
+
+        integration_expr_poly right_hand_side;
+        if(!integration_parse_expr_poly(*this, coefficient, variable,
+                right_hand_side) || right_hand_side.empty())
+            return false;
+        if(right_hand_side.size() > degree_budget + 1 ||
+           right_hand_side.size() > options.maximum_matrix_entries){
+            result.status = risch_status::resource_limit;
+            result.diagnostic =
+                "constant-rate exponential polynomial degree budget exceeded";
+            return true;
+        }
+        std::unordered_set<uint32_t> coefficient_nodes;
+        auto exact_coefficients = [&](auto &&self,
+                const exact_expr &part) -> bool{
+            if(!coefficient_nodes.insert(part.id()).second) return true;
+            if(part.is_value() && part.value().is_approximate()) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return true;
+        };
+        for(const exact_expr &entry : right_hand_side)
+            if(!exact_coefficients(exact_coefficients, entry)) return false;
+
+        integration_expr_poly primitive_coefficients(right_hand_side.size(),
+            integer(0));
+        for(size_t i = right_hand_side.size(); i-- > 0;){
+            exact_expr derivative_coefficient = i + 1 <
+                primitive_coefficients.size()
+                ? integer(i + 1) * primitive_coefficients[i + 1]
+                : integer(0);
+            primitive_coefficients[i] = simplify(
+                (right_hand_side[i] - derivative_coefficient) /
+                logarithmic_rate);
+        }
+
+        for(size_t i = 0; i < right_hand_side.size(); ++i){
+            exact_expr lhs = logarithmic_rate * primitive_coefficients[i];
+            if(i + 1 < primitive_coefficients.size())
+                lhs = lhs + integer(i + 1) * primitive_coefficients[i + 1];
+            if(simplify(lhs - right_hand_side[i]) != integer(0))
+                return false;
+        }
+
+        exact_expr polynomial = integration_expr_poly_expr(
+            *this, primitive_coefficients, variable);
+        exact_expr candidate = polynomial * power_factor;
         if(candidate.reachable_node_count() > options.maximum_nodes)
             return false;
         exact_expr error = simplify(expand(
