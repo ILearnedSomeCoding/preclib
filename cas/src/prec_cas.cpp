@@ -13497,25 +13497,68 @@ risch_result exact_context::integrate_elementary_impl(
     };
     if(classify_exponential_laurent()) return result;
     auto classify_nested_exponential_polynomial = [&]() -> bool{
+        struct nested_exponential_factor{
+            exact_expr outer;
+            exact_expr inner;
+            numeric_value scale;
+            size_t factor_index;
+        };
+        auto identify_nested_exponential = [&](const exact_expr &factor,
+                size_t factor_index, nested_exponential_factor &identified){
+            if(factor.operation() != exact_opcode::exponential) return false;
+            std::vector<exact_expr> inner_candidates;
+            std::unordered_set<uint32_t> seen;
+            auto collect = [&](auto &&self, const exact_expr &part) -> void{
+                if(!seen.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::exponential)
+                    inner_candidates.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect(collect, factor.operand(0));
+            bool found = false;
+            for(const exact_expr &inner : inner_candidates){
+                integration_poly numerator, denominator;
+                if(!integration_parse_rational(factor.operand(0), inner,
+                        numerator, denominator, degree_budget, degree_budget) ||
+                   !integration_normalize_rational(numerator, denominator) ||
+                   numerator.size() != 2 || denominator.size() != 1 ||
+                   denominator[0].is_zero() || !numerator[0].is_zero() ||
+                   numerator[1].is_approximate() ||
+                   denominator[0].is_approximate()) continue;
+                numeric_value scale = numerator[1] / denominator[0];
+                if(scale.is_zero() || scale.is_approximate()) continue;
+                if(found) return false;
+                identified = {factor, inner, scale, factor_index};
+                found = true;
+            }
+            return found;
+        };
         exact_expr outer;
+        exact_expr inner;
+        numeric_value outer_scale(1);
         exact_expr cofactor = integer(1);
         if(expression.operation() == exact_opcode::exponential){
-            outer = expression;
+            nested_exponential_factor identified;
+            if(!identify_nested_exponential(expression, SIZE_MAX, identified))
+                return false;
+            outer = identified.outer;
+            inner = identified.inner;
+            outer_scale = identified.scale;
         }else if(expression.operation() == exact_opcode::multiply){
-            std::vector<exact_expr> factors, candidates;
+            std::vector<exact_expr> factors;
+            std::vector<nested_exponential_factor> candidates;
             for(size_t i = 0; i < expression.operand_count(); ++i){
                 exact_expr factor = expression.operand(i);
-                if(factor.operation() == exact_opcode::exponential &&
-                   factor.operand(0).operation() == exact_opcode::exponential){
-                    candidates.push_back(factor);
-                }
+                nested_exponential_factor identified;
+                if(identify_nested_exponential(factor, i, identified))
+                    candidates.push_back(std::move(identified));
                 factors.push_back(factor);
             }
             if(candidates.empty()) return false;
             size_t selected = SIZE_MAX;
             if(candidates.size() == 1){
-                for(size_t i = 0; i < factors.size(); ++i)
-                    if(factors[i] == candidates[0]){ selected = i; break; }
+                selected = candidates[0].factor_index;
             }else{
                 auto contains = [&](auto &&self, const exact_expr &root,
                                     const exact_expr &target) -> bool{
@@ -13524,28 +13567,34 @@ risch_result exact_context::integrate_elementary_impl(
                         if(self(self, root.operand(i), target)) return true;
                     return false;
                 };
-                for(const exact_expr &candidate : candidates){
+                for(const nested_exponential_factor &candidate : candidates){
                     bool contains_all = true;
-                    for(const exact_expr &other : candidates)
-                        if(candidate != other &&
-                           !contains(contains, candidate.operand(0), other)){
+                    for(const nested_exponential_factor &other : candidates)
+                        if(candidate.outer != other.outer &&
+                           !contains(contains, candidate.outer.operand(0),
+                                     other.outer)){
                             contains_all = false;
                             break;
                         }
                     if(contains_all){
                         if(selected != SIZE_MAX) return false;
-                        for(size_t i = 0; i < factors.size(); ++i)
-                            if(factors[i] == candidate){ selected = i; break; }
+                        selected = candidate.factor_index;
                     }
                 }
             }
             if(selected == SIZE_MAX) return false;
-            outer = factors[selected];
+            auto chosen = std::find_if(candidates.begin(), candidates.end(),
+                [&](const nested_exponential_factor &candidate){
+                    return candidate.factor_index == selected;
+                });
+            if(chosen == candidates.end()) return false;
+            outer = chosen->outer;
+            inner = chosen->inner;
+            outer_scale = chosen->scale;
             factors.erase(factors.begin() + selected);
             if(!factors.empty()) cofactor = multiply(factors);
         }else return false;
 
-        exact_expr inner = outer.operand(0);
         auto try_nested_chain_rational = [&]() -> bool{
             exact_expr inner_derivative = simplify(expand(
                 differentiate(inner, variable),
@@ -13607,7 +13656,7 @@ risch_result exact_context::integrate_elementary_impl(
             // cofactor = D(inner) * R(inner) without expanding the tower.
             std::vector<integration_parametric_rational_basis> basis;
             auto state = integration_parametric_rde_rational(
-                integration_poly{numeric_value(1)},
+                integration_poly{outer_scale},
                 {{rhs_numerator, rhs_denominator}}, basis,
                 options.maximum_matrix_entries);
             if(state == integration_parametric_rde_status::resource_limit){
@@ -13633,8 +13682,9 @@ risch_result exact_context::integrate_elementary_impl(
                         integration_derivative_poly(primitive_denominator)));
                 integration_poly differential_numerator = integration_add(
                     derivative_numerator,
-                    integration_mul(primitive_numerator,
-                        primitive_denominator));
+                    integration_mul(integration_poly{outer_scale},
+                        integration_mul(primitive_numerator,
+                            primitive_denominator)));
                 integration_poly lhs_denominator = integration_mul(
                     primitive_denominator, primitive_denominator);
                 if(integration_mul(differential_numerator,
@@ -13655,8 +13705,8 @@ risch_result exact_context::integrate_elementary_impl(
                         "nested exponential chain primitive node budget exhausted";
                     return true;
                 }
-                // The verified identity P' + P = R and the exact factor
-                // cancellation above certify D(exp(inner)*P(inner)) = input.
+                // The verified identity P' + c*P = R and the exact factor
+                // cancellation certify D(exp(c*inner)*P(inner)) = input.
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(candidate);
                 result.remainder = integer(0);
@@ -13665,6 +13715,8 @@ risch_result exact_context::integrate_elementary_impl(
             }
             return false;
         };
+        if(outer_scale != numeric_value(1))
+            return try_nested_chain_rational();
         exact_expr inner_argument = inner.operand(0);
         integration_poly argument_numerator, argument_denominator;
         if(!integration_parse_rational(inner_argument, variable,

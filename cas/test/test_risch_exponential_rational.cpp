@@ -178,6 +178,20 @@ int main(){
     assert(context.simplify(tower_result.elementary_part - tower_outer /
         (context.integer(1) + tower_inner)) == context.integer(0));
 
+    exact_expr scaled_chain_outer = context.exponential(
+        context.integer(2) * nested_chain_inner);
+    exact_expr scaled_chain_input = scaled_chain_outer *
+        nested_chain_derivative *
+        (context.integer(1) + context.integer(2) * nested_chain_inner) /
+        context.power(context.integer(1) + nested_chain_inner,
+                      context.integer(2));
+    risch_result scaled_chain = context.integrate_elementary(
+        scaled_chain_input, x, options);
+    assert(scaled_chain.status == risch_status::elementary);
+    assert(scaled_chain.remainder == context.integer(0));
+    assert(context.simplify(scaled_chain.elementary_part - scaled_chain_outer /
+        (context.integer(1) + nested_chain_inner)) == context.integer(0));
+
     exact_expr no_rational_primitive = nested_chain_outer *
         nested_chain_derivative /
         context.power(context.integer(1) + nested_chain_inner,
