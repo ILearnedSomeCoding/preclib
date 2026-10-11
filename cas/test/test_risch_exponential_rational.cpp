@@ -178,8 +178,21 @@ int main(){
     assert(context.simplify(tower_result.elementary_part - tower_outer /
         (context.integer(1) + tower_inner)) == context.integer(0));
 
+    exact_expr offset_chain_outer = context.exponential(
+        nested_chain_inner + context.integer(3));
+    exact_expr offset_chain_input = offset_chain_outer *
+        nested_chain_derivative * nested_chain_inner /
+        context.power(context.integer(1) + nested_chain_inner,
+                      context.integer(2));
+    risch_result offset_chain = context.integrate_elementary(
+        offset_chain_input, x, options);
+    assert(offset_chain.status == risch_status::elementary);
+    assert(offset_chain.remainder == context.integer(0));
+    assert(context.simplify(offset_chain.elementary_part - offset_chain_outer /
+        (context.integer(1) + nested_chain_inner)) == context.integer(0));
+
     exact_expr scaled_chain_outer = context.exponential(
-        context.integer(2) * nested_chain_inner);
+        context.integer(2) * nested_chain_inner + context.integer(3));
     exact_expr scaled_chain_input = scaled_chain_outer *
         nested_chain_derivative *
         (context.integer(1) + context.integer(2) * nested_chain_inner) /
@@ -191,6 +204,26 @@ int main(){
     assert(scaled_chain.remainder == context.integer(0));
     assert(context.simplify(scaled_chain.elementary_part - scaled_chain_outer /
         (context.integer(1) + nested_chain_inner)) == context.integer(0));
+    exact_expr negative_three_halves = -context.rational(
+        precq_t(precn_t(3), precn_t(2)));
+    exact_expr five_sevenths = context.rational(
+        precq_t(precn_t(5), precn_t(7)));
+    exact_expr rational_offset_outer = context.exponential(
+        negative_three_halves * nested_chain_inner + five_sevenths);
+    exact_expr rational_offset_rhs = (
+        -context.rational(precq_t(precn_t(5), precn_t(2))) +
+        negative_three_halves * nested_chain_inner) /
+        context.power(context.integer(1) + nested_chain_inner,
+                      context.integer(2));
+    exact_expr rational_offset_input = rational_offset_outer *
+        nested_chain_derivative * rational_offset_rhs;
+    risch_result rational_offset_chain = context.integrate_elementary(
+        rational_offset_input, x, options);
+    assert(rational_offset_chain.status == risch_status::elementary);
+    assert(rational_offset_chain.remainder == context.integer(0));
+    assert(context.simplify(rational_offset_chain.elementary_part -
+        rational_offset_outer /
+            (context.integer(1) + nested_chain_inner)) == context.integer(0));
 
     exact_expr no_rational_primitive = nested_chain_outer *
         nested_chain_derivative /

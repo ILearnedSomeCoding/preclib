@@ -13523,7 +13523,8 @@ risch_result exact_context::integrate_elementary_impl(
                         numerator, denominator, degree_budget, degree_budget) ||
                    !integration_normalize_rational(numerator, denominator) ||
                    numerator.size() != 2 || denominator.size() != 1 ||
-                   denominator[0].is_zero() || !numerator[0].is_zero() ||
+                   denominator[0].is_zero() ||
+                   numerator[0].is_approximate() ||
                    numerator[1].is_approximate() ||
                    denominator[0].is_approximate()) continue;
                 numeric_value scale = numerator[1] / denominator[0];
