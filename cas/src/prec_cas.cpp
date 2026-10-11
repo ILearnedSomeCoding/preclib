@@ -3388,6 +3388,7 @@ static integration_parametric_rde_status integration_parametric_rde_polynomial(
 enum class integration_rde_status{
     solved,
     no_polynomial_solution,
+    resource_limit,
     verification_failed
 };
 
@@ -8788,12 +8789,14 @@ struct integration_symbolic_rate_rde_result{
     integration_poly denominator;
 };
 
-// Solve y' + rate*y = p/q over Q(rate)(x). The rate is treated as
-// transcendental over Q, which is valid for a proved nonzero rational-log
-// rate. At each finite pole, D raises pole order by one, so gcd(q,q') is a
-// complete denominator bound. The degree bound follows from the leading
-// rate*y term at infinity. This returns a primitive candidate only; callers
-// still verify the exact derivative identity before accepting it.
+// Solve y' + rate*y = p/q over Q(rate)(x). At each finite pole, D raises pole
+// order by one, so gcd(q,q') is a complete denominator bound; the degree bound
+// follows from the leading rate*y term at infinity. The exact linear system
+// therefore decides rational solvability over Q(rate)(x), returning either a
+// candidate or a proof of no rational solution. A caller may use the latter
+// as a non-elementarity proof only after establishing the hypotheses of the
+// hyperexponential Liouville criterion (in particular, a transcendental,
+// nonzero rate).
 static integration_symbolic_rate_rde_result
 integration_rde_symbolic_constant_rate_rational(
     exact_context &context, const integration_expr_poly &p_expression,
@@ -8801,10 +8804,11 @@ integration_rde_symbolic_constant_rate_rational(
     const exact_expr &variable, size_t degree_budget,
     size_t matrix_budget){
     using fraction = integration_rate_fraction;
-    if(p_expression.empty() || q.empty() || integration_zero_poly(q) ||
-       p_expression.size() - 1 > degree_budget ||
-       q.size() - 1 > degree_budget)
+    if(p_expression.empty() || q.empty() || integration_zero_poly(q))
         return {integration_rde_status::verification_failed, {}, {}};
+    if(p_expression.size() - 1 > degree_budget ||
+       q.size() - 1 > degree_budget)
+        return {integration_rde_status::resource_limit, {}, {}};
     integration_poly q_derivative = integration_derivative_poly(q);
     integration_poly denominator = integration_gcd_poly(q, q_derivative);
     integration_poly squarefree;
@@ -8833,14 +8837,14 @@ integration_rde_symbolic_constant_rate_rational(
         return {integration_rde_status::no_polynomial_solution, {}, {}};
     size_t degree_y = degree_p - (squarefree.size() - 1);
     if(degree_y > degree_budget || degree_y >= matrix_budget)
-        return {integration_rde_status::verification_failed, {}, {}};
+        return {integration_rde_status::resource_limit, {}, {}};
     const size_t columns = degree_y + 1;
     if(columns + 1 > matrix_budget)
-        return {integration_rde_status::verification_failed, {}, {}};
+        return {integration_rde_status::resource_limit, {}, {}};
 
     std::vector<integration_expr_poly> expressions(columns);
     if(p.size() > SIZE_MAX - denominator.size() - squarefree.size() - 2)
-        return {integration_rde_status::verification_failed, {}, {}};
+        return {integration_rde_status::resource_limit, {}, {}};
     size_t rows = p.size() + denominator.size() + squarefree.size() + 2;
     for(size_t column = 0; column < columns; ++column){
         integration_poly basis(column + 1, numeric_value(0));
@@ -8871,7 +8875,7 @@ integration_rde_symbolic_constant_rate_rational(
                 p[i] * context.value(denominator[j]));
     rows = std::max(rows, rhs.size());
     if(rows > matrix_budget / (columns + 1))
-        return {integration_rde_status::verification_failed, {}, {}};
+        return {integration_rde_status::resource_limit, {}, {}};
 
     std::vector<std::vector<fraction>> matrix(rows,
         std::vector<fraction>(columns + 1,
@@ -8888,9 +8892,11 @@ integration_rde_symbolic_constant_rate_rational(
                 degree_budget, matrix[row][columns]))
             return {integration_rde_status::verification_failed, {}, {}};
     const auto original_matrix = matrix;
+    const size_t coefficient_size_limit = degree_budget == SIZE_MAX
+        ? SIZE_MAX : degree_budget + 1;
     auto fraction_within_budget = [&](const fraction &value) -> bool{
-        return value.numerator.size() <= degree_budget + 1 &&
-            value.denominator.size() <= degree_budget + 1;
+        return value.numerator.size() <= coefficient_size_limit &&
+            value.denominator.size() <= coefficient_size_limit;
     };
 
     std::vector<size_t> pivot_rows(columns, SIZE_MAX);
@@ -8911,7 +8917,7 @@ integration_rde_symbolic_constant_rate_rational(
                 matrix[next_row][j], inverse);
         for(size_t j = column; j <= columns; ++j)
             if(!fraction_within_budget(matrix[next_row][j]))
-                return {integration_rde_status::verification_failed, {}, {}};
+                return {integration_rde_status::resource_limit, {}, {}};
         for(size_t row = 0; row < rows; ++row){
             if(row == next_row ||
                integration_zero_poly(matrix[row][column].numerator)) continue;
@@ -8921,7 +8927,7 @@ integration_rde_symbolic_constant_rate_rational(
                     integration_rate_fraction_mul(scale, matrix[next_row][j]));
             for(size_t j = column; j <= columns; ++j)
                 if(!fraction_within_budget(matrix[row][j]))
-                    return {integration_rde_status::verification_failed, {}, {}};
+                    return {integration_rde_status::resource_limit, {}, {}};
         }
         pivot_rows[column] = next_row++;
     }
@@ -14594,7 +14600,6 @@ risch_result exact_context::integrate_elementary_impl(
         integration_expr_poly right_hand_side;
         if(!integration_parse_expr_poly(*this, coefficient, variable,
                 right_hand_side) || right_hand_side.empty()){
-            if(!exact_nonzero_rational_rate) return false;
             exact_expr rate_variable;
             for(size_t suffix = 0;; ++suffix){
                 rate_variable = symbol("_risch_rate_t_" +
@@ -14622,10 +14627,38 @@ risch_result exact_context::integrate_elementary_impl(
                 integration_rde_symbolic_constant_rate_rational(*this,
                     rational_numerator, denominator, rate_variable, variable,
                     degree_budget, options.maximum_matrix_entries);
+            if(rde.status == integration_rde_status::resource_limit){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "constant-rate rational RDE budget exhausted";
+                return true;
+            }
+            if(rde.status ==
+               integration_rde_status::no_polynomial_solution &&
+               exact_nonzero_rational_rate){
+                result.status = risch_status::proven_nonelementary;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.diagnostic =
+                    "constant-rate hyperexponential RDE has no rational solution";
+                return true;
+            }
             if(rde.status != integration_rde_status::solved) return false;
+            std::vector<exact_expr> rde_conditions;
             integration_expr_poly solution_coefficients;
             solution_coefficients.reserve(rde.numerator.size());
             for(const integration_rate_fraction &entry : rde.numerator){
+                if(entry.denominator.size() > 1 && !exact_nonzero_rational_rate){
+                    exact_expr condition = simplify(substitute(
+                        integration_poly_expr(*this, entry.denominator,
+                                              rate_variable),
+                        rate_variable, logarithmic_rate));
+                    if(condition == integer(0)) return false;
+                    if(condition != integer(1) &&
+                       std::find(rde_conditions.begin(), rde_conditions.end(),
+                                 condition) == rde_conditions.end())
+                        rde_conditions.push_back(std::move(condition));
+                }
                 exact_expr coefficient_in_rate =
                     integration_rate_fraction_expr(*this, entry,
                                                    rate_variable);
@@ -14647,6 +14680,7 @@ risch_result exact_context::integrate_elementary_impl(
             result.status = risch_status::elementary;
             result.elementary_part = std::move(candidate);
             result.remainder = integer(0);
+            result.conditions = std::move(rde_conditions);
             result.diagnostic.clear();
             return true;
         }

@@ -101,6 +101,38 @@ int main(){
     assert(rational_rde_result.status == risch_status::elementary);
     assert(context.simplify(rational_rde_result.elementary_part -
         two_to_x / x) == context.integer(0));
+    exact_expr q_to_x = context.power(q, x);
+    exact_expr ln_q = context.natural_logarithm(q);
+    exact_expr symbolic_rate_rde_input =
+        (ln_q / x - context.integer(1) / context.power(x, context.integer(2))) *
+        q_to_x;
+    risch_result symbolic_rate_rde_result = context.integrate_elementary(
+        symbolic_rate_rde_input, x);
+    assert(symbolic_rate_rde_result.status == risch_status::elementary);
+    assert(context.simplify(symbolic_rate_rde_result.elementary_part -
+        q_to_x / x) == context.integer(0));
+    exact_expr symbolic_rate_parameter_input =
+        (context.integer(1) + ln_q / x -
+         context.integer(1) / context.power(x, context.integer(2))) * q_to_x;
+    risch_result symbolic_rate_parameter_result = context.integrate_elementary(
+        symbolic_rate_parameter_input, x);
+    assert(symbolic_rate_parameter_result.status == risch_status::elementary);
+    exact_expr symbolic_rate_rational_candidate = context.simplify(
+        symbolic_rate_parameter_result.elementary_part / q_to_x);
+    exact_expr symbolic_rate_rational_identity = context.expand(
+        symbolic_rate_rational_candidate * context.power(x, context.integer(2)) *
+            ln_q - x * ln_q - context.power(x, context.integer(2)), 100000);
+    assert(context.simplify(symbolic_rate_rational_identity) == context.integer(0));
+    assert(std::find(symbolic_rate_parameter_result.conditions.begin(),
+        symbolic_rate_parameter_result.conditions.end(), ln_q) !=
+        symbolic_rate_parameter_result.conditions.end());
+    assert(context.integrate_elementary(q_to_x / x, x).status ==
+        risch_status::unsupported);
+    risch_options rational_rde_tiny_budget;
+    rational_rde_tiny_budget.maximum_matrix_entries = 1;
+    risch_result rational_rde_limited = context.integrate_elementary(
+        rational_rde_input, x, rational_rde_tiny_budget);
+    assert(rational_rde_limited.status == risch_status::resource_limit);
     exact_expr mixed_rate_rde_input =
         (mixed_base_rate / x - context.integer(1) /
             context.power(x, context.integer(2))) * two_to_x * three_to_x;
@@ -124,8 +156,14 @@ int main(){
     assert(context.simplify(repeated_pole_rde_result.elementary_part -
         two_to_x * repeated_numerator / repeated_denominator) ==
         context.integer(0));
-    assert(context.integrate_elementary(two_to_x / x, x).status !=
-        risch_status::elementary);
+    risch_result exponential_over_x = context.integrate_elementary(
+        two_to_x / x, x);
+    assert(exponential_over_x.status == risch_status::proven_nonelementary);
+    assert(exponential_over_x.remainder == two_to_x / x);
+    exact_expr exponential_over_quadratic = two_to_x /
+        (context.power(x, context.integer(2)) + context.integer(1));
+    assert(context.integrate_elementary(exponential_over_quadratic, x).status ==
+        risch_status::proven_nonelementary);
     exact_expr cancelling_base_exponential = x * two_to_x *
         context.power(context.rational(precq_t(precn_t(1), precn_t(2))), x);
     risch_result cancelling_base_result = context.integrate_elementary(
