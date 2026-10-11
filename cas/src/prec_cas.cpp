@@ -8703,6 +8703,260 @@ static integration_rational_rde_result integration_rde_rational(
     return {integration_rde_status::no_polynomial_solution, {}, {}};
 }
 
+struct integration_rate_fraction{
+    integration_poly numerator;
+    integration_poly denominator;
+};
+
+static bool integration_rate_fraction_normalize(
+    integration_rate_fraction &value){
+    return integration_normalize_rational(value.numerator, value.denominator);
+}
+
+static integration_rate_fraction integration_rate_fraction_add(
+    const integration_rate_fraction &a, const integration_rate_fraction &b){
+    integration_rate_fraction result{
+        integration_add(integration_mul(a.numerator, b.denominator),
+                        integration_mul(b.numerator, a.denominator)),
+        integration_mul(a.denominator, b.denominator)};
+    integration_rate_fraction_normalize(result);
+    return result;
+}
+
+static integration_rate_fraction integration_rate_fraction_sub(
+    const integration_rate_fraction &a, const integration_rate_fraction &b){
+    integration_rate_fraction result{
+        integration_sub(integration_mul(a.numerator, b.denominator),
+                        integration_mul(b.numerator, a.denominator)),
+        integration_mul(a.denominator, b.denominator)};
+    integration_rate_fraction_normalize(result);
+    return result;
+}
+
+static integration_rate_fraction integration_rate_fraction_mul(
+    const integration_rate_fraction &a, const integration_rate_fraction &b){
+    integration_rate_fraction result{
+        integration_mul(a.numerator, b.numerator),
+        integration_mul(a.denominator, b.denominator)};
+    integration_rate_fraction_normalize(result);
+    return result;
+}
+
+static bool integration_rate_fraction_div(
+    const integration_rate_fraction &a, const integration_rate_fraction &b,
+    integration_rate_fraction &result){
+    if(integration_zero_poly(b.numerator)) return false;
+    result = {integration_mul(a.numerator, b.denominator),
+              integration_mul(a.denominator, b.numerator)};
+    return integration_rate_fraction_normalize(result);
+}
+
+static bool integration_rate_fraction_parse(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &rate_variable, size_t degree,
+    integration_rate_fraction &result){
+    integration_expr_poly numerator, denominator;
+    if(!integration_parse_expr_rational(context, expression, rate_variable,
+            numerator, denominator, degree)) return false;
+    auto convert = [&](const integration_expr_poly &source,
+                       integration_poly &destination) -> bool{
+        destination.clear();
+        destination.reserve(source.size());
+        for(const exact_expr &coefficient : source){
+            if(!coefficient.is_value() || coefficient.value().is_approximate())
+                return false;
+            destination.push_back(coefficient.value());
+        }
+        integration_trim(destination);
+        return true;
+    };
+    return convert(numerator, result.numerator) &&
+        convert(denominator, result.denominator) &&
+        integration_rate_fraction_normalize(result);
+}
+
+static exact_expr integration_rate_fraction_expr(
+    exact_context &context, const integration_rate_fraction &value,
+    const exact_expr &rate_variable){
+    return integration_poly_expr(context, value.numerator, rate_variable) /
+        integration_poly_expr(context, value.denominator, rate_variable);
+}
+
+struct integration_symbolic_rate_rde_result{
+    integration_rde_status status;
+    std::vector<integration_rate_fraction> numerator;
+    integration_poly denominator;
+};
+
+// Solve y' + rate*y = p/q over Q(rate)(x). The rate is treated as
+// transcendental over Q, which is valid for a proved nonzero rational-log
+// rate. At each finite pole, D raises pole order by one, so gcd(q,q') is a
+// complete denominator bound. The degree bound follows from the leading
+// rate*y term at infinity. This returns a primitive candidate only; callers
+// still verify the exact derivative identity before accepting it.
+static integration_symbolic_rate_rde_result
+integration_rde_symbolic_constant_rate_rational(
+    exact_context &context, const integration_expr_poly &p_expression,
+    const integration_poly &q, const exact_expr &rate_variable,
+    const exact_expr &variable, size_t degree_budget,
+    size_t matrix_budget){
+    using fraction = integration_rate_fraction;
+    if(p_expression.empty() || q.empty() || integration_zero_poly(q) ||
+       p_expression.size() - 1 > degree_budget ||
+       q.size() - 1 > degree_budget)
+        return {integration_rde_status::verification_failed, {}, {}};
+    integration_poly q_derivative = integration_derivative_poly(q);
+    integration_poly denominator = integration_gcd_poly(q, q_derivative);
+    integration_poly squarefree;
+    if(!integration_divide_poly(q, denominator, squarefree))
+        return {integration_rde_status::verification_failed, {}, {}};
+    integration_expr_poly p = p_expression;
+    while(p.size() > 1 && integration_expr_zero(context, p.back())) p.pop_back();
+    size_t degree_p = 0;
+    bool found_nonzero = false;
+    for(size_t i = p.size(); i-- > 0;){
+        fraction coefficient;
+        if(!integration_rate_fraction_parse(context, p[i], rate_variable,
+                degree_budget, coefficient))
+            return {integration_rde_status::verification_failed, {}, {}};
+        if(!integration_zero_poly(coefficient.numerator)){
+            degree_p = i;
+            found_nonzero = true;
+            break;
+        }
+    }
+    if(!found_nonzero)
+        return {integration_rde_status::solved,
+                {fraction{{numeric_value(0)}, {numeric_value(1)}}},
+                std::move(denominator)};
+    if(degree_p < squarefree.size() - 1)
+        return {integration_rde_status::no_polynomial_solution, {}, {}};
+    size_t degree_y = degree_p - (squarefree.size() - 1);
+    if(degree_y > degree_budget || degree_y >= matrix_budget)
+        return {integration_rde_status::verification_failed, {}, {}};
+    const size_t columns = degree_y + 1;
+    if(columns + 1 > matrix_budget)
+        return {integration_rde_status::verification_failed, {}, {}};
+
+    std::vector<integration_expr_poly> expressions(columns);
+    if(p.size() > SIZE_MAX - denominator.size() - squarefree.size() - 2)
+        return {integration_rde_status::verification_failed, {}, {}};
+    size_t rows = p.size() + denominator.size() + squarefree.size() + 2;
+    for(size_t column = 0; column < columns; ++column){
+        integration_poly basis(column + 1, numeric_value(0));
+        basis[column] = numeric_value(1);
+        integration_poly derivative_part = integration_sub(
+            integration_mul(integration_derivative_poly(basis), denominator),
+            integration_mul(basis, integration_derivative_poly(denominator)));
+        integration_poly rate_part = integration_mul(basis, denominator);
+        derivative_part = integration_mul(derivative_part, squarefree);
+        rate_part = integration_mul(rate_part, squarefree);
+        expressions[column].resize(std::max(derivative_part.size(),
+            rate_part.size()), context.integer(0));
+        for(size_t i = 0; i < expressions[column].size(); ++i){
+            exact_expr constant = i < derivative_part.size()
+                ? context.value(derivative_part[i]) : context.integer(0);
+            exact_expr rate_coefficient = i < rate_part.size()
+                ? context.value(rate_part[i]) : context.integer(0);
+            expressions[column][i] = context.simplify(constant +
+                rate_variable * rate_coefficient);
+        }
+        rows = std::max(rows, expressions[column].size());
+    }
+    integration_expr_poly rhs(p.size() + denominator.size() - 1,
+                              context.integer(0));
+    for(size_t i = 0; i < p.size(); ++i)
+        for(size_t j = 0; j < denominator.size(); ++j)
+            rhs[i + j] = context.simplify(rhs[i + j] +
+                p[i] * context.value(denominator[j]));
+    rows = std::max(rows, rhs.size());
+    if(rows > matrix_budget / (columns + 1))
+        return {integration_rde_status::verification_failed, {}, {}};
+
+    std::vector<std::vector<fraction>> matrix(rows,
+        std::vector<fraction>(columns + 1,
+            fraction{{numeric_value(0)}, {numeric_value(1)}}));
+    for(size_t column = 0; column < columns; ++column){
+        for(size_t row = 0; row < expressions[column].size(); ++row)
+            if(!integration_rate_fraction_parse(context,
+                    expressions[column][row], rate_variable, degree_budget,
+                    matrix[row][column]))
+                return {integration_rde_status::verification_failed, {}, {}};
+    }
+    for(size_t row = 0; row < rhs.size(); ++row)
+        if(!integration_rate_fraction_parse(context, rhs[row], rate_variable,
+                degree_budget, matrix[row][columns]))
+            return {integration_rde_status::verification_failed, {}, {}};
+    const auto original_matrix = matrix;
+    auto fraction_within_budget = [&](const fraction &value) -> bool{
+        return value.numerator.size() <= degree_budget + 1 &&
+            value.denominator.size() <= degree_budget + 1;
+    };
+
+    std::vector<size_t> pivot_rows(columns, SIZE_MAX);
+    size_t next_row = 0;
+    for(size_t column = 0; column < columns && next_row < rows; ++column){
+        size_t pivot = next_row;
+        while(pivot < rows &&
+              integration_zero_poly(matrix[pivot][column].numerator)) ++pivot;
+        if(pivot == rows) continue;
+        if(pivot != next_row) std::swap(matrix[pivot], matrix[next_row]);
+        fraction inverse;
+        if(!integration_rate_fraction_div(
+                fraction{{numeric_value(1)}, {numeric_value(1)}},
+                matrix[next_row][column], inverse))
+            return {integration_rde_status::verification_failed, {}, {}};
+        for(size_t j = column; j <= columns; ++j)
+            matrix[next_row][j] = integration_rate_fraction_mul(
+                matrix[next_row][j], inverse);
+        for(size_t j = column; j <= columns; ++j)
+            if(!fraction_within_budget(matrix[next_row][j]))
+                return {integration_rde_status::verification_failed, {}, {}};
+        for(size_t row = 0; row < rows; ++row){
+            if(row == next_row ||
+               integration_zero_poly(matrix[row][column].numerator)) continue;
+            fraction scale = matrix[row][column];
+            for(size_t j = column; j <= columns; ++j)
+                matrix[row][j] = integration_rate_fraction_sub(matrix[row][j],
+                    integration_rate_fraction_mul(scale, matrix[next_row][j]));
+            for(size_t j = column; j <= columns; ++j)
+                if(!fraction_within_budget(matrix[row][j]))
+                    return {integration_rde_status::verification_failed, {}, {}};
+        }
+        pivot_rows[column] = next_row++;
+    }
+    for(size_t row = 0; row < rows; ++row){
+        bool empty = true;
+        for(size_t column = 0; column < columns; ++column)
+            if(!integration_zero_poly(matrix[row][column].numerator)){
+                empty = false;
+                break;
+            }
+        if(empty && !integration_zero_poly(matrix[row][columns].numerator))
+            return {integration_rde_status::no_polynomial_solution, {}, {}};
+    }
+    std::vector<fraction> solution(columns,
+        fraction{{numeric_value(0)}, {numeric_value(1)}});
+    for(size_t column = 0; column < columns; ++column)
+        if(pivot_rows[column] != SIZE_MAX)
+            solution[column] = matrix[pivot_rows[column]][columns];
+
+    // Replay every polynomial coefficient equation before exposing the result.
+    for(size_t row = 0; row < rows; ++row){
+        fraction lhs{{numeric_value(0)}, {numeric_value(1)}};
+        for(size_t column = 0; column < columns; ++column)
+            lhs = integration_rate_fraction_add(lhs,
+                integration_rate_fraction_mul(original_matrix[row][column],
+                                               solution[column]));
+        fraction error = integration_rate_fraction_sub(lhs,
+            original_matrix[row][columns]);
+        if(!integration_zero_poly(error.numerator))
+            return {integration_rde_status::verification_failed, {}, {}};
+    }
+    return {integration_rde_status::solved, std::move(solution),
+            std::move(denominator)};
+}
+
 // Rational part of the Risch differential equation. For an integrand
 // f*exp(g), an elementary hyperexponential term has the form R*exp(g), where
 // R satisfies R' + g'R = f. If f=P/Q and g is polynomial, every repeated
@@ -10026,7 +10280,78 @@ risch_result exact_context::integrate_elementary(
     risch_result result = integrate_elementary_impl(expression, variable, options);
     if(!result.elementary_part.valid() || result.elementary_part == integer(0))
         return result;
+    auto prove_nonzero_rational_log_sum = [&](const exact_expr &input) -> bool{
+        std::vector<exact_expr> terms;
+        auto split_sum = [&](auto &&self, const exact_expr &part) -> void{
+            if(part.operation() == exact_opcode::add){
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            }else terms.push_back(part);
+        };
+        split_sum(split_sum, input);
+
+        struct log_term{
+            precq_t coefficient;
+            exact_expr base;
+        };
+        std::vector<log_term> logarithms;
+        precn_t common_denominator(1);
+        for(const exact_expr &term : terms){
+            std::vector<exact_expr> factors;
+            if(term.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < term.operand_count(); ++i)
+                    factors.push_back(term.operand(i));
+            }else factors.push_back(term);
+            precq_t coefficient(1);
+            exact_expr base;
+            for(const exact_expr &factor : factors){
+                if(factor.is_value() && !factor.value().is_approximate()){
+                    coefficient = coefficient * factor.value().rational();
+                }else if(factor.operation() == exact_opcode::natural_logarithm &&
+                         factor.operand_count() == 1 &&
+                         factor.operand(0).is_value() &&
+                         !factor.operand(0).value().is_approximate()){
+                    const precq_t &candidate = factor.operand(0).value().rational();
+                    if(candidate.is_negative() || candidate.is_zero())
+                        return false;
+                    if(base.valid()) return false;
+                    base = factor.operand(0);
+                }else return false;
+            }
+            if(coefficient.is_zero()) continue;
+            if(!base.valid()) return false;
+            precn_t denominator(coefficient.denominator());
+            common_denominator = (common_denominator /
+                ::gcd(common_denominator, denominator)) * denominator;
+            if(common_denominator > precn_t(256)) return false;
+            logarithms.push_back({std::move(coefficient), std::move(base)});
+        }
+        if(logarithms.empty()) return false;
+
+        int64_t common = 0;
+        if(!integer_i64(numeric_value(precz_t(common_denominator)), common) ||
+           common <= 0) return false;
+        exact_expr rational_product = integer(1);
+        for(const log_term &term : logarithms){
+            int64_t denominator = 0, numerator = 0;
+            if(!integer_i64(numeric_value(precz_t(term.coefficient.denominator())),
+                            denominator) ||
+               !integer_i64(numeric_value(precz_t::from_magnitude(
+                            term.coefficient.numerator(),
+                            term.coefficient.is_negative())),
+                            numerator) ||
+               denominator <= 0 || common % denominator != 0)
+                return false;
+            int64_t multiplier = common / denominator;
+            if(multiplier <= 0 || numerator > 256 / multiplier ||
+               numerator < -256 / multiplier) return false;
+            rational_product = rational_product * power(term.base,
+                integer(numerator * multiplier));
+        }
+        return simplify(rational_product) != integer(1);
+    };
     auto known_nonzero = [&](auto &&self, const exact_expr &part) -> bool{
+        if(prove_nonzero_rational_log_sum(part)) return true;
         if(part.is_value()) return !part.value().is_approximate() &&
             !part.value().is_zero();
         if(integration_strictly_positive_constant(part)) return true;
@@ -14195,6 +14520,7 @@ risch_result exact_context::integrate_elementary_impl(
             rational_slopes.push_back(std::move(slope));
         }
         bool exact_zero_rate = false;
+        bool exact_nonzero_rational_rate = false;
         if(exact_numeric_rates){
             exact_expr rational_product = integer(1);
             for(size_t i = 0; i < rational_slopes.size(); ++i){
@@ -14202,8 +14528,9 @@ risch_result exact_context::integrate_elementary_impl(
                 if(!integer_i64(numeric_value(precz_t(
                                     rational_slopes[i].denominator())),
                                 denominator) ||
-                   !integer_i64(numeric_value(precz_t(
-                                    rational_slopes[i].numerator())),
+                   !integer_i64(numeric_value(precz_t::from_magnitude(
+                                    rational_slopes[i].numerator(),
+                                    rational_slopes[i].is_negative())),
                                 numerator) ||
                    !integer_i64(numeric_value(precz_t(common_denominator)),
                                 common) ||
@@ -14221,8 +14548,10 @@ risch_result exact_context::integrate_elementary_impl(
                 rational_product = rational_product * power(
                     power_factors[i].operand(0), integer(exponent));
             }
-            exact_zero_rate = exact_numeric_rates &&
-                simplify(rational_product) == integer(1);
+            if(exact_numeric_rates){
+                exact_zero_rate = simplify(rational_product) == integer(1);
+                exact_nonzero_rational_rate = !exact_zero_rate;
+            }
         }
         if(exact_zero_rate){
             exact_expr constant_factor = integer(1);
@@ -14264,8 +14593,63 @@ risch_result exact_context::integrate_elementary_impl(
 
         integration_expr_poly right_hand_side;
         if(!integration_parse_expr_poly(*this, coefficient, variable,
-                right_hand_side) || right_hand_side.empty())
-            return false;
+                right_hand_side) || right_hand_side.empty()){
+            if(!exact_nonzero_rational_rate) return false;
+            exact_expr rate_variable;
+            for(size_t suffix = 0;; ++suffix){
+                rate_variable = symbol("_risch_rate_t_" +
+                    std::to_string(suffix));
+                if(rate_variable != variable &&
+                   !integration_depends_on(expression, rate_variable)) break;
+            }
+            exact_expr formal_coefficient = substitute(coefficient,
+                logarithmic_rate, rate_variable);
+            integration_expr_poly rational_numerator, rational_denominator;
+            if(!integration_parse_expr_rational(*this, formal_coefficient,
+                    variable, rational_numerator, rational_denominator,
+                    degree_budget, &rate_variable)) return false;
+            integration_poly denominator;
+            denominator.reserve(rational_denominator.size());
+            for(const exact_expr &entry : rational_denominator){
+                if(!entry.is_value() || entry.value().is_approximate())
+                    return false;
+                denominator.push_back(entry.value());
+            }
+            integration_trim(denominator);
+            if(denominator.empty() || integration_zero_poly(denominator))
+                return false;
+            integration_symbolic_rate_rde_result rde =
+                integration_rde_symbolic_constant_rate_rational(*this,
+                    rational_numerator, denominator, rate_variable, variable,
+                    degree_budget, options.maximum_matrix_entries);
+            if(rde.status != integration_rde_status::solved) return false;
+            integration_expr_poly solution_coefficients;
+            solution_coefficients.reserve(rde.numerator.size());
+            for(const integration_rate_fraction &entry : rde.numerator){
+                exact_expr coefficient_in_rate =
+                    integration_rate_fraction_expr(*this, entry,
+                                                   rate_variable);
+                solution_coefficients.push_back(substitute(coefficient_in_rate,
+                    rate_variable, logarithmic_rate));
+            }
+            exact_expr rational_solution = integration_expr_poly_expr(
+                *this, solution_coefficients, variable) /
+                integration_poly_expr(*this, rde.denominator, variable);
+            exact_expr power_product = power_factors.size() == 1
+                ? power_factors[0] : multiply(power_factors);
+            exact_expr candidate = rational_solution * power_product;
+            if(candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "constant-rate rational RDE result node budget exceeded";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
         if(right_hand_side.size() > degree_budget + 1 ||
            right_hand_side.size() > options.maximum_matrix_entries){
             result.status = risch_status::resource_limit;
