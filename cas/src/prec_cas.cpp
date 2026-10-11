@@ -14100,6 +14100,65 @@ risch_result exact_context::integrate_elementary_impl(
         return false;
     };
     if(classify_constant_exponential_chain()) return result;
+    auto classify_constant_rate_power = [&]() -> bool{
+        std::vector<exact_expr> factors;
+        if(expression.operation() == exact_opcode::multiply){
+            factors.reserve(expression.operand_count());
+            for(size_t i = 0; i < expression.operand_count(); ++i)
+                factors.push_back(expression.operand(i));
+        }else factors.push_back(expression);
+
+        size_t selected = SIZE_MAX;
+        for(size_t i = 0; i < factors.size(); ++i){
+            const exact_expr &factor = factors[i];
+            if(factor.operation() != exact_opcode::power ||
+               factor.operand_count() != 2 ||
+               integration_depends_on(factor.operand(0), variable) ||
+               !integration_depends_on(factor.operand(1), variable))
+                continue;
+            if(selected != SIZE_MAX) return false;
+            selected = i;
+        }
+        if(selected == SIZE_MAX) return false;
+
+        exact_expr power_factor = factors[selected];
+        exact_expr base = power_factor.operand(0);
+        if(!base.is_value() || base.value().is_approximate() ||
+           base.value().is_negative() || base.value().is_zero() ||
+           base.value().is_one())
+            return false;
+
+        factors.erase(factors.begin() + selected);
+        exact_expr coefficient = factors.empty() ? integer(1)
+            : factors.size() == 1 ? factors[0] : multiply(factors);
+        if(integration_depends_on(coefficient, variable)) return false;
+
+        exact_expr rate = simplify(differentiate(power_factor.operand(1),
+                                                  variable));
+        if(rate == integer(0) || integration_depends_on(rate, variable) ||
+           rate.reachable_node_count() > options.maximum_nodes)
+            return false;
+
+        exact_expr logarithmic_rate = simplify(
+            rate * natural_logarithm(base));
+        if(logarithmic_rate == integer(0) ||
+           logarithmic_rate.reachable_node_count() > options.maximum_nodes)
+            return false;
+        exact_expr candidate = coefficient * power_factor / logarithmic_rate;
+        if(candidate.reachable_node_count() > options.maximum_nodes)
+            return false;
+        exact_expr error = simplify(expand(
+            differentiate(candidate, variable) - expression, 100000));
+        if(error != integer(0) && !integration_tower_rational_zero(
+                *this, error, variable, degree_budget, options.maximum_nodes))
+            return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_constant_rate_power()) return result;
     auto classify_rational_hyperexponential = [&]() -> bool{
         exact_expr exponential_factor;
         exact_expr cofactor = integer(1);

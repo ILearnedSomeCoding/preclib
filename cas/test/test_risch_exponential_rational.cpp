@@ -7,6 +7,7 @@
 int main(){
     exact_context context;
     exact_expr x = context.symbol("x");
+    exact_expr a = context.symbol("a");
     exact_expr t = context.exponential(x);
     risch_options options;
     options.maximum_recursion_depth = 1;
@@ -24,7 +25,23 @@ int main(){
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
     }
-    exact_expr a = context.symbol("a");
+    exact_expr two_to_x = context.power(context.integer(2), x);
+    risch_result two_to_x_result = context.integrate_elementary(two_to_x, x);
+    assert(two_to_x_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        two_to_x_result.elementary_part, x) - two_to_x) == context.integer(0));
+    exact_expr shifted_power = context.power(context.integer(2),
+        context.integer(3) * x + context.integer(1));
+    risch_result shifted_power_result = context.integrate_elementary(
+        shifted_power, x);
+    assert(shifted_power_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        shifted_power_result.elementary_part, x) - shifted_power) ==
+        context.integer(0));
+    risch_result scaled_power = context.integrate_elementary(a * two_to_x, x);
+    assert(scaled_power.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        scaled_power.elementary_part, x) - a * two_to_x) == context.integer(0));
     risch_result symbolic_quadratic = context.integrate_elementary(
         context.integer(1) /
             (context.integer(1) + t +
