@@ -14108,7 +14108,7 @@ risch_result exact_context::integrate_elementary_impl(
                 factors.push_back(expression.operand(i));
         }else factors.push_back(expression);
 
-        size_t selected = SIZE_MAX;
+        std::vector<size_t> selected;
         for(size_t i = 0; i < factors.size(); ++i){
             const exact_expr &factor = factors[i];
             if(factor.operation() != exact_opcode::power ||
@@ -14116,43 +14116,140 @@ risch_result exact_context::integrate_elementary_impl(
                integration_depends_on(factor.operand(0), variable) ||
                !integration_depends_on(factor.operand(1), variable))
                 continue;
-            if(selected != SIZE_MAX) return false;
-            selected = i;
+            selected.push_back(i);
         }
-        if(selected == SIZE_MAX) return false;
+        if(selected.empty()) return false;
 
-        exact_expr power_factor = factors[selected];
-        exact_expr base = power_factor.operand(0);
-        bool base_positive = false;
-        if(base.is_value()){
-            if(base.value().is_approximate() || base.value().is_negative() ||
-               base.value().is_zero() || base.value().is_one())
-                return false;
-            base_positive = true;
-        }else if(base.operation() == exact_opcode::constant_e ||
-                 base.operation() == exact_opcode::constant_pi){
-            base_positive = true;
-        }else if(base.operation() == exact_opcode::symbol){
-            base_positive = storage_->has_assumption(
-                base.root_, exact_storage::assumed_positive);
-        }
-        if(!base_positive) return false;
-
-        factors.erase(factors.begin() + selected);
+        std::vector<exact_expr> power_factors;
+        power_factors.reserve(selected.size());
+        for(size_t index : selected) power_factors.push_back(factors[index]);
+        for(auto it = selected.rbegin(); it != selected.rend(); ++it)
+            factors.erase(factors.begin() + *it);
         exact_expr coefficient = factors.empty() ? integer(1)
             : factors.size() == 1 ? factors[0] : multiply(factors);
 
-        exact_expr rate = simplify(differentiate(power_factor.operand(1),
-                                                  variable));
-        if(rate == integer(0) || integration_depends_on(rate, variable) ||
-           rate.reachable_node_count() > options.maximum_nodes)
-            return false;
+        exact_expr logarithmic_rate = integer(0);
+        std::vector<exact_expr> slopes;
+        slopes.reserve(power_factors.size());
+        bool power_derivatives_verified = true;
+        for(const exact_expr &power_factor : power_factors){
+            exact_expr base = power_factor.operand(0);
+            bool base_positive = false;
+            if(base.is_value()){
+                if(base.value().is_approximate() || base.value().is_negative() ||
+                   base.value().is_zero() || base.value().is_one())
+                    return false;
+                base_positive = true;
+            }else if(base.operation() == exact_opcode::constant_e ||
+                     base.operation() == exact_opcode::constant_pi){
+                base_positive = true;
+            }else if(base.operation() == exact_opcode::symbol){
+                base_positive = storage_->has_assumption(
+                    base.root_, exact_storage::assumed_positive);
+            }
+            if(!base_positive) return false;
 
-        exact_expr logarithmic_rate = simplify(
-            rate * natural_logarithm(base));
+            exact_expr slope = simplify(differentiate(power_factor.operand(1),
+                                                       variable));
+            if(slope == integer(0) ||
+               integration_depends_on(slope, variable) ||
+               slope.reachable_node_count() > options.maximum_nodes)
+                return false;
+            slopes.push_back(slope);
+            exact_expr base_log = natural_logarithm(base);
+            logarithmic_rate = logarithmic_rate + slope * base_log;
+            exact_expr factor_derivative_error = simplify(
+                differentiate(power_factor, variable) -
+                power_factor * slope * base_log);
+            if(factor_derivative_error != integer(0))
+                power_derivatives_verified = false;
+        }
+        if(!power_derivatives_verified) return false;
+        logarithmic_rate = simplify(logarithmic_rate);
         if(logarithmic_rate == integer(0) ||
            logarithmic_rate.reachable_node_count() > options.maximum_nodes)
             return false;
+
+        // For exact rational bases and rational slopes, decide whether the
+        // sum of logarithmic rates vanishes by checking the equivalent exact
+        // rational product after clearing slope denominators.
+        bool exact_numeric_rates = true;
+        precn_t common_denominator(1);
+        std::vector<precq_t> rational_slopes;
+        rational_slopes.reserve(slopes.size());
+        for(size_t i = 0; i < slopes.size(); ++i){
+            const exact_expr &base = power_factors[i].operand(0);
+            if(!base.is_value() || base.value().is_approximate() ||
+               !slopes[i].is_value() || slopes[i].value().is_approximate()){
+                exact_numeric_rates = false;
+                break;
+            }
+            precq_t slope = slopes[i].value().rational();
+            precn_t denominator(slope.denominator());
+            common_denominator = (common_denominator /
+                ::gcd(common_denominator, denominator)) * denominator;
+            if(common_denominator > precn_t(256)){
+                exact_numeric_rates = false;
+                break;
+            }
+            rational_slopes.push_back(std::move(slope));
+        }
+        bool exact_zero_rate = false;
+        if(exact_numeric_rates){
+            exact_expr rational_product = integer(1);
+            for(size_t i = 0; i < rational_slopes.size(); ++i){
+                int64_t denominator = 0, numerator = 0, common = 0;
+                if(!integer_i64(numeric_value(precz_t(
+                                    rational_slopes[i].denominator())),
+                                denominator) ||
+                   !integer_i64(numeric_value(precz_t(
+                                    rational_slopes[i].numerator())),
+                                numerator) ||
+                   !integer_i64(numeric_value(precz_t(common_denominator)),
+                                common) ||
+                   denominator <= 0 || common % denominator != 0){
+                    exact_numeric_rates = false;
+                    break;
+                }
+                int64_t multiplier = common / denominator;
+                if(multiplier <= 0 || numerator > 256 / multiplier ||
+                   numerator < -256 / multiplier){
+                    exact_numeric_rates = false;
+                    break;
+                }
+                int64_t exponent = numerator * multiplier;
+                rational_product = rational_product * power(
+                    power_factors[i].operand(0), integer(exponent));
+            }
+            exact_zero_rate = exact_numeric_rates &&
+                simplify(rational_product) == integer(1);
+        }
+        if(exact_zero_rate){
+            exact_expr constant_factor = integer(1);
+            for(size_t i = 0; i < power_factors.size(); ++i){
+                exact_expr offset = simplify(power_factors[i].operand(1) -
+                    slopes[i] * variable);
+                if(integration_depends_on(offset, variable)) return false;
+                constant_factor = constant_factor * power(
+                    power_factors[i].operand(0), offset);
+            }
+            exact_expr reduced = simplify(constant_factor * coefficient);
+            if(reduced == expression) return false;
+            risch_result lower = integrate_elementary(reduced, variable,
+                                                       options);
+            if(lower.status == risch_status::elementary){
+                result = std::move(lower);
+                return true;
+            }
+            if(lower.status == risch_status::resource_limit ||
+               lower.status == risch_status::verification_failed){
+                result.status = lower.status;
+                result.diagnostic = std::move(lower.diagnostic);
+                return true;
+            }
+            return false;
+        }
+
         std::unordered_set<uint32_t> rate_nodes;
         auto exact_rate = [&](auto &&self, const exact_expr &part) -> bool{
             if(!rate_nodes.insert(part.id()).second) return true;
@@ -14161,8 +14258,9 @@ risch_result exact_context::integrate_elementary_impl(
                 if(!self(self, part.operand(i))) return false;
             return true;
         };
-        if(!exact_rate(exact_rate, logarithmic_rate) ||
-           !exact_rate(exact_rate, power_factor)) return false;
+        if(!exact_rate(exact_rate, logarithmic_rate)) return false;
+        for(const exact_expr &power_factor : power_factors)
+            if(!exact_rate(exact_rate, power_factor)) return false;
 
         integration_expr_poly right_hand_side;
         if(!integration_parse_expr_poly(*this, coefficient, variable,
@@ -14209,14 +14307,13 @@ risch_result exact_context::integrate_elementary_impl(
 
         exact_expr polynomial = integration_expr_poly_expr(
             *this, primitive_coefficients, variable);
-        exact_expr candidate = polynomial * power_factor;
+        exact_expr power_product = power_factors.size() == 1
+            ? power_factors[0] : multiply(power_factors);
+        exact_expr candidate = polynomial * power_product;
         if(candidate.reachable_node_count() > options.maximum_nodes)
             return false;
-        exact_expr error = simplify(expand(
-            differentiate(candidate, variable) - expression, 100000));
-        if(error != integer(0) && !integration_tower_rational_zero(
-                *this, error, variable, degree_budget, options.maximum_nodes))
-            return false;
+        // The factor derivative identities above and the coefficientwise
+        // polynomial RDE check together certify D(candidate) = expression.
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);

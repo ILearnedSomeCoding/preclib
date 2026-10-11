@@ -78,6 +78,27 @@ int main(){
     assert(e_to_x_result.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
         e_to_x_result.elementary_part, x) - e_to_x) == context.integer(0));
+    exact_expr three_to_x = context.power(context.integer(3), x);
+    exact_expr mixed_base_exponential = x * two_to_x * three_to_x;
+    risch_result mixed_base_result = context.integrate_elementary(
+        mixed_base_exponential, x);
+    assert(mixed_base_result.status == risch_status::elementary);
+    exact_expr mixed_base_rate = context.natural_logarithm(
+        context.integer(2)) + context.natural_logarithm(context.integer(3));
+    exact_expr mixed_base_expected =
+        (x / mixed_base_rate - context.integer(1) /
+            context.power(mixed_base_rate, context.integer(2))) *
+        two_to_x * three_to_x;
+    assert(context.simplify(mixed_base_result.elementary_part -
+        mixed_base_expected) == context.integer(0));
+    exact_expr cancelling_base_exponential = x * two_to_x *
+        context.power(context.rational(precq_t(precn_t(1), precn_t(2))), x);
+    risch_result cancelling_base_result = context.integrate_elementary(
+        cancelling_base_exponential, x);
+    assert(cancelling_base_result.status == risch_status::elementary);
+    assert(context.simplify(cancelling_base_result.elementary_part -
+        context.power(x, context.integer(2)) / context.integer(2)) ==
+        context.integer(0));
     risch_result scaled_power = context.integrate_elementary(a * two_to_x, x);
     assert(scaled_power.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
