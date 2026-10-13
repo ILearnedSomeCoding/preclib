@@ -2055,14 +2055,14 @@ int main(){
     exact_expr exponential_rational = context.integer(2) *
         exponential_generator / (context.integer(1) + exponential_generator);
     assert(context.integrate(exponential_rational, x) ==
-           context.natural_logarithm(context.absolute_value(
-               context.integer(1) + exponential_generator)));
+           context.natural_logarithm(context.integer(1) +
+                                     exponential_generator));
     exact_expr pi_exponential_generator = context.exponential(context.pi() * x);
     exact_expr pi_exponential_rational = pi_exponential_generator /
         (context.integer(1) + pi_exponential_generator);
     assert(context.integrate(pi_exponential_rational, x) ==
-           context.natural_logarithm(context.absolute_value(
-               context.integer(1) + pi_exponential_generator)) / context.pi());
+           context.natural_logarithm(context.integer(1) +
+                                     pi_exponential_generator) / context.pi());
     exact_expr tangent_generator = context.tangent(
         context.integer(2) * x + context.integer(1));
     exact_expr tangent_rational = context.integer(2) /
@@ -2211,8 +2211,23 @@ int main(){
     exact_expr e_integrand = e_polynomial * e_power;
     exact_expr e_antiderivative = context.integrate(e_integrand, x);
     assert(e_antiderivative.operation() != exact_opcode::integral);
+    exact_expr e_integrand_exp = context.substitute(e_integrand, e_power,
+        context.exponential(x));
     assert(context.simplify(context.differentiate(e_antiderivative, x) -
-                           e_integrand) == context.integer(0));
+                           e_integrand_exp) == context.integer(0));
+    exact_expr e_denominator_integrand = context.integer(1) /
+        (e_power + context.integer(1));
+    exact_expr e_denominator_primitive = context.integrate(
+        e_denominator_integrand, x);
+    assert(e_denominator_primitive.operation() != exact_opcode::integral);
+    assert(e_denominator_primitive == x - context.natural_logarithm(
+        context.integer(1) + context.exponential(x)));
+    exact_expr x_over_e_integrand = x / e_power;
+    exact_expr x_over_e_primitive = context.integrate(x_over_e_integrand, x);
+    assert(x_over_e_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand((context.differentiate(
+        x_over_e_primitive, x) - x / context.exponential(x)) *
+        context.exponential(x))) == context.integer(0));
 
     // Risch differential equations are solved over the full constant field,
     // not just rational coefficients.

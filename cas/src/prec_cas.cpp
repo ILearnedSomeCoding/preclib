@@ -10222,15 +10222,101 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         return result;
     };
     exact_expr normalized = simplify(expression);
+    std::vector<uint32_t> e_power_nodes;
+    std::unordered_set<uint32_t> visited_nodes;
+    auto find_e_powers = [&](auto &&self, uint32_t id) -> void{
+        if(!visited_nodes.insert(id).second) return;
+        exact_node current = storage_->node(id);
+        const uint32_t *children = storage_->children(current);
+        if(current.op == exact_opcode::power && current.operand_count == 2 &&
+           storage_->node(children[0]).op == exact_opcode::constant_e)
+            e_power_nodes.push_back(id);
+        for(size_t i = 0; i < current.operand_count; ++i)
+            self(self, children[i]);
+    };
+    find_e_powers(find_e_powers, normalized.root_);
+    for(uint32_t id : e_power_nodes){
+        exact_expr e_power_node(storage_, id);
+        normalized = substitute(normalized, e_power_node,
+                                exponential(e_power_node.operand(1)));
+    }
+    normalized = simplify(normalized);
+    auto is_real_integrand = [&](auto &&self,
+            const exact_expr &part) -> bool{
+        if(part == variable || part.is_value() ||
+           part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::constant_i) return false;
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                             exact_storage::assumed_real);
+        if(part.operation() == exact_opcode::add ||
+           part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return true;
+        }
+        if(part.operation() == exact_opcode::exponential)
+            return self(self, part.operand(0));
+        return false;
+    };
+    auto is_positive_real_integrand = [&](auto &&self,
+            const exact_expr &part) -> bool{
+        if(part.is_value())
+            return !part.value().is_approximate() &&
+                   !part.value().is_zero() && !part.value().is_negative();
+        if(part.operation() == exact_opcode::constant_e) return true;
+        if(part.operation() == exact_opcode::exponential)
+            return is_real_integrand(is_real_integrand, part.operand(0));
+        if(part.operation() == exact_opcode::add ||
+           part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return part.operand_count() != 0;
+        }
+        return false;
+    };
+    auto remove_positive_log_abs = [&](const exact_expr &part){
+        std::vector<uint32_t> logarithms;
+        std::unordered_set<uint32_t> seen;
+        auto find_logs = [&](auto &&self, uint32_t id) -> void{
+            if(!seen.insert(id).second) return;
+            exact_node current = storage_->node(id);
+            const uint32_t *children = storage_->children(current);
+            if(current.op == exact_opcode::natural_logarithm &&
+               current.operand_count == 1){
+                const exact_node &argument = storage_->node(children[0]);
+                if(argument.op == exact_opcode::absolute_value)
+                    logarithms.push_back(id);
+            }
+            for(size_t i = 0; i < current.operand_count; ++i)
+                self(self, children[i]);
+        };
+        find_logs(find_logs, part.root_);
+        exact_expr result = part;
+        for(uint32_t id : logarithms){
+            exact_expr logarithm(storage_, id);
+            exact_expr absolute = logarithm.operand(0);
+            exact_expr base = absolute.operand(0);
+            if(base.operation() == exact_opcode::exponential &&
+               is_real_integrand(is_real_integrand, base.operand(0)))
+                result = substitute(result, logarithm, base.operand(0));
+            else if(is_positive_real_integrand(is_positive_real_integrand,
+                                                base))
+                result = substitute(result, logarithm, natural_logarithm(base));
+        }
+        return simplify(result);
+    };
     exact_expr multilog = integration_joint_primitives(*this, normalized, variable, risch_options());
-    if(multilog.valid()) return simplify(multilog);
+    if(multilog.valid()) return remove_positive_log_abs(multilog);
     exact_expr rational_primitive = integration_primitive_rational_derivative(
         *this, normalized, variable, risch_options());
-    if(rational_primitive.valid()) return simplify(rational_primitive);
+    if(rational_primitive.valid()) return remove_positive_log_abs(rational_primitive);
     exact_expr hermite_primitive = integration_normal_hermite_primitive(
         *this, normalized, variable, risch_options());
-    if(hermite_primitive.valid()) return simplify(hermite_primitive);
-    exact_expr direct = antiderivative(normalized.root_);
+    if(hermite_primitive.valid()) return remove_positive_log_abs(hermite_primitive);
+    exact_expr direct = remove_positive_log_abs(
+        antiderivative(normalized.root_));
     std::unordered_set<uint32_t> integral_seen;
     auto contains_integral = [&](auto &&self, const exact_expr &part) -> bool{
         if(!integral_seen.insert(part.id()).second) return false;
