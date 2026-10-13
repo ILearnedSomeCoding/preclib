@@ -77,7 +77,45 @@ int main(){
     risch_result e_to_x_result = context.integrate_elementary(e_to_x, x);
     assert(e_to_x_result.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
-        e_to_x_result.elementary_part, x) - e_to_x) == context.integer(0));
+        e_to_x_result.elementary_part, x) - context.exponential(x)) ==
+        context.integer(0));
+    exact_expr e_power_logistic = context.integer(1) /
+        (context.power(context.e(), x) + context.integer(1));
+    risch_result e_power_logistic_result = context.integrate_elementary(
+        e_power_logistic, x);
+    assert(e_power_logistic_result.status == risch_status::elementary);
+    assert(e_power_logistic_result.remainder == context.integer(0));
+    assert(e_power_logistic_result.elementary_part == x -
+        context.natural_logarithm(context.exponential(x) +
+                                  context.integer(1)));
+    exact_expr x_over_e_power = x / context.power(context.e(), x);
+    risch_result x_over_e_power_result = context.integrate_elementary(
+        x_over_e_power, x);
+    assert(x_over_e_power_result.status == risch_status::elementary);
+    assert(x_over_e_power_result.remainder == context.integer(0));
+    assert(x_over_e_power_result.elementary_part ==
+        (-x - context.integer(1)) / context.exponential(x));
+    exact_expr nested_e_power = context.power(context.e(),
+        context.power(context.e(), x));
+    exact_expr nested_e_power_input = nested_e_power *
+        context.power(context.e(), x);
+    risch_result nested_e_power_result = context.integrate_elementary(
+        nested_e_power_input, x);
+    assert(nested_e_power_result.status == risch_status::elementary);
+    assert(nested_e_power_result.remainder == context.integer(0));
+    assert(nested_e_power_result.elementary_part ==
+        context.exponential(context.exponential(x)));
+    exact_expr mixed_exponential_log_input = context.exponential(x) *
+        (context.natural_logarithm(x) + context.integer(1) / x);
+    risch_result mixed_exponential_log_result = context.integrate_elementary(
+        mixed_exponential_log_input, x);
+    assert(mixed_exponential_log_result.status == risch_status::elementary);
+    assert(mixed_exponential_log_result.remainder == context.integer(0));
+    assert(mixed_exponential_log_result.elementary_part ==
+        context.exponential(x) * context.natural_logarithm(x));
+    exact_expr e_over_x = context.power(context.e(), x) / x;
+    risch_result e_over_x_result = context.integrate_elementary(e_over_x, x);
+    assert(e_over_x_result.status == risch_status::proven_nonelementary);
     exact_expr three_to_x = context.power(context.integer(3), x);
     exact_expr mixed_base_exponential = x * two_to_x * three_to_x;
     risch_result mixed_base_result = context.integrate_elementary(

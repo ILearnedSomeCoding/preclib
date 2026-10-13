@@ -2892,6 +2892,27 @@ static void integration_factor_list(const exact_expr &expression,
     }else factors.push_back(expression);
 }
 
+static exact_expr integration_normalize_e_powers(
+        exact_context &context, const exact_expr &expression){
+    std::vector<exact_expr> e_powers;
+    std::unordered_set<uint32_t> visited;
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!visited.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::power &&
+           part.operand(0).operation() == exact_opcode::constant_e)
+            e_powers.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    if(e_powers.empty()) return expression;
+    exact_expr normalized = expression;
+    for(const exact_expr &power : e_powers)
+        normalized = context.substitute(normalized, power,
+            context.exponential(power.operand(1)));
+    return context.simplify(normalized);
+}
+
 struct integration_factor{
     integration_poly polynomial;
     size_t multiplicity;
@@ -10221,26 +10242,8 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         memo.emplace(id, result);
         return result;
     };
-    exact_expr normalized = simplify(expression);
-    std::vector<uint32_t> e_power_nodes;
-    std::unordered_set<uint32_t> visited_nodes;
-    auto find_e_powers = [&](auto &&self, uint32_t id) -> void{
-        if(!visited_nodes.insert(id).second) return;
-        exact_node current = storage_->node(id);
-        const uint32_t *children = storage_->children(current);
-        if(current.op == exact_opcode::power && current.operand_count == 2 &&
-           storage_->node(children[0]).op == exact_opcode::constant_e)
-            e_power_nodes.push_back(id);
-        for(size_t i = 0; i < current.operand_count; ++i)
-            self(self, children[i]);
-    };
-    find_e_powers(find_e_powers, normalized.root_);
-    for(uint32_t id : e_power_nodes){
-        exact_expr e_power_node(storage_, id);
-        normalized = substitute(normalized, e_power_node,
-                                exponential(e_power_node.operand(1)));
-    }
-    normalized = simplify(normalized);
+    exact_expr normalized = integration_normalize_e_powers(
+        *this, simplify(expression));
     auto is_real_integrand = [&](auto &&self,
             const exact_expr &part) -> bool{
         if(part == variable || part.is_value() ||
@@ -10369,7 +10372,8 @@ exact_expr exact_context::integrate(const exact_expr &expression,
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
-    risch_result result = integrate_elementary_impl(expression, variable, options);
+    exact_expr normalized = integration_normalize_e_powers(*this, expression);
+    risch_result result = integrate_elementary_impl(normalized, variable, options);
     if(!result.elementary_part.valid() || result.elementary_part == integer(0))
         return result;
     auto prove_nonzero_rational_log_sum = [&](const exact_expr &input) -> bool{
