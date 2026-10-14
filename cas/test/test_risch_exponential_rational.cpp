@@ -69,6 +69,31 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(reciprocal_polynomial_power_legacy, x) -
         normalized_reciprocal_input, 100000)) == context.integer(0));
+    exact_expr quadratic_reciprocal_input = x /
+        context.power(context.integer(2), context.power(x, context.integer(2)));
+    exact_expr normalized_quadratic_reciprocal = x * context.power(
+        context.integer(2), -context.power(x, context.integer(2)));
+    risch_result quadratic_reciprocal_result = context.integrate_elementary(
+        quadratic_reciprocal_input, x);
+    assert(quadratic_reciprocal_result.status == risch_status::elementary);
+    assert(quadratic_reciprocal_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(quadratic_reciprocal_result.elementary_part, x) -
+        normalized_quadratic_reciprocal, 100000)) == context.integer(0));
+    exact_expr quadratic_power_input = x * context.power(
+        context.integer(2), context.power(x, context.integer(2)));
+    risch_result quadratic_power_result = context.integrate_elementary(
+        quadratic_power_input, x);
+    assert(quadratic_power_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(
+        context.differentiate(quadratic_power_result.elementary_part, x) -
+        quadratic_power_input, 100000)) == context.integer(0));
+    exact_expr quadratic_reciprocal_legacy = context.integrate(
+        quadratic_reciprocal_input, x);
+    assert(quadratic_reciprocal_legacy.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(quadratic_reciprocal_legacy, x) -
+        normalized_quadratic_reciprocal, 100000)) == context.integer(0));
     exact_expr cubic_power_coefficient = (a + context.integer(1)) *
         context.power(x, context.integer(3)) -
         context.integer(2) * x + context.integer(5);
@@ -253,6 +278,17 @@ int main(){
     assert(context.simplify(context.differentiate(
         symbolic_base_result.elementary_part, x) - symbolic_base_power) ==
         context.integer(0));
+    exact_expr symbolic_variable_rate_input = x *
+        context.power(q, context.power(x, context.integer(2)));
+    risch_result symbolic_variable_rate = context.integrate_elementary(
+        symbolic_variable_rate_input, x);
+    assert(symbolic_variable_rate.status == risch_status::elementary);
+    assert(std::find(symbolic_variable_rate.conditions.begin(),
+        symbolic_variable_rate.conditions.end(), context.natural_logarithm(q)) !=
+        symbolic_variable_rate.conditions.end());
+    assert(context.simplify(context.expand(
+        context.differentiate(symbolic_variable_rate.elementary_part, x) -
+        symbolic_variable_rate_input, 100000)) == context.integer(0));
     risch_result symbolic_quadratic = context.integrate_elementary(
         context.integer(1) /
             (context.integer(1) + t +

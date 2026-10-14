@@ -14718,7 +14718,6 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr slope = simplify(differentiate(power_factor.operand(1),
                                                        variable));
             if(slope == integer(0) ||
-               integration_depends_on(slope, variable) ||
                slope.reachable_node_count() > options.maximum_nodes)
                 return false;
             slopes.push_back(slope);
@@ -14732,9 +14731,88 @@ risch_result exact_context::integrate_elementary_impl(
         }
         if(!power_derivatives_verified) return false;
         logarithmic_rate = simplify(logarithmic_rate);
-        if(logarithmic_rate == integer(0) ||
-           logarithmic_rate.reachable_node_count() > options.maximum_nodes)
+        if(logarithmic_rate.reachable_node_count() > options.maximum_nodes)
             return false;
+
+        bool variable_rate = false;
+        for(const exact_expr &slope : slopes)
+            variable_rate = variable_rate ||
+                integration_depends_on(slope, variable);
+        if(variable_rate){
+            exact_expr logarithmic_argument = integer(0);
+            exact_expr power_product = power_factors.size() == 1
+                ? power_factors[0] : multiply(power_factors);
+            for(const exact_expr &power_factor : power_factors)
+                logarithmic_argument = logarithmic_argument +
+                    power_factor.operand(1) *
+                    natural_logarithm(power_factor.operand(0));
+            logarithmic_argument = simplify(logarithmic_argument);
+            if(logarithmic_argument.reachable_node_count() >
+               options.maximum_nodes) return false;
+
+            exact_expr primitive = integration_hyperexponential_polynomial(
+                *this, coefficient, logarithmic_argument, variable);
+            if(!primitive.valid())
+                primitive = integration_hyperexponential_rational(
+                    *this, coefficient, logarithmic_argument, variable);
+            if(!primitive.valid()) return false;
+
+            exact_expr exponential_generator = exponential(logarithmic_argument);
+            exact_expr candidate = substitute(primitive,
+                exponential_generator, power_product);
+            if(candidate.reachable_node_count() > options.maximum_nodes)
+                return false;
+            exact_expr normalized_integrand = coefficient * power_product;
+            exact_expr error = simplify(expand(
+                differentiate(candidate, variable) - normalized_integrand,
+                100000));
+            if(error == integer(0) || integration_tower_rational_zero(
+                    *this, error, variable, degree_budget,
+                    options.maximum_nodes)){
+                integration_expr_poly rate_polynomial;
+                if(!integration_parse_expr_poly(*this, logarithmic_rate,
+                        variable, rate_polynomial) || rate_polynomial.empty())
+                    return false;
+                exact_expr leading_rate = simplify(rate_polynomial.back());
+                if(leading_rate == integer(0)) return false;
+                std::vector<exact_expr> conditions;
+                auto known_nonzero_constant = [&](const exact_expr &value){
+                    if(value.is_value() && !value.value().is_approximate())
+                        return !value.value().is_zero();
+                    if(value.operation() != exact_opcode::natural_logarithm)
+                        return false;
+                    exact_expr argument = value.operand(0);
+                    if(argument.operation() == exact_opcode::constant_e ||
+                       argument.operation() == exact_opcode::constant_pi)
+                        return true;
+                    return argument.is_value() &&
+                        !argument.value().is_approximate() &&
+                        !argument.value().is_zero() &&
+                        argument.value() != numeric_value(1);
+                };
+                auto add_condition = [&](auto &&self,
+                                         const exact_expr &condition) -> void{
+                    if(known_nonzero_constant(condition)) return;
+                    if(condition.operation() == exact_opcode::multiply){
+                        for(size_t i = 0; i < condition.operand_count(); ++i)
+                            self(self, condition.operand(i));
+                        return;
+                    }
+                    if(std::find(conditions.begin(), conditions.end(),
+                                 condition) == conditions.end())
+                        conditions.push_back(condition);
+                };
+                add_condition(add_condition, leading_rate);
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.conditions = std::move(conditions);
+                result.diagnostic.clear();
+                return true;
+            }
+            return false;
+        }
+        if(logarithmic_rate == integer(0)) return false;
 
         // For exact rational bases and rational slopes, decide whether the
         // sum of logarithmic rates vanishes by checking the equivalent exact
