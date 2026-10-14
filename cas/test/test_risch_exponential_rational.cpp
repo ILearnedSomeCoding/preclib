@@ -88,6 +88,31 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(quadratic_power_result.elementary_part, x) -
         quadratic_power_input, 100000)) == context.integer(0));
+    exact_expr x_squared = context.power(x, context.integer(2));
+    exact_expr two_to_x_squared = context.power(context.integer(2), x_squared);
+    exact_expr quadratic_ln_two = context.natural_logarithm(context.integer(2));
+    exact_expr quadratic_rational_rde_input =
+        (context.integer(2) * quadratic_ln_two - context.integer(1) /
+            context.power(x, context.integer(2))) * two_to_x_squared;
+    risch_result quadratic_rational_rde_result = context.integrate_elementary(
+        quadratic_rational_rde_input, x);
+    assert(quadratic_rational_rde_result.status == risch_status::elementary);
+    assert(quadratic_rational_rde_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        quadratic_rational_rde_result.elementary_part, x) -
+        quadratic_rational_rde_input, 100000)) == context.integer(0));
+    exact_expr x_squared_plus_one = x_squared + context.integer(1);
+    exact_expr quadratic_repeated_pole_rde_input =
+        (context.integer(2) * x * quadratic_ln_two / x_squared_plus_one -
+         context.integer(2) * x /
+             context.power(x_squared_plus_one, context.integer(2))) *
+        two_to_x_squared;
+    risch_result quadratic_repeated_pole_rde_result = context.integrate_elementary(
+        quadratic_repeated_pole_rde_input, x);
+    assert(quadratic_repeated_pole_rde_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        quadratic_repeated_pole_rde_result.elementary_part, x) -
+        quadratic_repeated_pole_rde_input, 100000)) == context.integer(0));
     exact_expr quadratic_reciprocal_legacy = context.integrate(
         quadratic_reciprocal_input, x);
     assert(quadratic_reciprocal_legacy.operation() != exact_opcode::integral);
