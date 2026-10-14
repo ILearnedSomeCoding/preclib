@@ -13295,6 +13295,134 @@ risch_result exact_context::integrate_elementary_impl(
         return false;
     };
     if(classify_logarithmic_derivative_substitution()) return result;
+    auto classify_rational_trigonometric_substitution = [&]() -> bool{
+        std::vector<exact_expr> trigonometric_nodes;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            exact_opcode operation = part.operation();
+            if(operation == exact_opcode::sine ||
+               operation == exact_opcode::cosine ||
+               operation == exact_opcode::tangent ||
+               operation == exact_opcode::hyperbolic_sine ||
+               operation == exact_opcode::hyperbolic_cosine ||
+               operation == exact_opcode::hyperbolic_tangent)
+                trigonometric_nodes.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(trigonometric_nodes.empty()) return false;
+
+        auto is_hyperbolic = [](exact_opcode operation){
+            return operation == exact_opcode::hyperbolic_sine ||
+                   operation == exact_opcode::hyperbolic_cosine ||
+                   operation == exact_opcode::hyperbolic_tangent;
+        };
+        const bool hyperbolic = is_hyperbolic(
+            trigonometric_nodes.front().operation());
+        for(const exact_expr &part : trigonometric_nodes)
+            if(is_hyperbolic(part.operation()) != hyperbolic) return false;
+
+        exact_expr angle = trigonometric_nodes.front().operand(0);
+        for(size_t i = 1; i < trigonometric_nodes.size(); ++i){
+            exact_expr other_angle = trigonometric_nodes[i].operand(0);
+            if(other_angle != angle &&
+               simplify(other_angle - angle) != integer(0))
+                return false;
+        }
+
+        integration_poly angle_polynomial;
+        bool parsed_angle = integration_parse_poly(angle, variable,
+                                                   angle_polynomial, 1, 1);
+        if(!parsed_angle ||
+           angle_polynomial.size() != 2 ||
+           angle_polynomial[1].is_zero() ||
+           angle_polynomial[0].is_approximate() ||
+           angle_polynomial[1].is_approximate())
+            return false;
+
+        exact_expr parameter;
+        for(size_t suffix = 0;; ++suffix){
+            parameter = symbol("_risch_trig_t" + std::to_string(suffix));
+            if(parameter != variable &&
+               !integration_depends_on(expression, parameter)) break;
+        }
+        exact_expr parameter_squared = power(parameter, integer(2));
+        exact_expr one_plus_t_squared = integer(1) + parameter_squared;
+        exact_expr one_minus_t_squared = integer(1) - parameter_squared;
+        exact_expr sine_replacement = hyperbolic
+            ? integer(2) * parameter / one_minus_t_squared
+            : integer(2) * parameter / one_plus_t_squared;
+        exact_expr cosine_replacement = hyperbolic
+            ? one_plus_t_squared / one_minus_t_squared
+            : one_minus_t_squared / one_plus_t_squared;
+        exact_expr tangent_replacement = hyperbolic
+            ? integer(2) * parameter / one_plus_t_squared
+            : integer(2) * parameter / one_minus_t_squared;
+        exact_expr transformed = expression;
+        for(const exact_expr &trigonometric : trigonometric_nodes){
+            exact_expr replacement;
+            switch(trigonometric.operation()){
+            case exact_opcode::sine:
+            case exact_opcode::hyperbolic_sine:
+                replacement = sine_replacement; break;
+            case exact_opcode::cosine:
+            case exact_opcode::hyperbolic_cosine:
+                replacement = cosine_replacement; break;
+            case exact_opcode::tangent:
+            case exact_opcode::hyperbolic_tangent:
+                replacement = tangent_replacement; break;
+            default: return false;
+            }
+            transformed = substitute(transformed, trigonometric, replacement);
+        }
+
+        exact_expr slope = value(angle_polynomial[1]);
+        exact_expr dx_dt = integer(2) /
+            (slope * (hyperbolic ? one_minus_t_squared : one_plus_t_squared));
+        exact_expr transformed_integrand = simplify(transformed * dx_dt);
+        if(integration_depends_on(transformed_integrand, variable)) return false;
+
+        integration_poly numerator, rational_denominator;
+        if(!integration_parse_rational(transformed_integrand, parameter,
+                numerator, rational_denominator, options.maximum_degree,
+                options.maximum_degree) ||
+           !integration_normalize_rational(numerator, rational_denominator))
+            return false;
+        exact_expr rational_integrand = integration_poly_expr(
+            *this, numerator, parameter) /
+            integration_poly_expr(*this, rational_denominator, parameter);
+        exact_expr parameter_primitive = integration_rational_antiderivative(
+            *this, rational_integrand, parameter, options.maximum_degree);
+        if(!parameter_primitive.valid() ||
+           parameter_primitive.operation() == exact_opcode::integral)
+            return false;
+
+        exact_expr parameter_error = simplify(expand(
+            differentiate(parameter_primitive, parameter) - rational_integrand,
+            100000));
+        integration_poly error_numerator, error_denominator;
+        if(!integration_parse_rational(parameter_error, parameter,
+                error_numerator, error_denominator, options.maximum_degree,
+                options.maximum_degree) ||
+           !integration_normalize_rational(error_numerator, error_denominator) ||
+           !integration_zero_poly(error_numerator))
+            return false;
+
+        exact_expr half_angle = angle / integer(2);
+        exact_expr back_substitution = hyperbolic
+            ? hyperbolic_tangent(half_angle) : tangent(half_angle);
+        exact_expr candidate = substitute(parameter_primitive, parameter,
+                                          back_substitution);
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.conditions.clear();
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_rational_trigonometric_substitution()) return result;
     auto classify_monic_quadratic_function_field = [&]() -> bool{
         std::vector<exact_expr> roots;
         std::unordered_set<uint32_t> seen;
@@ -14528,6 +14656,23 @@ risch_result exact_context::integrate_elementary_impl(
             for(size_t i = 0; i < expression.operand_count(); ++i)
                 factors.push_back(expression.operand(i));
         }else factors.push_back(expression);
+
+        // Division may represent 1/(a^u) as (a^u)^(-1), while the
+        // constant-rate RDE below expects a single power a^v. Flatten only
+        // integral outer powers; the positivity check below makes this
+        // real-power identity branch-safe for supported bases.
+        for(exact_expr &factor : factors){
+            while(factor.operation() == exact_opcode::power &&
+                  factor.operand(0).operation() == exact_opcode::power &&
+                  factor.operand(1).is_value() &&
+                  !factor.operand(1).value().is_approximate() &&
+                  factor.operand(1).value().is_integer()){
+                exact_expr inner = factor.operand(0);
+                exact_expr outer_exponent = factor.operand(1);
+                factor = power(inner.operand(0),
+                    inner.operand(1) * outer_exponent);
+            }
+        }
 
         std::vector<size_t> selected;
         for(size_t i = 0; i < factors.size(); ++i){

@@ -51,6 +51,24 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(polynomial_power_legacy, x) -
         polynomial_times_two_to_x, 100000)) == context.integer(0));
+    exact_expr polynomial_over_two_to_x = x / two_to_x;
+    risch_result reciprocal_polynomial_power = context.integrate_elementary(
+        polynomial_over_two_to_x, x);
+    assert(reciprocal_polynomial_power.status == risch_status::elementary);
+    assert(reciprocal_polynomial_power.remainder == context.integer(0));
+    exact_expr normalized_reciprocal_input = x * context.power(
+        context.integer(2), -x);
+    exact_expr reciprocal_power_error = context.simplify(context.expand(
+        context.differentiate(reciprocal_polynomial_power.elementary_part, x) -
+        normalized_reciprocal_input, 100000));
+    assert(reciprocal_power_error == context.integer(0));
+    exact_expr reciprocal_polynomial_power_legacy = context.integrate(
+        polynomial_over_two_to_x, x);
+    assert(reciprocal_polynomial_power_legacy.operation() !=
+        exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(reciprocal_polynomial_power_legacy, x) -
+        normalized_reciprocal_input, 100000)) == context.integer(0));
     exact_expr cubic_power_coefficient = (a + context.integer(1)) *
         context.power(x, context.integer(3)) -
         context.integer(2) * x + context.integer(5);
