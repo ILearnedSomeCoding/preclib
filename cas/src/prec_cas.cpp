@@ -8992,7 +8992,7 @@ integration_rde_symbolic_constant_rate_rational(
 static exact_expr integration_hyperexponential_rational(
     exact_context &context, const exact_expr &cofactor,
     const exact_expr &inner, const exact_expr &variable,
-    bool allow_transcendental_rate = false,
+    bool allow_expression_coefficients = false,
     const risch_options &options = risch_options()){
     {
     integration_poly numerator, denominator, inner_polynomial;
@@ -9153,34 +9153,29 @@ static exact_expr integration_hyperexponential_rational(
     }
 
 expression_coefficient_rde:
-    // A constant-base power can contribute a transcendental constant such as
-    // ln(2) to g'. For rational cofactors, solve the same bounded RDE over
-    // exact expression coefficients instead of rejecting that coefficient
-    // field. The caller enables this only when the single logarithmic rate is
-    // certified nonzero; the returned candidate is still checked by the
-    // strict integrator's exact derivative verifier.
-    if(!allow_transcendental_rate) return exact_expr();
+    // Permit exact constant-field coefficients in the cofactor and in g'.
+    // The caller enables this only when the leading rate is certified or is
+    // returned as a nonzero condition; the candidate is independently
+    // checked by the strict integrator's exact derivative verifier.
+    if(!allow_expression_coefficients) return exact_expr();
     integration_expr_poly p, q, g;
     if(!integration_parse_expr_rational(context, cofactor, variable, p, q,
             options.maximum_degree) ||
        !integration_parse_expr_poly(context, inner, variable, g))
         return exact_expr();
-    auto as_rational_poly = [](const integration_expr_poly &source,
-                               integration_poly &destination){
-        destination.clear();
-        destination.reserve(source.size());
-        for(const exact_expr &coefficient : source){
-            if(!coefficient.is_value() || coefficient.value().is_approximate())
-                return false;
-            destination.push_back(coefficient.value());
-        }
-        integration_trim(destination);
-        return true;
-    };
-    integration_poly rational_q;
-    if(!as_rational_poly(q, rational_q) || rational_q.empty() ||
-       integration_zero_poly(rational_q) || p.empty() || g.empty())
+    if(q.empty() || (q.size() == 1 && integration_expr_zero(context, q[0])) ||
+       p.empty() || g.empty())
         return exact_expr();
+    integration_expr_trim(context, p);
+    integration_expr_trim(context, q);
+    if(q.empty() || !q.back().is_value() ||
+       q.back().value().is_approximate() || q.back().value().is_zero())
+        return exact_expr();
+    exact_expr q_scale = context.value(numeric_value(1) / q.back().value());
+    for(auto &coefficient : p)
+        coefficient = context.simplify(coefficient * q_scale);
+    for(auto &coefficient : q)
+        coefficient = context.simplify(coefficient * q_scale);
     integration_expr_trim(context, p);
     integration_expr_trim(context, q);
     integration_expr_poly rate = integration_expr_derivative(context, g);
@@ -9188,30 +9183,24 @@ expression_coefficient_rde:
     if(rate.size() == 1 && integration_expr_zero(context, rate[0]))
         return exact_expr();
     if(p.size() - 1 > options.maximum_degree ||
-       rational_q.size() - 1 > options.maximum_degree ||
+       q.size() - 1 > options.maximum_degree ||
        rate.size() - 1 > options.maximum_degree)
         return exact_expr();
 
-    integration_poly repeated_denominator = integration_gcd_poly(
-        rational_q, integration_derivative_poly(rational_q));
-    size_t degree_f = (int64_t)p.size() - (int64_t)rational_q.size() >= 0
-        ? p.size() - rational_q.size() : 0;
+    integration_expr_poly repeated_denominator;
+    integration_expr_poly q_derivative = integration_expr_derivative(context, q);
+    if(!integration_expr_gcd_rational_coefficients(context, q, q_derivative,
+            variable, options.maximum_degree, repeated_denominator) ||
+       repeated_denominator.empty()) return exact_expr();
+    size_t degree_f = p.size() >= q.size() ? p.size() - q.size() : 0;
     const size_t degree_rate = rate.size() - 1;
     size_t degree_a = repeated_denominator.size() - 1;
     if(degree_f > degree_rate) degree_a += degree_f - degree_rate;
     if(degree_a > options.maximum_degree) return exact_expr();
     const size_t columns = degree_a + 1;
 
-    auto numeric_expression_poly = [&](const integration_poly &source){
-        integration_expr_poly result;
-        result.reserve(source.size());
-        for(const numeric_value &coefficient : source)
-            result.push_back(context.value(coefficient));
-        integration_expr_trim(context, result);
-        return result;
-    };
-    integration_expr_poly b = numeric_expression_poly(repeated_denominator);
-    integration_expr_poly q_expr = numeric_expression_poly(rational_q);
+    integration_expr_poly b = repeated_denominator;
+    integration_expr_poly q_expr = q;
     integration_expr_poly rhs = integration_expr_mul(context, p,
         integration_expr_mul(context, b, b));
     std::vector<integration_expr_poly> differential_columns;
@@ -9219,8 +9208,8 @@ expression_coefficient_rde:
     differential_columns.reserve(columns);
     matrix_columns.reserve(columns);
     size_t rows = rhs.size();
-    const integration_expr_poly repeated_derivative = numeric_expression_poly(
-        integration_derivative_poly(repeated_denominator));
+    const integration_expr_poly repeated_derivative =
+        integration_expr_derivative(context, repeated_denominator);
     for(size_t degree = 0; degree < columns; ++degree){
         integration_expr_poly basis(degree + 1, context.integer(0));
         basis[degree] = context.integer(1);
@@ -9281,7 +9270,7 @@ expression_coefficient_rde:
                 context.simplify(reconstructed[i] - rhs[i])))
             return exact_expr();
     exact_expr rational_solution = integration_expr_poly_expr(context, a, variable) /
-        integration_poly_expr(context, repeated_denominator, variable);
+        integration_expr_poly_expr(context, repeated_denominator, variable);
     return rational_solution * context.exponential(inner);
 }
 
@@ -10162,10 +10151,16 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                                             exponential_factor, factor);
                         tower_integrated = true;
                     }else{
+                        integration_poly exact_rate;
+                        bool exact_nonzero_rate =
+                            integration_parse_poly(
+                                differentiate(inner, variable), variable,
+                                exact_rate) &&
+                            !integration_zero_poly(exact_rate);
                         exact_expr rational_solution =
                             integration_hyperexponential_rational(
                                 *this, simplify(source / factor), inner,
-                                variable);
+                                variable, exact_nonzero_rate, risch_options());
                         if(rational_solution.valid()){
                             result = substitute(rational_solution,
                                                 exponential_factor, factor);
@@ -14889,10 +14884,10 @@ risch_result exact_context::integrate_elementary_impl(
 
             exact_expr primitive = integration_hyperexponential_polynomial(
                 *this, coefficient, logarithmic_argument, variable);
-            bool certified_transcendental_rate = false;
+            bool certified_expression_coefficients = false;
             if(power_factors.size() == 1){
                 const exact_expr &base = power_factors[0].operand(0);
-                certified_transcendental_rate = base.is_value() &&
+                certified_expression_coefficients = base.is_value() &&
                     !base.value().is_approximate() &&
                     !base.value().is_zero() &&
                     !base.value().is_negative() &&
@@ -14901,7 +14896,7 @@ risch_result exact_context::integrate_elementary_impl(
             if(!primitive.valid()){
                 primitive = integration_hyperexponential_rational(
                     *this, coefficient, logarithmic_argument, variable,
-                    certified_transcendental_rate, options);
+                    certified_expression_coefficients, options);
             }
             if(!primitive.valid()) return false;
 

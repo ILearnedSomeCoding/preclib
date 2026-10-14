@@ -69,6 +69,20 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(reciprocal_polynomial_power_legacy, x) -
         normalized_reciprocal_input, 100000)) == context.integer(0));
+    exact_expr shifted_parameter_pole = x + a;
+    exact_expr parameter_pole_input = context.exponential(x) *
+        (context.integer(1) / shifted_parameter_pole -
+         context.integer(1) /
+             context.power(shifted_parameter_pole, context.integer(2)));
+    risch_result parameter_pole_result = context.integrate_elementary(
+        parameter_pole_input, x);
+    assert(parameter_pole_result.status == risch_status::elementary);
+    assert(parameter_pole_result.remainder == context.integer(0));
+    assert(context.simplify(parameter_pole_result.elementary_part -
+        context.exponential(x) / shifted_parameter_pole) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        parameter_pole_result.elementary_part, x) - parameter_pole_input,
+        100000)) == context.integer(0));
     exact_expr quadratic_reciprocal_input = x /
         context.power(context.integer(2), context.power(x, context.integer(2)));
     exact_expr normalized_quadratic_reciprocal = x * context.power(
