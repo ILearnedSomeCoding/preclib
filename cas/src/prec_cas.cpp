@@ -14910,6 +14910,139 @@ risch_result exact_context::integrate_elementary_impl(
             if(logarithmic_argument.reachable_node_count() >
                options.maximum_nodes) return false;
 
+            // Exponents differing only by exact constants share one
+            // differential growth rate and can be treated in a common RDE.
+            bool common_exponent = power_factors.size() > 1;
+            const exact_expr &common_inner = power_factors[0].operand(1);
+            for(size_t i = 1; i < power_factors.size(); ++i){
+                exact_expr offset = simplify(
+                    power_factors[i].operand(1) - common_inner);
+                common_exponent = common_exponent &&
+                    !integration_depends_on(offset, variable) &&
+                    integration_exact_expression_tree(offset) &&
+                    simplify(slopes[i] - slopes[0]) == integer(0);
+            }
+            if(common_exponent){
+                exact_expr base_product = integer(1);
+                exact_expr base_log_sum = integer(0);
+                bool exact_positive_rational_bases = true;
+                for(const exact_expr &power_factor : power_factors){
+                    exact_expr base = power_factor.operand(0);
+                    exact_positive_rational_bases =
+                        exact_positive_rational_bases && base.is_value() &&
+                        !base.value().is_approximate() &&
+                        !base.value().is_zero() &&
+                        !base.value().is_negative();
+                    base_product = base_product * base;
+                    base_log_sum = base_log_sum + natural_logarithm(base);
+                }
+                base_product = simplify(base_product);
+                base_log_sum = simplify(base_log_sum);
+                if(exact_positive_rational_bases &&
+                   base_product.is_value() &&
+                   !base_product.value().is_one()){
+                    exact_expr slope = slopes[0];
+                    exact_expr normalized_cofactor = simplify(coefficient / slope);
+                    if(normalized_cofactor.reachable_node_count() <=
+                           options.maximum_nodes &&
+                       simplify(normalized_cofactor * slope - coefficient) ==
+                           integer(0)){
+                        exact_expr parameter;
+                        for(size_t suffix = 0;; ++suffix){
+                            parameter = symbol("_risch_aligned_power_" +
+                                               std::to_string(suffix));
+                            if(!integration_depends_on(expression, parameter))
+                                break;
+                        }
+                        const exact_expr *integration_coordinate = nullptr;
+                        integration_expr_poly right_hand_side;
+                        for(const exact_expr &factor : power_factors){
+                            const exact_expr &coordinate = factor.operand(1);
+                            bool same_growth_coordinate = true;
+                            for(const exact_expr &other : power_factors){
+                                exact_expr offset = simplify(
+                                    other.operand(1) - coordinate);
+                                same_growth_coordinate =
+                                    same_growth_coordinate &&
+                                    !integration_depends_on(offset, variable) &&
+                                    integration_exact_expression_tree(offset);
+                            }
+                            if(!same_growth_coordinate) continue;
+                            exact_expr polynomial_argument = substitute(
+                                normalized_cofactor, coordinate, parameter);
+                            integration_expr_poly candidate_rhs;
+                            if(polynomial_argument.reachable_node_count() >
+                                   options.maximum_nodes ||
+                               !integration_parse_expr_poly(*this,
+                                   polynomial_argument, parameter,
+                                   candidate_rhs) || candidate_rhs.empty() ||
+                               candidate_rhs.size() - 1 > degree_budget)
+                                continue;
+                            bool coefficients_are_constant = true;
+                            for(const exact_expr &entry : candidate_rhs)
+                                coefficients_are_constant =
+                                    coefficients_are_constant &&
+                                    !integration_depends_on(entry, variable);
+                            if(!coefficients_are_constant) continue;
+                            integration_coordinate = &coordinate;
+                            right_hand_side = std::move(candidate_rhs);
+                            break;
+                        }
+                        if(integration_coordinate){
+                                integration_expr_poly primitive_polynomial(
+                                    right_hand_side.size(), integer(0));
+                                for(size_t i = right_hand_side.size(); i-- > 0;){
+                                    exact_expr rhs = right_hand_side[i];
+                                    if(i + 1 < primitive_polynomial.size())
+                                        rhs = rhs - integer(i + 1) *
+                                            primitive_polynomial[i + 1];
+                                    primitive_polynomial[i] =
+                                        simplify(rhs / base_log_sum);
+                                }
+                                bool rde_verified = true;
+                                for(size_t i = 0;
+                                    i < right_hand_side.size(); ++i){
+                                    exact_expr lhs = base_log_sum *
+                                        primitive_polynomial[i];
+                                    if(i + 1 < primitive_polynomial.size())
+                                        lhs = lhs + integer(i + 1) *
+                                            primitive_polynomial[i + 1];
+                                    if(simplify(lhs - right_hand_side[i]) !=
+                                       integer(0)){
+                                        rde_verified = false;
+                                        break;
+                                    }
+                                }
+                                if(rde_verified){
+                                    exact_expr primitive_in_parameter =
+                                        integration_expr_poly_expr(*this,
+                                            primitive_polynomial, parameter);
+                                    exact_expr candidate = substitute(
+                                        primitive_in_parameter, parameter,
+                                        *integration_coordinate) *
+                                        power_product;
+                                    if(candidate.reachable_node_count() <=
+                                       options.maximum_nodes){
+                                        // Each factor derivative was checked
+                                        // above. The exact RDE certificate and
+                                        // common exponent prove the product
+                                        // chain rule; base_product != 1 proves
+                                        // the logarithmic rate is nonzero.
+                                        result.status =
+                                            risch_status::elementary;
+                                        result.elementary_part =
+                                            std::move(candidate);
+                                        result.remainder = integer(0);
+                                        result.conditions.clear();
+                                        result.diagnostic.clear();
+                                        return true;
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+
             exact_expr primitive = integration_hyperexponential_polynomial(
                 *this, coefficient, logarithmic_argument, variable);
             bool certified_expression_coefficients = false;

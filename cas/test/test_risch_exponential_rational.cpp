@@ -66,9 +66,10 @@ int main(){
         polynomial_over_two_to_x, x);
     assert(reciprocal_polynomial_power_legacy.operation() !=
         exact_opcode::integral);
-    assert(context.simplify(context.expand(
+    exact_expr legacy_reciprocal_error = context.simplify(context.expand(
         context.differentiate(reciprocal_polynomial_power_legacy, x) -
-        normalized_reciprocal_input, 100000)) == context.integer(0));
+        polynomial_over_two_to_x, 100000));
+    assert(legacy_reciprocal_error == context.integer(0));
     exact_expr shifted_parameter_pole = x + a;
     exact_expr parameter_pole_input = context.exponential(x) *
         (context.integer(1) / shifted_parameter_pole -
@@ -132,7 +133,7 @@ int main(){
     assert(quadratic_reciprocal_legacy.operation() != exact_opcode::integral);
     assert(context.simplify(context.expand(
         context.differentiate(quadratic_reciprocal_legacy, x) -
-        normalized_quadratic_reciprocal, 100000)) == context.integer(0));
+        quadratic_reciprocal_input, 100000)) == context.integer(0));
     exact_expr cubic_power_coefficient = (a + context.integer(1)) *
         context.power(x, context.integer(3)) -
         context.integer(2) * x + context.integer(5);
@@ -218,6 +219,48 @@ int main(){
     assert(context.simplify(mixed_base_result.elementary_part -
         mixed_base_expected) == context.integer(0));
     assert(mixed_base_result.conditions.empty());
+    exact_expr three_to_x_squared = context.power(
+        context.integer(3), x_squared);
+    exact_expr aligned_base_input = x * two_to_x_squared *
+        three_to_x_squared;
+    risch_result aligned_base_result = context.integrate_elementary(
+        aligned_base_input, x);
+    assert(aligned_base_result.status == risch_status::elementary);
+    assert(aligned_base_result.remainder == context.integer(0));
+    exact_expr aligned_base_log_sum = context.natural_logarithm(
+        context.integer(2)) + context.natural_logarithm(context.integer(3));
+    exact_expr aligned_base_expected = two_to_x_squared *
+        three_to_x_squared / (context.integer(2) * aligned_base_log_sum);
+    assert(aligned_base_result.elementary_part == aligned_base_expected);
+    exact_expr aligned_base_legacy = context.integrate(aligned_base_input, x);
+    assert(aligned_base_legacy.operation() != exact_opcode::integral);
+    assert(aligned_base_legacy == aligned_base_expected);
+    exact_expr polynomial_aligned_input = context.integer(2) *
+        context.power(x, context.integer(3)) * two_to_x_squared *
+        three_to_x_squared;
+    risch_result polynomial_aligned_result = context.integrate_elementary(
+        polynomial_aligned_input, x);
+    assert(polynomial_aligned_result.status == risch_status::elementary);
+    exact_expr polynomial_aligned_expected =
+        (x_squared / aligned_base_log_sum - context.integer(1) /
+            context.power(aligned_base_log_sum, context.integer(2))) *
+        two_to_x_squared * three_to_x_squared;
+    assert(polynomial_aligned_result.elementary_part ==
+        polynomial_aligned_expected);
+    exact_expr shifted_aligned_input = context.integer(2) *
+        context.power(x, context.integer(3)) *
+        context.power(context.integer(2), x_squared + context.integer(1)) *
+        three_to_x_squared;
+    risch_result shifted_aligned_result = context.integrate_elementary(
+        shifted_aligned_input, x);
+    assert(shifted_aligned_result.status == risch_status::elementary);
+    exact_expr shifted_aligned_expected =
+        (x_squared / aligned_base_log_sum - context.integer(1) /
+            context.power(aligned_base_log_sum, context.integer(2))) *
+        context.power(context.integer(2), x_squared + context.integer(1)) *
+        three_to_x_squared;
+    assert(shifted_aligned_result.elementary_part ==
+        shifted_aligned_expected);
     exact_expr ln_two = context.natural_logarithm(context.integer(2));
     exact_expr rational_rde_input =
         (ln_two / x - context.integer(1) / context.power(x, context.integer(2))) *
