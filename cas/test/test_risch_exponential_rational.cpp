@@ -177,6 +177,12 @@ int main(){
     assert(x_over_e_power_result.remainder == context.integer(0));
     assert(x_over_e_power_result.elementary_part ==
         (-x - context.integer(1)) / context.exponential(x));
+    exact_expr x_over_e_power_legacy = context.integrate(x_over_e_power, x);
+    assert(x_over_e_power_legacy.operation() != exact_opcode::integral);
+    exact_expr normalized_e_reciprocal = x / context.exponential(x);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_e_power_legacy, x) - normalized_e_reciprocal,
+        100000)) == context.integer(0));
     exact_expr nested_e_power = context.power(context.e(),
         context.power(context.e(), x));
     exact_expr nested_e_power_input = nested_e_power *
@@ -328,6 +334,19 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(symbolic_variable_rate.elementary_part, x) -
         symbolic_variable_rate_input, 100000)) == context.integer(0));
+    exact_expr symbolic_quadratic_power = context.power(q,
+        context.power(x, context.integer(2)));
+    exact_expr symbolic_rational_primitive = symbolic_quadratic_power /
+        (x + context.integer(1));
+    exact_expr symbolic_rational_input = context.differentiate(
+        symbolic_rational_primitive, x);
+    risch_result symbolic_rational_result = context.integrate_elementary(
+        symbolic_rational_input, x);
+    assert(symbolic_rational_result.status == risch_status::elementary);
+    assert(symbolic_rational_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rational_result.elementary_part, x) -
+        symbolic_rational_input, 100000)) == context.integer(0));
     risch_result symbolic_quadratic = context.integrate_elementary(
         context.integer(1) /
             (context.integer(1) + t +
