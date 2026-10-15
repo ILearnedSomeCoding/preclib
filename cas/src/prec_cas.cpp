@@ -10117,13 +10117,13 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                          factor.operand(0).operation() == exact_opcode::power &&
                          !depends(depends, factor.operand(0).operand(0).root_) &&
                          !depends(depends, factor.operand(1).root_)){
-                    int64_t outer_power = 0;
                     exact_expr powered_base = factor.operand(0);
                     exact_expr base = powered_base.operand(0);
-                    if(!integration_signed_exponent(factor.operand(1),
-                                                    outer_power) ||
-                       outer_power == 0 || outer_power > INT32_MAX ||
-                       outer_power < INT32_MIN)
+                    exact_expr outer_power = factor.operand(1);
+                    if(!outer_power.is_value() ||
+                       outer_power.value().is_approximate() ||
+                       !outer_power.value().is_integer() ||
+                       outer_power.value().is_zero())
                         continue;
                     bool positive_base = base.operation() ==
                         exact_opcode::constant_e;
@@ -10135,8 +10135,7 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                     exact_expr log_base = base.operation() ==
                         exact_opcode::constant_e ? integer(1) :
                         natural_logarithm(base);
-                    inner = powered_base.operand(1) *
-                        integer(outer_power) * log_base;
+                    inner = powered_base.operand(1) * outer_power * log_base;
                     exponential_factor = exponential(inner);
                     normalized_source = simplify(source / factor *
                                                   exponential_factor);

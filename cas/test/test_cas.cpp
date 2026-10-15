@@ -2234,6 +2234,36 @@ int main(){
     assert(x_over_two_primitive.operation() != exact_opcode::integral);
     assert(context.simplify(context.expand(context.differentiate(
         x_over_two_primitive, x) - x_over_two_power)) == context.integer(0));
+    exact_expr x_over_two_power_squared = x /
+        context.power(two_power, context.integer(2));
+    exact_expr x_over_two_power_squared_primitive = context.integrate(
+        x_over_two_power_squared, x);
+    assert(x_over_two_power_squared_primitive.operation() !=
+           exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_two_power_squared_primitive, x) -
+        x_over_two_power_squared)) == context.integer(0));
+    exact_expr large_integer_power = context.value(precz_t("4294967296"));
+    exact_expr x_over_large_power = x /
+        context.power(two_power, large_integer_power);
+    exact_expr x_over_large_power_primitive = context.integrate(
+        x_over_large_power, x);
+    assert(x_over_large_power_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_large_power_primitive, x) - x_over_large_power)) ==
+        context.integer(0));
+    risch_result strict_large_power = context.integrate_elementary(
+        x_over_large_power, x);
+    assert(strict_large_power.status == risch_status::elementary);
+    assert(strict_large_power.remainder == context.integer(0));
+    // The strict Risch path normalizes (2^x)^N to 2^(N*x), valid here
+    // because N is an exact integer and the base is positive.
+    exact_expr normalized_large_power = x * context.power(context.integer(2),
+        -large_integer_power * x);
+    exact_expr strict_large_power_error = context.simplify(context.expand(
+        context.differentiate(strict_large_power.elementary_part, x) -
+        normalized_large_power));
+    assert(strict_large_power_error == context.integer(0));
 
     // Risch differential equations are solved over the full constant field,
     // not just rational coefficients.
