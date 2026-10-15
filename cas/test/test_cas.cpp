@@ -2228,6 +2228,12 @@ int main(){
     assert(context.simplify(context.expand((context.differentiate(
         x_over_e_primitive, x) - x / context.exponential(x)) *
         context.exponential(x))) == context.integer(0));
+    exact_expr two_power = context.power(context.integer(2), x);
+    exact_expr x_over_two_power = x / two_power;
+    exact_expr x_over_two_primitive = context.integrate(x_over_two_power, x);
+    assert(x_over_two_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_two_primitive, x) - x_over_two_power)) == context.integer(0));
 
     // Risch differential equations are solved over the full constant field,
     // not just rational coefficients.

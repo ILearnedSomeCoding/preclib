@@ -10095,7 +10095,8 @@ exact_expr exact_context::integrate(const exact_expr &expression,
             }
             for(size_t i = 0; i < node.operand_count && !tower_integrated; ++i){
                 exact_expr factor(storage_, args[i]);
-                exact_expr inner, exponential_factor;
+                exact_expr inner, exponential_factor, normalized_source;
+                normalized_source = source;
                 if(factor.operation() == exact_opcode::exponential){
                     inner = factor.operand(0);
                     exponential_factor = factor;
@@ -10112,6 +10113,33 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                     inner = factor.operand(1) *
                         natural_logarithm(factor.operand(0));
                     exponential_factor = exponential(inner);
+                }else if(factor.operation() == exact_opcode::power &&
+                         factor.operand(0).operation() == exact_opcode::power &&
+                         !depends(depends, factor.operand(0).operand(0).root_) &&
+                         !depends(depends, factor.operand(1).root_)){
+                    int64_t outer_power = 0;
+                    exact_expr powered_base = factor.operand(0);
+                    exact_expr base = powered_base.operand(0);
+                    if(!integration_signed_exponent(factor.operand(1),
+                                                    outer_power) ||
+                       outer_power == 0 || outer_power > INT32_MAX ||
+                       outer_power < INT32_MIN)
+                        continue;
+                    bool positive_base = base.operation() ==
+                        exact_opcode::constant_e;
+                    if(base.is_value())
+                        positive_base = !base.value().is_approximate() &&
+                            !base.value().is_zero() &&
+                            !base.value().is_negative();
+                    if(!positive_base) continue;
+                    exact_expr log_base = base.operation() ==
+                        exact_opcode::constant_e ? integer(1) :
+                        natural_logarithm(base);
+                    inner = powered_base.operand(1) *
+                        integer(outer_power) * log_base;
+                    exponential_factor = exponential(inner);
+                    normalized_source = simplify(source / factor *
+                                                  exponential_factor);
                 }else continue;
                 exact_expr derivative_inner = differentiate(inner, variable);
                 exact_expr ratio;
@@ -10142,7 +10170,8 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                 }else{
                     exact_expr polynomial_solution =
                         integration_mixed_primitive_exponential(
-                            *this, source, variable, risch_options());
+                            *this, normalized_source, variable,
+                            risch_options());
                     if(!polynomial_solution.valid()) polynomial_solution =
                         integration_hyperexponential_polynomial(
                             *this, simplify(source / factor), inner, variable);
