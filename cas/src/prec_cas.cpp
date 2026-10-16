@@ -14925,22 +14925,39 @@ risch_result exact_context::integrate_elementary_impl(
             if(common_exponent){
                 exact_expr base_product = integer(1);
                 exact_expr base_log_sum = integer(0);
-                bool exact_positive_rational_bases = true;
+                bool supported_positive_bases = true;
                 for(const exact_expr &power_factor : power_factors){
                     exact_expr base = power_factor.operand(0);
-                    exact_positive_rational_bases =
-                        exact_positive_rational_bases && base.is_value() &&
+                    bool exact_positive_value = base.is_value() &&
                         !base.value().is_approximate() &&
                         !base.value().is_zero() &&
                         !base.value().is_negative();
+                    bool assumed_positive_symbol =
+                        base.operation() == exact_opcode::symbol &&
+                        storage_->has_assumption(base.root_,
+                            exact_storage::assumed_positive);
+                    bool positive_named_constant =
+                        base.operation() == exact_opcode::constant_e ||
+                        base.operation() == exact_opcode::constant_pi;
+                    supported_positive_bases = supported_positive_bases &&
+                        (exact_positive_value || assumed_positive_symbol ||
+                         positive_named_constant);
                     base_product = base_product * base;
                     base_log_sum = base_log_sum + natural_logarithm(base);
                 }
                 base_product = simplify(base_product);
                 base_log_sum = simplify(base_log_sum);
-                if(exact_positive_rational_bases &&
-                   base_product.is_value() &&
-                   !base_product.value().is_one()){
+                bool zero_rate = base_log_sum == integer(0) ||
+                    (base_product.is_value() &&
+                     !base_product.value().is_approximate() &&
+                     base_product.value().is_one());
+                bool rate_proven_nonzero = base_product.is_value() &&
+                    !base_product.value().is_approximate() &&
+                    !base_product.value().is_one();
+                if(supported_positive_bases && !zero_rate){
+                    std::vector<exact_expr> rate_conditions;
+                    if(!rate_proven_nonzero)
+                        rate_conditions.push_back(base_log_sum);
                     exact_expr slope = slopes[0];
                     exact_expr normalized_cofactor = simplify(coefficient / slope);
                     if(normalized_cofactor.reachable_node_count() <=
@@ -15057,16 +15074,21 @@ risch_result exact_context::integrate_elementary_impl(
                                     if(candidate.reachable_node_count() <=
                                        options.maximum_nodes){
                                         // Each factor derivative was checked
-                                        // above. The exact RDE certificate and
-                                        // common exponent prove the product
-                                        // chain rule; base_product != 1 proves
-                                        // the logarithmic rate is nonzero.
+                                        // above. Keep the rate condition when
+                                        // positivity alone cannot prove it nonzero.
                                         result.status =
                                             risch_status::elementary;
                                         result.elementary_part =
                                             std::move(candidate);
                                         result.remainder = integer(0);
-                                        result.conditions.clear();
+                                        for(const exact_expr &condition :
+                                            rate_conditions){
+                                            if(std::find(result.conditions.begin(),
+                                                result.conditions.end(),
+                                                condition) ==
+                                               result.conditions.end())
+                                                result.conditions.push_back(condition);
+                                        }
                                         result.diagnostic.clear();
                                         return true;
                                     }
@@ -15095,7 +15117,14 @@ risch_result exact_context::integrate_elementary_impl(
                                         result.elementary_part =
                                             std::move(candidate);
                                         result.remainder = integer(0);
-                                        result.conditions.clear();
+                                        for(const exact_expr &condition :
+                                            rate_conditions){
+                                            if(std::find(result.conditions.begin(),
+                                                result.conditions.end(),
+                                                condition) ==
+                                               result.conditions.end())
+                                                result.conditions.push_back(condition);
+                                        }
                                         result.diagnostic.clear();
                                         return true;
                                     }

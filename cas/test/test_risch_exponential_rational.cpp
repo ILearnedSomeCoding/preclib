@@ -10,7 +10,9 @@ int main(){
     exact_expr a = context.symbol("a");
     exact_expr b = context.symbol("b");
     exact_expr q = context.symbol("q");
+    exact_expr r = context.symbol("r");
     context.assume(q, "positive");
+    context.assume(r, "positive");
     exact_expr t = context.exponential(x);
     risch_options options;
     options.maximum_recursion_depth = 1;
@@ -292,6 +294,25 @@ int main(){
     exact_expr aligned_rational_legacy = context.integrate(
         aligned_rational_input, x);
     assert(aligned_rational_legacy.operation() != exact_opcode::integral);
+    exact_expr q_to_x_squared = context.power(q, x_squared);
+    exact_expr r_to_x_squared = context.power(r, x_squared);
+    exact_expr symbolic_aligned_input = x * q_to_x_squared * r_to_x_squared;
+    exact_expr symbolic_aligned_rate = context.natural_logarithm(q) +
+        context.natural_logarithm(r);
+    risch_result symbolic_aligned_result = context.integrate_elementary(
+        symbolic_aligned_input, x);
+    assert(symbolic_aligned_result.status == risch_status::elementary);
+    assert(symbolic_aligned_result.remainder == context.integer(0));
+    assert(symbolic_aligned_result.conditions.size() == 1);
+    assert(context.simplify(symbolic_aligned_result.conditions[0] -
+        symbolic_aligned_rate) == context.integer(0));
+    exact_expr symbolic_aligned_expected = q_to_x_squared * r_to_x_squared /
+        (context.integer(2) * symbolic_aligned_rate);
+    assert(context.simplify(symbolic_aligned_result.elementary_part -
+        symbolic_aligned_expected) == context.integer(0));
+    exact_expr symbolic_aligned_legacy = context.integrate(
+        symbolic_aligned_input, x);
+    assert(symbolic_aligned_legacy.operation() == exact_opcode::integral);
     exact_expr ln_two = context.natural_logarithm(context.integer(2));
     exact_expr rational_rde_input =
         (ln_two / x - context.integer(1) / context.power(x, context.integer(2))) *
