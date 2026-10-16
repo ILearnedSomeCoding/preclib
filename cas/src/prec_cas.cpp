@@ -14955,6 +14955,8 @@ risch_result exact_context::integrate_elementary_impl(
                                 break;
                         }
                         const exact_expr *integration_coordinate = nullptr;
+                        exact_expr rational_right_hand_side;
+                        bool polynomial_rhs = false;
                         integration_expr_poly right_hand_side;
                         for(const exact_expr &factor : power_factors){
                             const exact_expr &coordinate = factor.operand(1);
@@ -14972,23 +14974,54 @@ risch_result exact_context::integrate_elementary_impl(
                                 normalized_cofactor, coordinate, parameter);
                             integration_expr_poly candidate_rhs;
                             if(polynomial_argument.reachable_node_count() >
-                                   options.maximum_nodes ||
-                               !integration_parse_expr_poly(*this,
-                                   polynomial_argument, parameter,
-                                   candidate_rhs) || candidate_rhs.empty() ||
-                               candidate_rhs.size() - 1 > degree_budget)
-                                continue;
-                            bool coefficients_are_constant = true;
-                            for(const exact_expr &entry : candidate_rhs)
-                                coefficients_are_constant =
-                                    coefficients_are_constant &&
-                                    !integration_depends_on(entry, variable);
-                            if(!coefficients_are_constant) continue;
+                                   options.maximum_nodes) continue;
+                            bool parsed_polynomial =
+                                integration_parse_expr_poly(*this,
+                                    polynomial_argument, parameter,
+                                    candidate_rhs) &&
+                                !candidate_rhs.empty() &&
+                                candidate_rhs.size() - 1 <= degree_budget;
+                            bool coefficients_are_constant =
+                                parsed_polynomial;
+                            if(parsed_polynomial){
+                                for(const exact_expr &entry : candidate_rhs)
+                                    coefficients_are_constant =
+                                        coefficients_are_constant &&
+                                        !integration_depends_on(entry, variable);
+                            }
+                            if(parsed_polynomial && coefficients_are_constant){
+                                polynomial_rhs = true;
+                                right_hand_side = std::move(candidate_rhs);
+                            }else{
+                                integration_expr_poly rational_numerator,
+                                    rational_denominator;
+                                if(!integration_parse_expr_rational(*this,
+                                        polynomial_argument, parameter,
+                                        rational_numerator,
+                                        rational_denominator, degree_budget) ||
+                                   rational_numerator.empty() ||
+                                   rational_denominator.empty() ||
+                                   rational_numerator.size() - 1 > degree_budget ||
+                                   rational_denominator.size() - 1 > degree_budget)
+                                    continue;
+                                bool rational_coefficients_are_constant = true;
+                                for(const exact_expr &entry : rational_numerator)
+                                    rational_coefficients_are_constant =
+                                        rational_coefficients_are_constant &&
+                                        !integration_depends_on(entry, variable);
+                                for(const exact_expr &entry : rational_denominator)
+                                    rational_coefficients_are_constant =
+                                        rational_coefficients_are_constant &&
+                                        !integration_depends_on(entry, variable);
+                                if(!rational_coefficients_are_constant) continue;
+                                rational_right_hand_side =
+                                    std::move(polynomial_argument);
+                            }
                             integration_coordinate = &coordinate;
-                            right_hand_side = std::move(candidate_rhs);
                             break;
                         }
                         if(integration_coordinate){
+                            if(polynomial_rhs){
                                 integration_expr_poly primitive_polynomial(
                                     right_hand_side.size(), integer(0));
                                 for(size_t i = right_hand_side.size(); i-- > 0;){
@@ -15038,6 +15071,36 @@ risch_result exact_context::integrate_elementary_impl(
                                         return true;
                                     }
                                 }
+                            }else{
+                                exact_expr formal_exponential = exponential(
+                                    base_log_sum * parameter);
+                                // This solver returns only after its rational
+                                // RDE numerator identity has been reconstructed
+                                // coefficient by coefficient.
+                                exact_expr parameter_primitive =
+                                    integration_hyperexponential_rational(
+                                        *this, rational_right_hand_side,
+                                        base_log_sum * parameter, parameter,
+                                        true, options);
+                                if(parameter_primitive.valid()){
+                                    exact_expr candidate = substitute(
+                                        parameter_primitive, formal_exponential,
+                                        power_product);
+                                    candidate = substitute(candidate, parameter,
+                                        *integration_coordinate);
+                                    if(candidate.reachable_node_count() <=
+                                       options.maximum_nodes){
+                                        result.status =
+                                            risch_status::elementary;
+                                        result.elementary_part =
+                                            std::move(candidate);
+                                        result.remainder = integer(0);
+                                        result.conditions.clear();
+                                        result.diagnostic.clear();
+                                        return true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

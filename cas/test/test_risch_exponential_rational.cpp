@@ -261,6 +261,37 @@ int main(){
         three_to_x_squared;
     assert(shifted_aligned_result.elementary_part ==
         shifted_aligned_expected);
+    exact_expr aligned_rational_denominator = x_squared + context.integer(1);
+    exact_expr aligned_rational_cofactor =
+        aligned_base_log_sum / aligned_rational_denominator -
+        context.integer(1) /
+            context.power(aligned_rational_denominator, context.integer(2));
+    exact_expr aligned_rational_input = context.integer(2) * x *
+        aligned_rational_cofactor * two_to_x_squared * three_to_x_squared;
+    risch_result aligned_rational_result = context.integrate_elementary(
+        aligned_rational_input, x);
+    assert(aligned_rational_result.status == risch_status::elementary);
+    exact_expr aligned_rational_expected = two_to_x_squared *
+        three_to_x_squared / aligned_rational_denominator;
+    exact_expr aligned_rational_product = two_to_x_squared *
+        three_to_x_squared;
+    exact_expr aligned_rational_denominator_expanded =
+        context.power(x, context.integer(4)) +
+        context.integer(2) * x_squared + context.integer(1);
+    assert(context.simplify(context.expand(
+        aligned_rational_result.elementary_part *
+            aligned_rational_denominator_expanded -
+        aligned_rational_product * aligned_rational_denominator,
+        100000)) == context.integer(0));
+    assert(context.simplify(context.expand(
+        aligned_rational_expected * aligned_rational_denominator -
+        aligned_rational_product, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        aligned_rational_expected, x) - aligned_rational_input,
+        100000)) == context.integer(0));
+    exact_expr aligned_rational_legacy = context.integrate(
+        aligned_rational_input, x);
+    assert(aligned_rational_legacy.operation() != exact_opcode::integral);
     exact_expr ln_two = context.natural_logarithm(context.integer(2));
     exact_expr rational_rde_input =
         (ln_two / x - context.integer(1) / context.power(x, context.integer(2))) *
