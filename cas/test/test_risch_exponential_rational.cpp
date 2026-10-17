@@ -313,6 +313,37 @@ int main(){
     exact_expr symbolic_aligned_legacy = context.integrate(
         symbolic_aligned_input, x);
     assert(symbolic_aligned_legacy.operation() == exact_opcode::integral);
+    exact_expr symbolic_aligned_denominator = x_squared + context.integer(1);
+    exact_expr symbolic_aligned_cofactor = symbolic_aligned_rate /
+        symbolic_aligned_denominator - context.integer(1) /
+        context.power(symbolic_aligned_denominator, context.integer(2));
+    exact_expr symbolic_aligned_rational_input = context.integer(2) * x *
+        symbolic_aligned_cofactor * q_to_x_squared * r_to_x_squared;
+    risch_result symbolic_aligned_rational_result = context.integrate_elementary(
+        symbolic_aligned_rational_input, x);
+    assert(symbolic_aligned_rational_result.status == risch_status::elementary);
+    assert(symbolic_aligned_rational_result.remainder == context.integer(0));
+    assert(symbolic_aligned_rational_result.conditions.size() == 1);
+    assert(context.simplify(
+        symbolic_aligned_rational_result.conditions[0] -
+        symbolic_aligned_rate) == context.integer(0));
+    exact_expr symbolic_aligned_rational_expected =
+        q_to_x_squared * r_to_x_squared / symbolic_aligned_denominator;
+    exact_expr symbolic_aligned_denominator_expanded =
+        context.power(x, context.integer(4)) + context.integer(2) * x_squared +
+        context.integer(1);
+    exact_expr symbolic_aligned_rational_identity = context.simplify(
+        symbolic_aligned_rational_result.elementary_part *
+            symbolic_aligned_denominator_expanded -
+        q_to_x_squared * r_to_x_squared * symbolic_aligned_denominator);
+    assert(symbolic_aligned_rational_identity ==
+        context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_aligned_rational_expected, x) -
+        symbolic_aligned_rational_input, 100000)) == context.integer(0));
+    exact_expr symbolic_aligned_rational_legacy = context.integrate(
+        symbolic_aligned_rational_input, x);
+    assert(symbolic_aligned_rational_legacy.operation() == exact_opcode::integral);
     exact_expr ln_two = context.natural_logarithm(context.integer(2));
     exact_expr rational_rde_input =
         (ln_two / x - context.integer(1) / context.power(x, context.integer(2))) *
