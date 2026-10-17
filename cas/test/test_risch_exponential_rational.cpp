@@ -435,6 +435,33 @@ int main(){
     assert(symbolic_squarefree_poles_result.conditions.size() == 1);
     assert(context.simplify(symbolic_squarefree_poles_result.conditions[0] -
         ln_q) == context.integer(0));
+    assert(context.integrate_elementary(q_to_x /
+        (x + context.integer(1)), x).status ==
+        risch_status::proven_nonelementary);
+    exact_expr shared_exponential_poles = q_to_x / x +
+        q_to_x / (x + context.integer(1));
+    risch_result shared_exponential_poles_result = context.integrate_elementary(
+        shared_exponential_poles, x);
+    assert(shared_exponential_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(shared_exponential_poles_result.conditions.size() == 1);
+    assert(context.simplify(
+        shared_exponential_poles_result.conditions[0] - ln_q) ==
+        context.integer(0));
+    exact_expr mixed_shared_exponential_poles = shared_exponential_poles +
+        q_to_x;
+    risch_result mixed_shared_poles_result = context.integrate_elementary(
+        mixed_shared_exponential_poles, x);
+    assert(mixed_shared_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(mixed_shared_poles_result.remainder != context.integer(0));
+    assert(mixed_shared_poles_result.conditions.size() == 1);
+    assert(context.simplify(
+        mixed_shared_poles_result.conditions[0] - ln_q) == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(mixed_shared_poles_result.elementary_part, x) +
+        mixed_shared_poles_result.remainder - mixed_shared_exponential_poles,
+        100000)) == context.integer(0));
     exact_expr symbolic_scaled_squarefree_poles = ln_q * q_to_x /
         (x_squared + context.integer(1));
     risch_result symbolic_scaled_squarefree_result = context.integrate_elementary(

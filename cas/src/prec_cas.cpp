@@ -12473,14 +12473,86 @@ risch_result exact_context::integrate_elementary_impl(
                 return false;
         }
 
+        if(unresolved_terms > 1 && remainder.operation() == exact_opcode::add){
+            std::vector<exact_expr> summands;
+            summands.reserve(remainder.operand_count());
+            for(size_t i = 0; i < remainder.operand_count(); ++i)
+                summands.push_back(remainder.operand(i));
+            auto factors_of = [&](const exact_expr &term){
+                std::vector<exact_expr> factors;
+                if(term.operation() == exact_opcode::multiply){
+                    factors.reserve(term.operand_count());
+                    for(size_t i = 0; i < term.operand_count(); ++i)
+                        factors.push_back(term.operand(i));
+                }else factors.push_back(term);
+                return factors;
+            };
+            auto is_exponential_factor = [&](const exact_expr &factor){
+                if(factor.operation() == exact_opcode::exponential)
+                    return integration_depends_on(factor, variable);
+                if(factor.operation() != exact_opcode::power ||
+                   !integration_depends_on(factor.operand(1), variable))
+                    return false;
+                const exact_expr base = factor.operand(0);
+                return !integration_depends_on(base, variable) ||
+                    base.operation() == exact_opcode::exponential ||
+                    (base.operation() == exact_opcode::power &&
+                     base.operand(0).operation() == exact_opcode::constant_e);
+            };
+            std::vector<exact_expr> first_factors = factors_of(summands[0]);
+            for(const exact_expr &shared : first_factors){
+                if(!is_exponential_factor(shared)) continue;
+                std::vector<exact_expr> cofactors;
+                cofactors.reserve(summands.size());
+                bool present_in_every_term = true;
+                for(const exact_expr &summand : summands){
+                    std::vector<exact_expr> factors = factors_of(summand);
+                    auto found = std::find(factors.begin(), factors.end(), shared);
+                    if(found == factors.end()){
+                        present_in_every_term = false;
+                        break;
+                    }
+                    factors.erase(found);
+                    cofactors.push_back(factors.empty() ? integer(1) :
+                        factors.size() == 1 ? factors[0] : multiply(factors));
+                }
+                if(!present_in_every_term) continue;
+                exact_expr combined = multiply({shared, add(cofactors)});
+                if(combined == remainder ||
+                   combined.reachable_node_count() > options.maximum_nodes)
+                    continue;
+                risch_result regrouped = integrate_elementary(combined,
+                                                               variable, options);
+                if(regrouped.status != risch_status::elementary &&
+                   regrouped.status != risch_status::proven_nonelementary)
+                    continue;
+                candidate = candidate + regrouped.elementary_part;
+                remainder = regrouped.remainder;
+                if(candidate.reachable_node_count() > options.maximum_nodes ||
+                   remainder.reachable_node_count() > options.maximum_nodes)
+                    return false;
+                unresolved_terms = remainder == integer(0) ? 0 : 1;
+                sole_remainder_is_proven_nonelementary =
+                    regrouped.status == risch_status::proven_nonelementary;
+                for(const exact_expr &condition : regrouped.conditions)
+                    if(std::find(conditions.begin(), conditions.end(),
+                                 condition) == conditions.end())
+                        conditions.push_back(condition);
+                break;
+            }
+        }
+
         remainder = simplify(remainder);
-        if(candidate == integer(0) && unresolved_terms != 0) return false;
-        exact_expr error = simplify(expand(differentiate(candidate, variable) +
-                                            remainder - expression, 100000));
-        if(error != integer(0)) return false;
         bool combined_holomorphic = unresolved_terms > 1 &&
             integration_radical_expression_holomorphic_certificate(
                 *this,remainder,variable,options);
+        if(candidate == integer(0) && unresolved_terms != 0 &&
+           !((unresolved_terms == 1 &&
+              sole_remainder_is_proven_nonelementary) ||
+             combined_holomorphic)) return false;
+        exact_expr error = simplify(expand(differentiate(candidate, variable) +
+                                            remainder - expression, 100000));
+        if(error != integer(0)) return false;
         if(remainder == integer(0))
             result.status = risch_status::elementary;
         else if((unresolved_terms == 1 &&
