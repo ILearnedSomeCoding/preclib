@@ -15363,6 +15363,14 @@ risch_result exact_context::integrate_elementary_impl(
             integration_trim(denominator);
             if(denominator.empty() || integration_zero_poly(denominator))
                 return false;
+            bool simple_pole_rhs = rational_numerator.size() == 1 &&
+                rational_numerator[0].is_value() &&
+                !rational_numerator[0].value().is_approximate() &&
+                !rational_numerator[0].value().is_zero() &&
+                denominator.size() == 2 &&
+                !denominator[0].is_approximate() &&
+                !denominator[1].is_approximate() &&
+                !denominator[1].is_zero();
             integration_symbolic_rate_rde_result rde =
                 integration_rde_symbolic_constant_rate_rational(*this,
                     rational_numerator, denominator, rate_variable, variable,
@@ -15375,12 +15383,16 @@ risch_result exact_context::integrate_elementary_impl(
             }
             if(rde.status ==
                integration_rde_status::no_polynomial_solution &&
-               exact_nonzero_rational_rate){
+               (exact_nonzero_rational_rate || simple_pole_rhs)){
                 result.status = risch_status::proven_nonelementary;
                 result.elementary_part = integer(0);
                 result.remainder = expression;
+                if(!exact_nonzero_rational_rate)
+                    result.conditions.push_back(logarithmic_rate);
                 result.diagnostic =
-                    "constant-rate hyperexponential RDE has no rational solution";
+                    simple_pole_rhs
+                        ? "a simple-pole hyperexponential term has no rational RDE solution"
+                        : "constant-rate hyperexponential RDE has no rational solution";
                 return true;
             }
             if(rde.status != integration_rde_status::solved) return false;

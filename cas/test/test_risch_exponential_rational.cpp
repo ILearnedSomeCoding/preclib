@@ -416,6 +416,20 @@ int main(){
         two_to_x / x) == context.integer(0));
     exact_expr q_to_x = context.power(q, x);
     exact_expr ln_q = context.natural_logarithm(q);
+    exact_expr symbolic_exponential_simple_pole = q_to_x / x;
+    risch_result symbolic_simple_pole_result = context.integrate_elementary(
+        symbolic_exponential_simple_pole, x);
+    assert(symbolic_simple_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_simple_pole_result.remainder ==
+        symbolic_exponential_simple_pole);
+    assert(symbolic_simple_pole_result.conditions.size() == 1);
+    assert(context.simplify(symbolic_simple_pole_result.conditions[0] - ln_q) ==
+        context.integer(0));
+    context.assume(q, "none");
+    assert(context.integrate_elementary(symbolic_exponential_simple_pole, x).status !=
+        risch_status::proven_nonelementary);
+    context.assume(q, "positive");
     exact_expr symbolic_rate_rde_input =
         (ln_q / x - context.integer(1) / context.power(x, context.integer(2))) *
         q_to_x;
@@ -439,8 +453,11 @@ int main(){
     assert(std::find(symbolic_rate_parameter_result.conditions.begin(),
         symbolic_rate_parameter_result.conditions.end(), ln_q) !=
         symbolic_rate_parameter_result.conditions.end());
-    assert(context.integrate_elementary(q_to_x / x, x).status ==
-        risch_status::unsupported);
+    risch_result symbolic_exponential_pole = context.integrate_elementary(
+        q_to_x / x, x);
+    assert(symbolic_exponential_pole.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_exponential_pole.conditions.size() == 1);
     risch_options rational_rde_tiny_budget;
     rational_rde_tiny_budget.maximum_matrix_entries = 1;
     risch_result rational_rde_limited = context.integrate_elementary(
