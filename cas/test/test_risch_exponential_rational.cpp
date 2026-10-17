@@ -239,6 +239,31 @@ int main(){
         scaled_rational_exponential_derivative_form) == context.integer(0));
     assert(context.simplify((x + context.integer(1)) - context.integer(1) - x) ==
         context.integer(0));
+    exact_expr symbolic_scalar_exponential = a * context.exponential(x) * x /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result symbolic_scalar_exponential_result =
+        context.integrate_elementary(symbolic_scalar_exponential, x);
+    assert(symbolic_scalar_exponential_result.status ==
+        risch_status::elementary);
+    assert(symbolic_scalar_exponential_result.conditions.empty());
+    exact_expr symbolic_scalar_exponential_expected = a *
+        context.exponential(x) / (x + context.integer(1));
+    assert(context.simplify(symbolic_scalar_exponential_result.elementary_part -
+        symbolic_scalar_exponential_expected) == context.integer(0));
+    exact_expr algebraic_scalar = context.square_root(context.integer(2));
+    exact_expr algebraic_scalar_exponential = algebraic_scalar *
+        context.exponential(x) * x /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result algebraic_scalar_exponential_result =
+        context.integrate_elementary(algebraic_scalar_exponential, x);
+    assert(algebraic_scalar_exponential_result.status ==
+        risch_status::elementary);
+    assert(algebraic_scalar_exponential_result.conditions.empty());
+    exact_expr algebraic_scalar_exponential_expected = algebraic_scalar *
+        context.exponential(x) / (x + context.integer(1));
+    assert(context.simplify(
+        algebraic_scalar_exponential_result.elementary_part -
+        algebraic_scalar_exponential_expected) == context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(
         x_over_e_power, x);

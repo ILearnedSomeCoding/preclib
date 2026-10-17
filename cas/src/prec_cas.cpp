@@ -15889,32 +15889,9 @@ risch_result exact_context::integrate_elementary_impl(
             integration_mul(integration_derivative_poly(gn), gd),
             integration_mul(gn, integration_derivative_poly(gd)));
         if(integration_zero_poly(logarithmic_derivative)) return false;
+        integration_poly rate_denominator = integration_mul(gd, gd);
         if(!integration_parse_rational(cofactor, variable, p, q,
                 degree_budget, degree_budget)){
-            auto known_nonzero_scalar = [&](auto &&self,
-                    const exact_expr &value) -> bool{
-                if(!integration_exact_expression_tree(value) ||
-                   integration_depends_on(value, variable)) return false;
-                if(value.is_value()) return !value.value().is_zero();
-                if(integration_strictly_positive_constant(value) ||
-                   value.operation() == exact_opcode::constant_e ||
-                   value.operation() == exact_opcode::exponential ||
-                   (value.operation() == exact_opcode::square_root &&
-                    integration_strictly_positive_constant(value.operand(0))))
-                    return true;
-                if(value.operation() == exact_opcode::multiply){
-                    for(size_t i = 0; i < value.operand_count(); ++i)
-                        if(!self(self, value.operand(i))) return false;
-                    return value.operand_count() != 0;
-                }
-                if(value.operation() == exact_opcode::power){
-                    int64_t exponent = 0;
-                    return integration_signed_exponent(value.operand(1),
-                            exponent) && exponent != 0 &&
-                        self(self, value.operand(0));
-                }
-                return false;
-            };
             integration_expr_poly numerator, expression_denominator;
             if(!integration_parse_expr_rational(*this, cofactor, variable,
                     numerator, expression_denominator, degree_budget) ||
@@ -15929,20 +15906,28 @@ risch_result exact_context::integrate_elementary_impl(
                     break;
                 }
             }
-            if(scalar.valid() &&
-               known_nonzero_scalar(known_nonzero_scalar, scalar)){
+            if(scalar.valid()){
                 integration_poly reduced_numerator, reduced_denominator;
                 bool scalar_multiple = true;
                 for(const exact_expr &entry : numerator){
-                    exact_expr coefficient = simplify(entry / scalar);
                     if(integration_expr_zero(*this, entry)){
                         reduced_numerator.push_back(numeric_value(0));
-                    }else if(coefficient.is_value() &&
-                             !coefficient.value().is_approximate()){
-                        reduced_numerator.push_back(coefficient.value());
+                    }else if(entry == scalar){
+                        reduced_numerator.push_back(numeric_value(1));
                     }else{
-                        scalar_multiple = false;
-                        break;
+                        exact_expr coefficient = simplify(entry / scalar);
+                        if(coefficient.is_value() &&
+                             !coefficient.value().is_approximate()){
+                            exact_expr reconstructed = scalar * coefficient;
+                            if(simplify(entry - reconstructed) != integer(0)){
+                                scalar_multiple = false;
+                                break;
+                            }
+                            reduced_numerator.push_back(coefficient.value());
+                        }else{
+                            scalar_multiple = false;
+                            break;
+                        }
                     }
                 }
                 if(scalar_multiple){
@@ -15971,13 +15956,64 @@ risch_result exact_context::integrate_elementary_impl(
                                 exponential_factor.operand(0), variable,
                                 false, options);
                         if(primitive.valid()){
-                            exact_expr candidate = scalar * primitive;
-                            exact_expr error = simplify(expand(
-                                differentiate(candidate, variable) - expression,
-                                100000));
-                            if(error == integer(0)){
+                            exact_expr rational_part;
+                            if(primitive == exponential_factor){
+                                rational_part = integer(1);
+                            }else if(primitive.operation() ==
+                                     exact_opcode::multiply){
+                                std::vector<exact_expr> rational_factors;
+                                bool found_exponential = false;
+                                for(size_t i = 0;
+                                    i < primitive.operand_count(); ++i){
+                                    exact_expr factor = primitive.operand(i);
+                                    if(!found_exponential &&
+                                       factor == exponential_factor){
+                                        found_exponential = true;
+                                    }else{
+                                        rational_factors.push_back(factor);
+                                    }
+                                }
+                                if(found_exponential)
+                                    rational_part = rational_factors.empty()
+                                        ? integer(1)
+                                        : multiply(rational_factors);
+                            }
+                            integration_poly r_num, r_den, f_num, f_den;
+                            bool verified = rational_part.valid() &&
+                                integration_parse_rational(rational_part,
+                                    variable, r_num, r_den, degree_budget,
+                                    degree_budget) &&
+                                integration_parse_rational(reduced_cofactor,
+                                    variable, f_num, f_den, degree_budget,
+                                    degree_budget) &&
+                                integration_normalize_rational(r_num, r_den) &&
+                                integration_normalize_rational(f_num, f_den);
+                            if(verified){
+                                integration_poly r_prime = integration_sub(
+                                    integration_mul(
+                                        integration_derivative_poly(r_num),
+                                        r_den),
+                                    integration_mul(r_num,
+                                        integration_derivative_poly(r_den)));
+                                integration_poly identity = integration_add(
+                                    integration_mul(
+                                        integration_mul(r_prime,
+                                            rate_denominator), f_den),
+                                    integration_mul(
+                                        integration_mul(
+                                            integration_mul(
+                                                logarithmic_derivative,
+                                                r_num), r_den), f_den));
+                                identity = integration_sub(identity,
+                                    integration_mul(
+                                        integration_mul(f_num,
+                                            integration_mul(r_den, r_den)),
+                                        rate_denominator));
+                                verified = integration_zero_poly(identity);
+                            }
+                            if(verified){
                                 result.status = risch_status::elementary;
-                                result.elementary_part = std::move(candidate);
+                                result.elementary_part = scalar * primitive;
                                 result.remainder = integer(0);
                                 result.diagnostic.clear();
                                 return true;
