@@ -264,6 +264,56 @@ int main(){
     assert(context.simplify(
         algebraic_scalar_exponential_result.elementary_part -
         algebraic_scalar_exponential_expected) == context.integer(0));
+    exact_expr algebraic_multi_coefficient_exponential = algebraic_scalar *
+        context.exponential(x) *
+        (context.power(x, context.integer(2)) +
+         context.integer(3) * x + context.integer(1)) /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result algebraic_multi_coefficient_result =
+        context.integrate_elementary(algebraic_multi_coefficient_exponential,
+                                     x);
+    assert(algebraic_multi_coefficient_result.status ==
+        risch_status::elementary);
+    assert(algebraic_multi_coefficient_result.conditions.empty());
+    exact_expr algebraic_multi_coefficient_expected = algebraic_scalar *
+        context.exponential(x) * (x + context.integer(2)) /
+        (x + context.integer(1));
+    assert(context.simplify(
+        algebraic_multi_coefficient_result.elementary_part -
+        algebraic_multi_coefficient_expected) == context.integer(0));
+    exact_expr x_plus_one = x + context.integer(1);
+    exact_expr scaled_multi_coefficient_exponential = a *
+        context.exponential(x) *
+        (context.power(x, context.integer(2)) +
+         context.integer(3) * x + context.integer(1)) /
+        context.power(x_plus_one, context.integer(2));
+    risch_result scaled_multi_coefficient_result = context.integrate_elementary(
+        scaled_multi_coefficient_exponential, x);
+    assert(scaled_multi_coefficient_result.status == risch_status::elementary);
+    assert(scaled_multi_coefficient_result.conditions.empty());
+    exact_expr scaled_multi_coefficient_expected = a * context.exponential(x) *
+        (x + context.integer(2)) / x_plus_one;
+    assert(context.simplify(scaled_multi_coefficient_result.elementary_part -
+        scaled_multi_coefficient_expected) == context.integer(0));
+    assert(context.simplify(context.substitute(
+        scaled_multi_coefficient_result.elementary_part, a,
+        context.integer(0))) == context.integer(0));
+    exact_expr symbolic_logarithmic_integrand =
+        (a * x + b) * context.natural_logarithm(x);
+    risch_result symbolic_logarithmic_result = context.integrate_elementary(
+        symbolic_logarithmic_integrand, x);
+    assert(symbolic_logarithmic_result.status == risch_status::elementary);
+    assert(symbolic_logarithmic_result.remainder == context.integer(0));
+    exact_expr symbolic_logarithmic_expected =
+        (a * context.power(x, context.integer(2)) / context.integer(2) +
+         b * x) * context.natural_logarithm(x) -
+        a * context.power(x, context.integer(2)) / context.integer(4) - b * x;
+    assert(context.simplify(context.expand(
+        symbolic_logarithmic_result.elementary_part -
+        symbolic_logarithmic_expected, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(symbolic_logarithmic_result.elementary_part, x) -
+        symbolic_logarithmic_integrand, 100000)) == context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(
         x_over_e_power, x);
