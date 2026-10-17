@@ -462,6 +462,21 @@ int main(){
         context.differentiate(mixed_shared_poles_result.elementary_part, x) +
         mixed_shared_poles_result.remainder - mixed_shared_exponential_poles,
         100000)) == context.integer(0));
+    exact_expr mixed_exp_representations = t / x +
+        e_to_x / (x + context.integer(1));
+    risch_result mixed_exp_representations_result = context.integrate_elementary(
+        mixed_exp_representations, x);
+    assert(mixed_exp_representations_result.status ==
+        risch_status::proven_nonelementary);
+    assert(mixed_exp_representations_result.remainder != context.integer(0));
+    exact_expr offset_exp_poles = t / x +
+        context.exponential(x + context.integer(1)) /
+            (x + context.integer(1));
+    risch_result offset_exp_poles_result = context.integrate_elementary(
+        offset_exp_poles, x);
+    assert(offset_exp_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(offset_exp_poles_result.remainder != context.integer(0));
     exact_expr symbolic_scaled_squarefree_poles = ln_q * q_to_x /
         (x_squared + context.integer(1));
     risch_result symbolic_scaled_squarefree_result = context.integrate_elementary(

@@ -5187,6 +5187,154 @@ static bool integration_expr_gcd_rational_coefficients(
     return true;
 }
 
+// Euclidean gcd over exact, x-independent expression coefficients. This is
+// deliberately conservative: every divisor leading coefficient must have
+// an explicit nonzero witness before it is inverted.
+static bool integration_expr_gcd_constant_coefficients(
+    exact_context &context, integration_expr_poly a, integration_expr_poly b,
+    const exact_expr &variable, size_t degree, integration_expr_poly &result){
+    auto strictly_positive = [&](auto &&self, const exact_expr &value) -> bool{
+        if(value.is_value()) return !value.value().is_approximate() &&
+            !value.value().is_zero() && !value.value().is_negative();
+        if(value.operation() == exact_opcode::constant_e) return true;
+        if(value.operation() == exact_opcode::exponential)
+            return value.operand(0).is_value() &&
+                !value.operand(0).value().is_approximate();
+        if(value.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            return integration_signed_exponent(value.operand(1), exponent) &&
+                exponent != 0 && self(self, value.operand(0));
+        }
+        if(value.operation() != exact_opcode::add &&
+           value.operation() != exact_opcode::multiply) return false;
+        for(size_t i = 0; i < value.operand_count(); ++i)
+            if(!self(self, value.operand(i))) return false;
+        return value.operand_count() != 0;
+    };
+    auto known_nonzero = [&](auto &&self, const exact_expr &value) -> bool{
+        if(!integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable)) return false;
+        if(value.is_value()) return !value.value().is_zero();
+        if(strictly_positive(strictly_positive, value)) return true;
+        if(value.operation() == exact_opcode::constant_e ||
+           value.operation() == exact_opcode::exponential) return true;
+        if(value.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < value.operand_count(); ++i)
+                if(!self(self, value.operand(i))) return false;
+            return value.operand_count() != 0;
+        }
+        if(value.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            return integration_signed_exponent(value.operand(1), exponent) &&
+                exponent != 0 && self(self, value.operand(0));
+        }
+        return false;
+    };
+    auto normalize = [&](integration_expr_poly &polynomial){
+        for(exact_expr &coefficient : polynomial){
+            coefficient = context.simplify(coefficient);
+            if(!integration_exact_expression_tree(coefficient) ||
+               integration_depends_on(coefficient, variable)) return false;
+            std::vector<exact_expr> generators;
+            std::unordered_set<uint32_t> seen;
+            auto collect = [&](auto &&self, const exact_expr &part) -> void{
+                if(!seen.insert(part.id()).second || part.is_value()) return;
+                bool arithmetic = part.operation() == exact_opcode::add ||
+                    part.operation() == exact_opcode::multiply;
+                if(part.operation() == exact_opcode::power){
+                    int64_t exponent = 0;
+                    arithmetic = integration_signed_exponent(
+                        part.operand(1), exponent);
+                }
+                if(!arithmetic){
+                    generators.push_back(part);
+                    return;
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect(collect, coefficient);
+            if(generators.size() == 1){
+                exact_expr formal;
+                for(size_t suffix = 0;; ++suffix){
+                    formal = context.symbol("_risch_const_gcd_" +
+                        std::to_string(suffix));
+                    if(formal != variable &&
+                       !integration_depends_on(coefficient, formal)) break;
+                }
+                exact_expr replaced = context.substitute(coefficient,
+                    generators[0], formal);
+                integration_poly numerator, denominator;
+                if(integration_parse_rational(replaced, formal, numerator,
+                        denominator, degree, degree) &&
+                   integration_normalize_rational(numerator, denominator)){
+                    exact_expr normalized = integration_poly_expr(context,
+                        numerator, formal) /
+                        integration_poly_expr(context, denominator, formal);
+                    coefficient = context.simplify(context.substitute(
+                        normalized, formal, generators[0]));
+                }
+            }
+            if(!integration_exact_expression_tree(coefficient) ||
+               integration_depends_on(coefficient, variable)) return false;
+        }
+        integration_expr_trim(context, polynomial);
+        return true;
+    };
+    auto divide = [&](integration_expr_poly dividend,
+                      const integration_expr_poly &divisor,
+                      integration_expr_poly &quotient,
+                      integration_expr_poly &remainder){
+        if(divisor.empty() || !normalize(dividend)) return false;
+        integration_expr_poly d = divisor;
+        if(!normalize(d) || !known_nonzero(known_nonzero, d.back()))
+            return false;
+        quotient.assign(dividend.size() >= d.size()
+            ? dividend.size() - d.size() + 1 : 1, context.integer(0));
+        while(dividend.size() >= d.size() &&
+              !(dividend.size() == 1 &&
+                integration_expr_zero(context, dividend[0]))){
+            if(dividend.size() - 1 > degree) return false;
+            const size_t previous_size = dividend.size();
+            const size_t offset = dividend.size() - d.size();
+            exact_expr scale = context.simplify(dividend.back() / d.back());
+            if(!integration_exact_expression_tree(scale) ||
+               integration_depends_on(scale, variable)) return false;
+            quotient[offset] = context.simplify(quotient[offset] + scale);
+            for(size_t i = 0; i < d.size(); ++i)
+                dividend[offset + i] = context.simplify(
+                    dividend[offset + i] - scale * d[i]);
+            if(!normalize(dividend)) return false;
+            if(dividend.size() >= previous_size &&
+               !(dividend.size() == 1 &&
+                 integration_expr_zero(context, dividend[0]))) return false;
+        }
+        if(!normalize(quotient)) return false;
+        remainder = std::move(dividend);
+        return true;
+    };
+    if(!normalize(a) || !normalize(b)) return false;
+    size_t iterations = 0;
+    while(!(b.size() == 1 && integration_expr_zero(context, b[0]))){
+        if(++iterations > degree + 2) return false;
+        integration_expr_poly quotient, remainder;
+        if(!divide(a, b, quotient, remainder)) return false;
+        a = std::move(b);
+        b = std::move(remainder);
+    }
+    if(a.size() > 1 && !known_nonzero(known_nonzero, a.back())) return false;
+    if(a.size() == 1 && integration_expr_zero(context, a[0])){
+        result = std::move(a);
+        return true;
+    }
+    exact_expr leading = a.back();
+    if(!known_nonzero(known_nonzero, leading)) return false;
+    for(exact_expr &coefficient : a)
+        coefficient = context.simplify(coefficient / leading);
+    result = std::move(a);
+    return true;
+}
+
 // Invert a polynomial modulo another polynomial over Q(x), with a Bezout check.
 static bool integration_expr_inverse_mod_rational_coefficients(
     exact_context &context, integration_expr_poly a, integration_expr_poly modulus,
@@ -12499,6 +12647,35 @@ risch_result exact_context::integrate_elementary_impl(
                     (base.operation() == exact_opcode::power &&
                      base.operand(0).operation() == exact_opcode::constant_e);
             };
+            auto same_exponential_factor = [&](const exact_expr &a,
+                    const exact_expr &b, exact_expr &ratio){
+                if(a == b){
+                    ratio = integer(1);
+                    return true;
+                }
+                auto exponential_argument = [&](const exact_expr &factor,
+                                                exact_expr &argument){
+                    if(factor.operation() == exact_opcode::exponential){
+                        argument = factor.operand(0);
+                        return true;
+                    }
+                    if(factor.operation() == exact_opcode::power &&
+                       factor.operand(0).operation() ==
+                           exact_opcode::constant_e){
+                        argument = factor.operand(1);
+                        return true;
+                    }
+                    return false;
+                };
+                exact_expr a_argument, b_argument;
+                if(!exponential_argument(a, a_argument) ||
+                   !exponential_argument(b, b_argument)) return false;
+                exact_expr offset = simplify(b_argument - a_argument);
+                if(integration_depends_on(offset, variable) ||
+                   !integration_exact_expression_tree(offset)) return false;
+                ratio = offset == integer(0) ? integer(1) : exponential(offset);
+                return true;
+            };
             std::vector<exact_expr> first_factors = factors_of(summands[0]);
             for(const exact_expr &shared : first_factors){
                 if(!is_exponential_factor(shared)) continue;
@@ -12507,12 +12684,19 @@ risch_result exact_context::integrate_elementary_impl(
                 bool present_in_every_term = true;
                 for(const exact_expr &summand : summands){
                     std::vector<exact_expr> factors = factors_of(summand);
-                    auto found = std::find(factors.begin(), factors.end(), shared);
+                    exact_expr factor_ratio;
+                    auto found = std::find_if(factors.begin(), factors.end(),
+                        [&](const exact_expr &factor){
+                            return same_exponential_factor(shared, factor,
+                                                           factor_ratio);
+                        });
                     if(found == factors.end()){
                         present_in_every_term = false;
                         break;
                     }
                     factors.erase(found);
+                    if(factor_ratio != integer(1))
+                        factors.push_back(factor_ratio);
                     cofactors.push_back(factors.empty() ? integer(1) :
                         factors.size() == 1 ? factors[0] : multiply(factors));
                 }
@@ -15474,6 +15658,42 @@ risch_result exact_context::integrate_elementary_impl(
                         simple_pole_rhs = repeated.size() == 1;
                     }
                 }
+            }else if(rational_numerator.size() > 1){
+                // Exact transcendental constants may occur in the residue
+                // polynomial after regrouping exp(g+c) with exp(g). Treat
+                // them as coefficients only when they are independent of x
+                // and the formal rate; the Euclidean routine separately
+                // certifies every coefficient it inverts as nonzero.
+                bool constant_coefficients = true;
+                integration_expr_poly exact_denominator;
+                exact_denominator.reserve(denominator.size());
+                for(const numeric_value &entry : denominator)
+                    exact_denominator.push_back(value(entry));
+                for(const exact_expr &entry : rational_numerator){
+                    if(!integration_exact_expression_tree(entry) ||
+                       integration_depends_on(entry, variable) ||
+                       integration_depends_on(entry, rate_variable)){
+                        constant_coefficients = false;
+                        break;
+                    }
+                }
+                if(constant_coefficients && denominator.size() > 1){
+                    integration_expr_poly numerator_gcd, denominator_gcd;
+                    integration_expr_poly denominator_derivative(
+                        exact_denominator.size() - 1, integer(0));
+                    for(size_t i = 1; i < exact_denominator.size(); ++i)
+                        denominator_derivative[i - 1] =
+                            integer((int64_t)i) * exact_denominator[i];
+                    simple_pole_rhs =
+                        integration_expr_gcd_constant_coefficients(*this,
+                            rational_numerator, exact_denominator, variable,
+                            degree_budget, numerator_gcd) &&
+                        numerator_gcd.size() == 1 &&
+                        integration_expr_gcd_constant_coefficients(*this,
+                            exact_denominator, denominator_derivative, variable,
+                            degree_budget, denominator_gcd) &&
+                        denominator_gcd.size() == 1;
+                }
             }else if(rational_numerator.size() == 1){
                 // A scalar in x may still depend rationally on the formal
                 // exponential rate. Keep the proof conditional on its
@@ -15661,9 +15881,7 @@ risch_result exact_context::integrate_elementary_impl(
                                              : multiply(other_factors);
         }else return false;
         integration_poly p, q, gn, gd;
-        if(!integration_parse_rational(cofactor, variable, p, q, degree_budget, degree_budget) ||
-           !integration_normalize_rational(p, q) ||
-           !integration_parse_rational(exponential_factor.operand(0), variable,
+        if(!integration_parse_rational(exponential_factor.operand(0), variable,
                 gn, gd, degree_budget, degree_budget) ||
            !integration_normalize_rational(gn, gd))
             return false;
@@ -15671,6 +15889,53 @@ risch_result exact_context::integrate_elementary_impl(
             integration_mul(integration_derivative_poly(gn), gd),
             integration_mul(gn, integration_derivative_poly(gd)));
         if(integration_zero_poly(logarithmic_derivative)) return false;
+        if(!integration_parse_rational(cofactor, variable, p, q,
+                degree_budget, degree_budget)){
+            integration_expr_poly numerator, expression_denominator;
+            if(!integration_parse_expr_rational(*this, cofactor, variable,
+                    numerator, expression_denominator, degree_budget) ||
+               numerator.empty() || expression_denominator.empty())
+                return false;
+            integration_expr_poly exact_denominator;
+            exact_denominator.reserve(expression_denominator.size());
+            for(const exact_expr &entry : expression_denominator){
+                if(!entry.is_value() || entry.value().is_approximate())
+                    return false;
+                exact_denominator.push_back(entry);
+            }
+            integration_poly rate_denominator = integration_mul(gd, gd);
+            if(!integration_normalize_rational(logarithmic_derivative,
+                    rate_denominator)) return false;
+            if(logarithmic_derivative.size() != 1 ||
+               rate_denominator.size() != 1 ||
+               logarithmic_derivative[0].is_zero() ||
+               exact_denominator.size() < 2) return false;
+            for(const exact_expr &entry : numerator)
+                if(!integration_exact_expression_tree(entry) ||
+                   integration_depends_on(entry, variable)) return false;
+            integration_expr_poly denominator_derivative(
+                exact_denominator.size() - 1, integer(0));
+            for(size_t i = 1; i < exact_denominator.size(); ++i)
+                denominator_derivative[i - 1] =
+                    integer((int64_t)i) * exact_denominator[i];
+            integration_expr_poly numerator_gcd, denominator_gcd;
+            bool ng_ok = integration_expr_gcd_constant_coefficients(*this,
+                    numerator,
+                    exact_denominator, variable, degree_budget,
+                    numerator_gcd);
+            bool dg_ok = integration_expr_gcd_constant_coefficients(*this,
+                    exact_denominator, denominator_derivative, variable,
+                    degree_budget, denominator_gcd);
+            if(!ng_ok || numerator_gcd.size() != 1 || !dg_ok ||
+               denominator_gcd.size() != 1) return false;
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "exact-constant simple-pole hyperexponential term has no rational RDE solution";
+            return true;
+        }
+        if(!integration_normalize_rational(p, q)) return false;
         integration_poly derivative_denominator = integration_mul(gd, gd);
         std::vector<integration_parametric_rational_basis> basis;
         auto solved = integration_parametric_rde_rational(logarithmic_derivative,
