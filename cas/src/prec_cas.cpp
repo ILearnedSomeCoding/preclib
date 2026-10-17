@@ -10428,9 +10428,16 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         if(part.is_value())
             return !part.value().is_approximate() &&
                    !part.value().is_zero() && !part.value().is_negative();
-        if(part.operation() == exact_opcode::constant_e) return true;
+        if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                             exact_storage::assumed_positive);
         if(part.operation() == exact_opcode::exponential)
             return is_real_integrand(is_real_integrand, part.operand(0));
+        if(part.operation() == exact_opcode::power)
+            return self(self, part.operand(0)) &&
+                   is_real_integrand(is_real_integrand, part.operand(1));
         if(part.operation() == exact_opcode::add ||
            part.operation() == exact_opcode::multiply){
             for(size_t i = 0; i < part.operand_count(); ++i)
@@ -10708,6 +10715,52 @@ risch_result exact_context::integrate_elementary_impl(
     const size_t verification_degree_budget =
         degree_budget <= options.maximum_nodes / 4
             ? degree_budget * 4 : options.maximum_nodes;
+    auto is_real_constant_expression = [&](auto &&self,
+            const exact_expr &part) -> bool{
+        if(part.is_value() || part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::constant_i) return false;
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                             exact_storage::assumed_real);
+        if(part.operation() == exact_opcode::add ||
+           part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return true;
+        }
+        if(part.operation() == exact_opcode::exponential)
+            return self(self, part.operand(0));
+        if(part.operation() == exact_opcode::power)
+            return self(self, part.operand(0)) &&
+                   self(self, part.operand(1));
+        return false;
+    };
+    auto is_provably_positive_constant = [&](auto &&self,
+            const exact_expr &part) -> bool{
+        if(part.is_value())
+            return !part.value().is_approximate() &&
+                   !part.value().is_zero() && !part.value().is_negative();
+        if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                             exact_storage::assumed_positive);
+        if(part.operation() == exact_opcode::exponential)
+            return is_real_constant_expression(is_real_constant_expression,
+                                                part.operand(0));
+        if(part.operation() == exact_opcode::power)
+            return self(self, part.operand(0)) &&
+                   is_real_constant_expression(is_real_constant_expression,
+                                                part.operand(1));
+        if(part.operation() == exact_opcode::add ||
+           part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!self(self, part.operand(i))) return false;
+            return part.operand_count() != 0;
+        }
+        return false;
+    };
     exact_expr multi_pole_candidate = integration_mixed_linear_poles_primitive(
         *this, expression, variable, options);
     if(multi_pole_candidate.valid()){
@@ -14860,20 +14913,8 @@ risch_result exact_context::integrate_elementary_impl(
         bool power_derivatives_verified = true;
         for(const exact_expr &power_factor : power_factors){
             exact_expr base = power_factor.operand(0);
-            bool base_positive = false;
-            if(base.is_value()){
-                if(base.value().is_approximate() || base.value().is_negative() ||
-                   base.value().is_zero() || base.value().is_one())
-                    return false;
-                base_positive = true;
-            }else if(base.operation() == exact_opcode::constant_e ||
-                     base.operation() == exact_opcode::constant_pi){
-                base_positive = true;
-            }else if(base.operation() == exact_opcode::symbol){
-                base_positive = storage_->has_assumption(
-                    base.root_, exact_storage::assumed_positive);
-            }
-            if(!base_positive) return false;
+            if(!is_provably_positive_constant(
+                   is_provably_positive_constant, base)) return false;
 
             exact_expr slope = simplify(differentiate(power_factor.operand(1),
                                                        variable));
@@ -14928,20 +14969,10 @@ risch_result exact_context::integrate_elementary_impl(
                 bool supported_positive_bases = true;
                 for(const exact_expr &power_factor : power_factors){
                     exact_expr base = power_factor.operand(0);
-                    bool exact_positive_value = base.is_value() &&
-                        !base.value().is_approximate() &&
-                        !base.value().is_zero() &&
-                        !base.value().is_negative();
-                    bool assumed_positive_symbol =
-                        base.operation() == exact_opcode::symbol &&
-                        storage_->has_assumption(base.root_,
-                            exact_storage::assumed_positive);
-                    bool positive_named_constant =
-                        base.operation() == exact_opcode::constant_e ||
-                        base.operation() == exact_opcode::constant_pi;
                     supported_positive_bases = supported_positive_bases &&
-                        (exact_positive_value || assumed_positive_symbol ||
-                         positive_named_constant);
+                        !integration_depends_on(base, variable) &&
+                        is_provably_positive_constant(
+                            is_provably_positive_constant, base);
                     base_product = base_product * base;
                     base_log_sum = base_log_sum + natural_logarithm(base);
                 }

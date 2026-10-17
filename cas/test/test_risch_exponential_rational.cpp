@@ -39,6 +39,51 @@ int main(){
     assert(two_to_x_legacy.operation() != exact_opcode::integral);
     assert(context.simplify(context.differentiate(two_to_x_legacy, x) -
         two_to_x) == context.integer(0));
+    exact_expr two_to_minus_x = context.power(context.integer(2), -x);
+    exact_expr x_over_two_power = x * two_to_minus_x;
+    risch_result x_over_two_power_result = context.integrate_elementary(
+        x_over_two_power, x);
+    assert(x_over_two_power_result.status == risch_status::elementary);
+    exact_expr ln_two_for_negative_power =
+        context.natural_logarithm(context.integer(2));
+    exact_expr x_over_two_power_expected =
+        (-x / ln_two_for_negative_power - context.integer(1) /
+            context.power(ln_two_for_negative_power, context.integer(2))) *
+        two_to_minus_x;
+    assert(context.simplify(x_over_two_power_result.elementary_part -
+        x_over_two_power_expected) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_two_power_result.elementary_part, x) - x_over_two_power,
+        100000)) == context.integer(0));
+    assert(context.integrate(x_over_two_power, x).operation() !=
+        exact_opcode::integral);
+    exact_expr q_to_minus_x = context.power(q, -x);
+    exact_expr x_over_q_power = x * q_to_minus_x;
+    risch_result x_over_q_power_result = context.integrate_elementary(
+        x_over_q_power, x);
+    assert(x_over_q_power_result.status == risch_status::elementary);
+    assert(x_over_q_power_result.conditions.size() == 1);
+    exact_expr minus_ln_q = -context.natural_logarithm(q);
+    exact_expr ln_q_for_negative_power = context.natural_logarithm(q);
+    exact_expr rate_condition_error = context.simplify(
+        x_over_q_power_result.conditions[0] - minus_ln_q);
+    exact_expr opposite_rate_condition_error = context.simplify(
+        x_over_q_power_result.conditions[0] - ln_q_for_negative_power);
+    assert(rate_condition_error == context.integer(0) ||
+           opposite_rate_condition_error == context.integer(0));
+    exact_expr x_over_q_power_expected =
+        (-x / ln_q_for_negative_power - context.integer(1) /
+            context.power(ln_q_for_negative_power, context.integer(2))) *
+        q_to_minus_x;
+    assert(context.simplify(x_over_q_power_result.elementary_part -
+        x_over_q_power_expected) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_q_power_result.elementary_part, x) - x_over_q_power,
+        100000)) == context.integer(0));
+    exact_expr x_over_q_power_legacy = context.integrate(x_over_q_power, x);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_q_power_legacy, x) - x_over_q_power, 100000)) ==
+        context.integer(0));
     exact_expr polynomial_times_two_to_x = x * two_to_x;
     risch_result polynomial_power_result = context.integrate_elementary(
         polynomial_times_two_to_x, x);
@@ -313,6 +358,22 @@ int main(){
     exact_expr symbolic_aligned_legacy = context.integrate(
         symbolic_aligned_input, x);
     assert(symbolic_aligned_legacy.operation() == exact_opcode::integral);
+    exact_expr q_squared_base = context.power(q, context.integer(2));
+    exact_expr q_squared_exponential = context.power(q_squared_base, x_squared);
+    exact_expr compound_base_input = x * q_squared_exponential * r_to_x_squared;
+    exact_expr compound_base_rate = context.natural_logarithm(q_squared_base) +
+        context.natural_logarithm(r);
+    risch_result compound_base_result = context.integrate_elementary(
+        compound_base_input, x);
+    assert(compound_base_result.status == risch_status::elementary);
+    assert(compound_base_result.remainder == context.integer(0));
+    assert(compound_base_result.conditions.size() == 1);
+    assert(context.simplify(compound_base_result.conditions[0] -
+        compound_base_rate) == context.integer(0));
+    exact_expr compound_base_expected = q_squared_exponential * r_to_x_squared /
+        (context.integer(2) * compound_base_rate);
+    assert(context.simplify(compound_base_result.elementary_part -
+        compound_base_expected) == context.integer(0));
     exact_expr symbolic_aligned_denominator = x_squared + context.integer(1);
     exact_expr symbolic_aligned_cofactor = symbolic_aligned_rate /
         symbolic_aligned_denominator - context.integer(1) /
