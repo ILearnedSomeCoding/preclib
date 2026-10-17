@@ -15002,7 +15002,8 @@ risch_result exact_context::integrate_elementary_impl(
                             if(!integration_depends_on(expression, parameter))
                                 break;
                         }
-                        const exact_expr *integration_coordinate = nullptr;
+                        exact_expr integration_coordinate;
+                        bool has_integration_coordinate = false;
                         exact_expr rational_right_hand_side;
                         bool polynomial_rhs = false;
                         integration_expr_poly right_hand_side;
@@ -15065,10 +15066,20 @@ risch_result exact_context::integrate_elementary_impl(
                                 rational_right_hand_side =
                                     std::move(polynomial_argument);
                             }
-                            integration_coordinate = &coordinate;
+                            integration_coordinate = coordinate;
+                            has_integration_coordinate = true;
                             break;
                         }
-                        if(integration_coordinate){
+                        if(has_integration_coordinate){
+                            // The coefficient-wise RDE check and verified
+                            // generator derivatives certify the primitive;
+                            // also prevent leaking the temporary coordinate.
+                            auto candidate_has_no_parameter_leak = [&](
+                                    const exact_expr &candidate){
+                                return candidate.reachable_node_count() <=
+                                       options.maximum_nodes &&
+                                    !integration_depends_on(candidate, parameter);
+                            };
                             if(polynomial_rhs){
                                 integration_expr_poly primitive_polynomial(
                                     right_hand_side.size(), integer(0));
@@ -15100,10 +15111,9 @@ risch_result exact_context::integrate_elementary_impl(
                                             primitive_polynomial, parameter);
                                     exact_expr candidate = substitute(
                                         primitive_in_parameter, parameter,
-                                        *integration_coordinate) *
+                                        integration_coordinate) *
                                         power_product;
-                                    if(candidate.reachable_node_count() <=
-                                       options.maximum_nodes){
+                                    if(candidate_has_no_parameter_leak(candidate)){
                                         // Each factor derivative was checked
                                         // above. Keep the rate condition when
                                         // positivity alone cannot prove it nonzero.
@@ -15140,9 +15150,8 @@ risch_result exact_context::integrate_elementary_impl(
                                         parameter_primitive, formal_exponential,
                                         power_product);
                                     candidate = substitute(candidate, parameter,
-                                        *integration_coordinate);
-                                    if(candidate.reachable_node_count() <=
-                                       options.maximum_nodes){
+                                        integration_coordinate);
+                                    if(candidate_has_no_parameter_leak(candidate)){
                                         result.status =
                                             risch_status::elementary;
                                         result.elementary_part =
@@ -15363,14 +15372,84 @@ risch_result exact_context::integrate_elementary_impl(
             integration_trim(denominator);
             if(denominator.empty() || integration_zero_poly(denominator))
                 return false;
-            bool simple_pole_rhs = rational_numerator.size() == 1 &&
-                rational_numerator[0].is_value() &&
-                !rational_numerator[0].value().is_approximate() &&
-                !rational_numerator[0].value().is_zero() &&
-                denominator.size() == 2 &&
-                !denominator[0].is_approximate() &&
-                !denominator[1].is_approximate() &&
-                !denominator[1].is_zero();
+            integration_poly rational_numerator_values;
+            bool exact_rational_numerator = true;
+            rational_numerator_values.reserve(rational_numerator.size());
+            for(const exact_expr &entry : rational_numerator){
+                if(!entry.is_value() || entry.value().is_approximate()){
+                    exact_rational_numerator = false;
+                    break;
+                }
+                rational_numerator_values.push_back(entry.value());
+            }
+            integration_trim(rational_numerator_values);
+            std::vector<exact_expr> squarefree_pole_conditions;
+            bool simple_pole_rhs = false;
+            if(exact_rational_numerator &&
+               !integration_zero_poly(rational_numerator_values)){
+                integration_poly common = integration_gcd_poly(
+                    rational_numerator_values, denominator);
+                integration_poly reduced_numerator, reduced_denominator;
+                if(integration_divide_poly(rational_numerator_values, common,
+                        reduced_numerator) &&
+                   integration_divide_poly(denominator, common,
+                        reduced_denominator)){
+                    integration_trim(reduced_denominator);
+                    if(reduced_denominator.size() > 1){
+                        integration_poly repeated = integration_gcd_poly(
+                            reduced_denominator,
+                            integration_derivative_poly(reduced_denominator));
+                        simple_pole_rhs = repeated.size() == 1;
+                    }
+                }
+            }else if(rational_numerator.size() == 1){
+                // A scalar in x may still depend rationally on the formal
+                // exponential rate. Keep the proof conditional on its
+                // numerator being nonzero; do not generalize this to
+                // x-dependent parameter coefficients, where specialization
+                // can change the polynomial gcd and pole multiplicities.
+                integration_rate_fraction scalar;
+                if(integration_rate_fraction_parse(*this,
+                        rational_numerator.front(), rate_variable,
+                        degree_budget, scalar) &&
+                   scalar.denominator.size() == 1 &&
+                   !integration_zero_poly(scalar.numerator)){
+                    integration_poly repeated = integration_gcd_poly(
+                        denominator, integration_derivative_poly(denominator));
+                    if(denominator.size() > 1 && repeated.size() == 1){
+                        simple_pole_rhs = true;
+                        squarefree_pole_conditions.push_back(simplify(
+                            substitute(integration_poly_expr(*this,
+                                scalar.numerator, rate_variable),
+                                rate_variable, logarithmic_rate)));
+                    }
+                }
+            }
+            if(simple_pole_rhs){
+                // A rational candidate with a pole creates a higher-order
+                // pole under differentiation; a pole-free candidate is a
+                // polynomial. Neither can match a nonzero simple-pole RHS
+                // under a nonzero constant exponential rate.
+                result.status = risch_status::proven_nonelementary;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                if(!exact_nonzero_rational_rate)
+                    result.conditions.push_back(logarithmic_rate);
+                for(const exact_expr &condition : squarefree_pole_conditions){
+                    bool already_present = false;
+                    for(const exact_expr &existing : result.conditions){
+                        if(existing == condition ||
+                           simplify(existing - condition) == integer(0)){
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if(!already_present) result.conditions.push_back(condition);
+                }
+                result.diagnostic =
+                    "a squarefree-pole hyperexponential term has no rational RDE solution";
+                return true;
+            }
             integration_symbolic_rate_rde_result rde =
                 integration_rde_symbolic_constant_rate_rational(*this,
                     rational_numerator, denominator, rate_variable, variable,
@@ -15383,16 +15462,12 @@ risch_result exact_context::integrate_elementary_impl(
             }
             if(rde.status ==
                integration_rde_status::no_polynomial_solution &&
-               (exact_nonzero_rational_rate || simple_pole_rhs)){
+               exact_nonzero_rational_rate){
                 result.status = risch_status::proven_nonelementary;
                 result.elementary_part = integer(0);
                 result.remainder = expression;
-                if(!exact_nonzero_rational_rate)
-                    result.conditions.push_back(logarithmic_rate);
                 result.diagnostic =
-                    simple_pole_rhs
-                        ? "a simple-pole hyperexponential term has no rational RDE solution"
-                        : "constant-rate hyperexponential RDE has no rational solution";
+                    "constant-rate hyperexponential RDE has no rational solution";
                 return true;
             }
             if(rde.status != integration_rde_status::solved) return false;

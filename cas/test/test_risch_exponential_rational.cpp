@@ -426,6 +426,34 @@ int main(){
     assert(symbolic_simple_pole_result.conditions.size() == 1);
     assert(context.simplify(symbolic_simple_pole_result.conditions[0] - ln_q) ==
         context.integer(0));
+    exact_expr symbolic_exponential_squarefree_poles = q_to_x /
+        (x_squared + context.integer(1));
+    risch_result symbolic_squarefree_poles_result = context.integrate_elementary(
+        symbolic_exponential_squarefree_poles, x);
+    assert(symbolic_squarefree_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_squarefree_poles_result.conditions.size() == 1);
+    assert(context.simplify(symbolic_squarefree_poles_result.conditions[0] -
+        ln_q) == context.integer(0));
+    exact_expr symbolic_scaled_squarefree_poles = ln_q * q_to_x /
+        (x_squared + context.integer(1));
+    risch_result symbolic_scaled_squarefree_result = context.integrate_elementary(
+        symbolic_scaled_squarefree_poles, x);
+    assert(symbolic_scaled_squarefree_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_scaled_squarefree_result.conditions.size() == 1);
+    assert(context.simplify(
+        symbolic_scaled_squarefree_result.conditions[0] - ln_q) ==
+        context.integer(0));
+    risch_options tiny_squarefree_rde_budget;
+    tiny_squarefree_rde_budget.maximum_matrix_entries = 1;
+    assert(context.integrate_elementary(symbolic_exponential_squarefree_poles,
+        x, tiny_squarefree_rde_budget).status ==
+        risch_status::proven_nonelementary);
+    exact_expr symbolic_exponential_repeated_pole = q_to_x /
+        context.power(x_squared + context.integer(1), context.integer(2));
+    assert(context.integrate_elementary(symbolic_exponential_repeated_pole, x).status !=
+        risch_status::proven_nonelementary);
     context.assume(q, "none");
     assert(context.integrate_elementary(symbolic_exponential_simple_pole, x).status !=
         risch_status::proven_nonelementary);
