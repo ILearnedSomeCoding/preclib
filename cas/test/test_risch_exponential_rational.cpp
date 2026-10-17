@@ -218,6 +218,27 @@ int main(){
     assert(e_power_logistic_result.elementary_part == x -
         context.natural_logarithm(context.exponential(x) +
                                   context.integer(1)));
+    exact_expr scaled_rational_exponential = context.e() *
+        context.exponential(x) * x /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result scaled_rational_exponential_result =
+        context.integrate_elementary(scaled_rational_exponential, x);
+    assert(scaled_rational_exponential_result.status ==
+        risch_status::elementary);
+    exact_expr scaled_rational_exponential_expected = context.e() *
+        context.exponential(x) / (x + context.integer(1));
+    assert(context.simplify(scaled_rational_exponential_result.elementary_part -
+        scaled_rational_exponential_expected) == context.integer(0));
+    exact_expr scaled_rational_exponential_derivative = context.differentiate(
+        scaled_rational_exponential_result.elementary_part, x);
+    exact_expr scaled_rational_exponential_derivative_form = context.e() *
+        context.exponential(x) / (x + context.integer(1)) -
+        context.e() * context.exponential(x) /
+            context.power(x + context.integer(1), context.integer(2));
+    assert(context.simplify(scaled_rational_exponential_derivative -
+        scaled_rational_exponential_derivative_form) == context.integer(0));
+    assert(context.simplify((x + context.integer(1)) - context.integer(1) - x) ==
+        context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(
         x_over_e_power, x);

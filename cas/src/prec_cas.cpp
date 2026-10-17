@@ -15891,11 +15891,101 @@ risch_result exact_context::integrate_elementary_impl(
         if(integration_zero_poly(logarithmic_derivative)) return false;
         if(!integration_parse_rational(cofactor, variable, p, q,
                 degree_budget, degree_budget)){
+            auto known_nonzero_scalar = [&](auto &&self,
+                    const exact_expr &value) -> bool{
+                if(!integration_exact_expression_tree(value) ||
+                   integration_depends_on(value, variable)) return false;
+                if(value.is_value()) return !value.value().is_zero();
+                if(integration_strictly_positive_constant(value) ||
+                   value.operation() == exact_opcode::constant_e ||
+                   value.operation() == exact_opcode::exponential ||
+                   (value.operation() == exact_opcode::square_root &&
+                    integration_strictly_positive_constant(value.operand(0))))
+                    return true;
+                if(value.operation() == exact_opcode::multiply){
+                    for(size_t i = 0; i < value.operand_count(); ++i)
+                        if(!self(self, value.operand(i))) return false;
+                    return value.operand_count() != 0;
+                }
+                if(value.operation() == exact_opcode::power){
+                    int64_t exponent = 0;
+                    return integration_signed_exponent(value.operand(1),
+                            exponent) && exponent != 0 &&
+                        self(self, value.operand(0));
+                }
+                return false;
+            };
             integration_expr_poly numerator, expression_denominator;
             if(!integration_parse_expr_rational(*this, cofactor, variable,
                     numerator, expression_denominator, degree_budget) ||
                numerator.empty() || expression_denominator.empty())
                 return false;
+            exact_expr scalar;
+            for(const exact_expr &entry : numerator){
+                if(!integration_exact_expression_tree(entry) ||
+                   integration_depends_on(entry, variable)) return false;
+                if(!integration_expr_zero(*this, entry)){
+                    scalar = entry;
+                    break;
+                }
+            }
+            if(scalar.valid() &&
+               known_nonzero_scalar(known_nonzero_scalar, scalar)){
+                integration_poly reduced_numerator, reduced_denominator;
+                bool scalar_multiple = true;
+                for(const exact_expr &entry : numerator){
+                    exact_expr coefficient = simplify(entry / scalar);
+                    if(integration_expr_zero(*this, entry)){
+                        reduced_numerator.push_back(numeric_value(0));
+                    }else if(coefficient.is_value() &&
+                             !coefficient.value().is_approximate()){
+                        reduced_numerator.push_back(coefficient.value());
+                    }else{
+                        scalar_multiple = false;
+                        break;
+                    }
+                }
+                if(scalar_multiple){
+                    for(const exact_expr &entry : expression_denominator){
+                        if(!entry.is_value() ||
+                           entry.value().is_approximate()){
+                            scalar_multiple = false;
+                            break;
+                        }
+                        reduced_denominator.push_back(entry.value());
+                    }
+                }
+                if(scalar_multiple){
+                    integration_trim(reduced_numerator);
+                    integration_trim(reduced_denominator);
+                    if(!reduced_denominator.empty() &&
+                       !integration_zero_poly(reduced_denominator)){
+                        exact_expr reduced_cofactor =
+                            integration_poly_expr(*this, reduced_numerator,
+                                                  variable) /
+                            integration_poly_expr(*this, reduced_denominator,
+                                                  variable);
+                        exact_expr primitive =
+                            integration_hyperexponential_rational(*this,
+                                reduced_cofactor,
+                                exponential_factor.operand(0), variable,
+                                false, options);
+                        if(primitive.valid()){
+                            exact_expr candidate = scalar * primitive;
+                            exact_expr error = simplify(expand(
+                                differentiate(candidate, variable) - expression,
+                                100000));
+                            if(error == integer(0)){
+                                result.status = risch_status::elementary;
+                                result.elementary_part = std::move(candidate);
+                                result.remainder = integer(0);
+                                result.diagnostic.clear();
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
             integration_expr_poly exact_denominator;
             exact_denominator.reserve(expression_denominator.size());
             for(const exact_expr &entry : expression_denominator){
