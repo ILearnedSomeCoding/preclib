@@ -314,6 +314,18 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(symbolic_logarithmic_result.elementary_part, x) -
         symbolic_logarithmic_integrand, 100000)) == context.integer(0));
+    exact_expr symbolic_exponential_polynomial = context.exponential(x) *
+        (a * x + b);
+    risch_result symbolic_exponential_polynomial_result =
+        context.integrate_elementary(symbolic_exponential_polynomial, x);
+    assert(symbolic_exponential_polynomial_result.status ==
+        risch_status::elementary);
+    assert(symbolic_exponential_polynomial_result.conditions.empty());
+    exact_expr symbolic_exponential_polynomial_expected = context.exponential(x) *
+        (a * x + b - a);
+    assert(context.simplify(
+        symbolic_exponential_polynomial_result.elementary_part -
+        symbolic_exponential_polynomial_expected) == context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(
         x_over_e_power, x);

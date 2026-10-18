@@ -15892,6 +15892,80 @@ risch_result exact_context::integrate_elementary_impl(
         integration_poly rate_denominator = integration_mul(gd, gd);
         if(!integration_parse_rational(cofactor, variable, p, q,
                 degree_budget, degree_budget)){
+            integration_expr_poly cofactor_polynomial, inner_polynomial;
+            bool polynomial_rate = integration_parse_expr_poly(*this,
+                exponential_factor.operand(0), variable, inner_polynomial);
+            for(const exact_expr &entry : inner_polynomial)
+                if(!entry.is_value() || entry.value().is_approximate()){
+                    polynomial_rate = false;
+                    break;
+                }
+            bool polynomial_cofactor = integration_parse_expr_poly(*this,
+                cofactor, variable, cofactor_polynomial);
+            if(polynomial_cofactor)
+                for(const exact_expr &entry : cofactor_polynomial)
+                    if(!integration_exact_expression_tree(entry)){
+                        polynomial_cofactor = false;
+                        break;
+                    }
+            if(polynomial_cofactor && polynomial_rate &&
+               cofactor_polynomial.size() <= degree_budget + 1 &&
+               inner_polynomial.size() <= degree_budget + 1){
+                exact_expr primitive = integration_hyperexponential_polynomial(
+                    *this, cofactor, exponential_factor.operand(0), variable);
+                exact_expr rational_part;
+                if(primitive == exponential_factor){
+                    rational_part = integer(1);
+                }else if(primitive.operation() == exact_opcode::multiply){
+                    std::vector<exact_expr> rational_factors;
+                    bool found_exponential = false;
+                    for(size_t i = 0; i < primitive.operand_count(); ++i){
+                        exact_expr factor = primitive.operand(i);
+                        if(!found_exponential &&
+                           factor == exponential_factor){
+                            found_exponential = true;
+                        }else{
+                            rational_factors.push_back(factor);
+                        }
+                    }
+                    if(found_exponential)
+                        rational_part = rational_factors.empty()
+                            ? integer(1) : multiply(rational_factors);
+                }
+                integration_expr_poly r_polynomial;
+                if(rational_part.valid() &&
+                   integration_parse_expr_poly(*this, rational_part, variable,
+                       r_polynomial)){
+                    integration_expr_poly r_derivative =
+                        integration_expr_derivative(*this, r_polynomial);
+                    integration_expr_poly inner_rate =
+                        integration_expr_derivative(*this, inner_polynomial);
+                    integration_expr_poly identity = integration_expr_add(
+                        *this, r_derivative,
+                        integration_expr_mul(*this, inner_rate,
+                                              r_polynomial));
+                    if(identity.size() < cofactor_polynomial.size())
+                        identity.resize(cofactor_polynomial.size(), integer(0));
+                    for(size_t i = 0; i < cofactor_polynomial.size(); ++i)
+                        identity[i] = simplify(identity[i] -
+                                               cofactor_polynomial[i]);
+                    integration_expr_trim(*this, identity);
+                    bool verified = true;
+                    for(const exact_expr &entry : identity)
+                        if(!integration_expr_zero(*this, entry)){
+                            verified = false;
+                            break;
+                        }
+                    if(verified && primitive.reachable_node_count() <=
+                            options.maximum_nodes){
+                        result.status = risch_status::elementary;
+                        result.elementary_part = std::move(primitive);
+                        result.remainder = integer(0);
+                        result.diagnostic.clear();
+                        return true;
+                    }
+                }
+            }
             integration_expr_poly numerator, expression_denominator;
             if(!integration_parse_expr_rational(*this, cofactor, variable,
                     numerator, expression_denominator, degree_budget) ||
