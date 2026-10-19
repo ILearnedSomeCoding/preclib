@@ -15952,6 +15952,192 @@ risch_result exact_context::integrate_elementary_impl(
                         "has no rational RDE solution";
                     return true;
                 }
+
+                // A repeated rational linear pole forces the principal part
+                // of any rational RDE solution. Accept an arbitrary remaining
+                // denominator when the repeated factor is x^m; for a nonzero
+                // center, require the whole denominator to be one exact
+                // linear power before translating it.
+                bool recognized_pole = false;
+                size_t pole_order = 0;
+                numeric_value pole_center(0);
+                while(pole_order < pole_denominator.size() &&
+                      pole_denominator[pole_order].is_zero())
+                    ++pole_order;
+                recognized_pole = pole_order >= 2 &&
+                    pole_order < pole_denominator.size();
+                if(!recognized_pole && pole_denominator.size() > 2){
+                    pole_order = pole_denominator.size() - 1;
+                    pole_center = -pole_denominator[pole_order - 1] /
+                        (pole_denominator.back() *
+                         numeric_value((uint64_t)pole_order));
+                    integration_poly expected(pole_order + 1,
+                                              numeric_value(0));
+                    expected[pole_order] = pole_denominator.back();
+                    for(size_t degree = pole_order; degree > 0; --degree)
+                        expected[degree - 1] = expected[degree] *
+                            (-pole_center) * numeric_value((uint64_t)degree) /
+                            numeric_value((uint64_t)(pole_order - degree + 1));
+                    for(size_t degree = 0; degree <= pole_order; ++degree)
+                        if(expected[degree] != pole_denominator[degree]){
+                            recognized_pole = false;
+                            break;
+                        }else recognized_pole = true;
+                }
+                if(common.size() == 1 && recognized_pole){
+                    integration_poly translated_denominator(
+                        pole_denominator.size(), numeric_value(0));
+                    integration_poly translated_numerator(
+                        pole_numerator.size(), numeric_value(0));
+                    auto translate_polynomial = [&](const integration_poly &source,
+                            integration_poly &translated){
+                    std::vector<numeric_value> center_powers(source.size(),
+                                                              numeric_value(1));
+                    for(size_t i = 1; i < center_powers.size(); ++i)
+                        center_powers[i] = center_powers[i - 1] * pole_center;
+                    for(size_t degree = 0; degree < source.size(); ++degree){
+                        numeric_value choose(1);
+                        for(size_t shifted_degree = 0;
+                            shifted_degree <= degree; ++shifted_degree){
+                            translated[shifted_degree] = translated[shifted_degree] +
+                                source[degree] * choose *
+                                center_powers[degree - shifted_degree];
+                            if(shifted_degree < degree){
+                                choose = choose * numeric_value(
+                                    (uint64_t)(degree - shifted_degree)) /
+                                    numeric_value((uint64_t)(shifted_degree + 1));
+                            }
+                        }
+                    }
+                    };
+                    translate_polynomial(pole_denominator,
+                                         translated_denominator);
+                    translate_polynomial(pole_numerator, translated_numerator);
+                    pole_order = 0;
+                    while(pole_order < translated_denominator.size() &&
+                          translated_denominator[pole_order].is_zero())
+                        ++pole_order;
+                    if(pole_order < 2 ||
+                       pole_order >= translated_denominator.size())
+                        return false;
+
+                    // Expand P(z+r)/(Q(z+r)/z^m) as a power series through
+                    // degree m-1. These are exactly the negative Laurent
+                    // coefficients needed for the local compatibility test.
+                    std::vector<numeric_value> regular_series(pole_order,
+                                                               numeric_value(0));
+                    for(size_t degree = 0; degree < pole_order; ++degree){
+                        numeric_value coefficient = degree <
+                            translated_numerator.size()
+                            ? translated_numerator[degree]
+                            : numeric_value(0);
+                        for(size_t offset = 1; offset <= degree; ++offset){
+                            size_t denominator_index = pole_order + offset;
+                            if(denominator_index < translated_denominator.size())
+                                coefficient = coefficient -
+                                    translated_denominator[denominator_index] *
+                                    regular_series[degree - offset];
+                        }
+                        regular_series[degree] = coefficient /
+                            translated_denominator[pole_order];
+                    }
+                    std::vector<exact_expr> rhs(pole_order + 1,
+                                                integer(0));
+                    std::vector<exact_expr> principal(pole_order + 1,
+                                                      integer(0));
+                    for(size_t order = 1; order <= pole_order; ++order){
+                        rhs[order] = value(
+                            regular_series[pole_order - order]);
+                    }
+                    const exact_expr &rate = symbolic_rate[0];
+                    for(size_t order = pole_order; order > 1; --order){
+                        principal[order - 1] = simplify(
+                            (rate * principal[order] - rhs[order]) /
+                            integer((int64_t)(order - 1)));
+                    }
+                    exact_expr obstruction = simplify(
+                        rate * principal[1] - rhs[1]);
+                    if(obstruction != integer(0)){
+                        result.status = risch_status::proven_nonelementary;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        bool rate_nonzero = is_provably_nonzero_constant(
+                            is_provably_nonzero_constant, rate);
+                        bool obstruction_forces_nonzero_rate =
+                            substitute(obstruction, rate, integer(0)) ==
+                            integer(0);
+                        bool obstruction_is_rate = obstruction == rate ||
+                            simplify(obstruction + rate) == integer(0);
+                        if(obstruction_is_rate){
+                            if(!rate_nonzero)
+                                result.conditions.push_back(rate);
+                        }else{
+                            if(!rate_nonzero &&
+                               !obstruction_forces_nonzero_rate)
+                                result.conditions.push_back(rate);
+                            if(!is_provably_nonzero_constant(
+                                   is_provably_nonzero_constant, obstruction))
+                                result.conditions.push_back(obstruction);
+                        }
+                        result.diagnostic =
+                            "repeated-pole Laurent compatibility obstructs "
+                            "a rational hyperexponential RDE solution";
+
+                        exact_expr rational_candidate = integer(0);
+                        exact_expr shifted_variable = variable - value(pole_center);
+                        for(size_t order = 1; order <= pole_order; ++order)
+                            if(principal[order] != integer(0))
+                                rational_candidate = rational_candidate +
+                                    principal[order] / power(shifted_variable,
+                                        integer((int64_t)order));
+                        exact_expr polynomial_remainder = simplify(expand(
+                            cofactor - differentiate(rational_candidate,
+                                variable) - rate * rational_candidate +
+                            obstruction / shifted_variable, 100000));
+                        integration_expr_poly polynomial_coefficients;
+                        if(integration_parse_expr_poly(*this,
+                                polynomial_remainder, variable,
+                                polynomial_coefficients)){
+                            exact_expr polynomial_primitive = integer(0);
+                            if(polynomial_remainder != integer(0))
+                                polynomial_primitive =
+                                    integration_hyperexponential_polynomial(
+                                        *this, polynomial_remainder,
+                                        exponential_factor.operand(0), variable);
+                            if(polynomial_primitive.valid() ||
+                               polynomial_remainder == integer(0)){
+                                exact_expr partial =
+                                    rational_candidate * exponential_factor +
+                                    polynomial_primitive;
+                                exact_expr simple_pole_remainder =
+                                    -obstruction * exponential_factor /
+                                    shifted_variable;
+                                exact_expr reconstruction_error = simplify(expand(
+                                    differentiate(partial, variable) +
+                                    simple_pole_remainder - expression,
+                                    100000));
+                                if(reconstruction_error == integer(0)){
+                                    result.elementary_part = std::move(partial);
+                                    result.remainder =
+                                        std::move(simple_pole_remainder);
+                                }
+                            }
+                        }
+                        if(result.elementary_part == integer(0)){
+                            exact_expr partial = rational_candidate *
+                                exponential_factor;
+                            exact_expr partial_remainder = expression -
+                                differentiate(partial, variable);
+                            if(simplify(expand(differentiate(partial, variable) +
+                                    partial_remainder - expression, 100000)) ==
+                               integer(0)){
+                                result.elementary_part = std::move(partial);
+                                result.remainder = std::move(partial_remainder);
+                            }
+                        }
+                        return true;
+                    }
+                }
             }
 
             // The expression-coefficient rational RDE solver works over the

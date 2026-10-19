@@ -380,6 +380,77 @@ int main(){
     assert(symbolic_rate_e_over_x_result.remainder == symbolic_rate_e_over_x);
     assert(symbolic_rate_e_over_x_result.conditions.size() == 1);
     assert(symbolic_rate_e_over_x_result.conditions[0] == a);
+    for(int pole_order : {2, 3}){
+        exact_expr repeated_symbolic_rate_pole =
+            context.exponential(a * x) /
+            context.power(x, context.integer(pole_order));
+        risch_result repeated_symbolic_rate_pole_result =
+            context.integrate_elementary(repeated_symbolic_rate_pole, x);
+        assert(repeated_symbolic_rate_pole_result.status ==
+            risch_status::proven_nonelementary);
+        assert(repeated_symbolic_rate_pole_result.elementary_part !=
+            context.integer(0));
+        assert(repeated_symbolic_rate_pole_result.remainder !=
+            context.integer(0));
+        assert(context.simplify(context.expand(
+            context.differentiate(
+                repeated_symbolic_rate_pole_result.elementary_part, x) +
+            repeated_symbolic_rate_pole_result.remainder -
+            repeated_symbolic_rate_pole, 100000)) == context.integer(0));
+        if(pole_order == 2){
+            assert(repeated_symbolic_rate_pole_result.conditions.size() == 1);
+            assert(repeated_symbolic_rate_pole_result.conditions[0] == a);
+        }else{
+            assert(repeated_symbolic_rate_pole_result.conditions.size() == 1);
+            assert(context.substitute(
+                repeated_symbolic_rate_pole_result.conditions[0], a,
+                context.integer(0)) == context.integer(0));
+        }
+    }
+    exact_expr shifted_repeated_symbolic_rate_pole =
+        context.exponential(a * x) /
+        context.power(x + context.integer(1), context.integer(2));
+    risch_result shifted_repeated_symbolic_rate_pole_result =
+        context.integrate_elementary(shifted_repeated_symbolic_rate_pole, x);
+    assert(shifted_repeated_symbolic_rate_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(shifted_repeated_symbolic_rate_pole_result.conditions.size() == 1);
+    assert(shifted_repeated_symbolic_rate_pole_result.conditions[0] == a);
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            shifted_repeated_symbolic_rate_pole_result.elementary_part, x) +
+        shifted_repeated_symbolic_rate_pole_result.remainder -
+        shifted_repeated_symbolic_rate_pole, 100000)) == context.integer(0));
+    exact_expr repeated_factor_with_other_poles = context.exponential(a * x) /
+        (context.power(x, context.integer(2)) * (x + context.integer(1)));
+    risch_result repeated_factor_with_other_poles_result =
+        context.integrate_elementary(repeated_factor_with_other_poles, x);
+    assert(repeated_factor_with_other_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(!repeated_factor_with_other_poles_result.conditions.empty());
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            repeated_factor_with_other_poles_result.elementary_part, x) +
+        repeated_factor_with_other_poles_result.remainder -
+        repeated_factor_with_other_poles, 100000)) == context.integer(0));
+    exact_expr repeated_pole_resonance = context.exponential(-x) *
+        (context.integer(1) / context.power(x, context.integer(2)) +
+         context.integer(1) / x);
+    risch_result repeated_pole_resonance_result = context.integrate_elementary(
+        repeated_pole_resonance, x);
+    assert(repeated_pole_resonance_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        repeated_pole_resonance_result.elementary_part, x) -
+        repeated_pole_resonance) == context.integer(0));
+    exact_expr zero_rate_e_over_x = context.substitute(
+        symbolic_rate_e_over_x, a, context.integer(0));
+    risch_result zero_rate_e_over_x_result = context.integrate_elementary(
+        zero_rate_e_over_x, x);
+    assert(zero_rate_e_over_x_result.status == risch_status::elementary);
+    assert(zero_rate_e_over_x_result.conditions.empty());
+    assert(context.simplify(context.differentiate(
+        zero_rate_e_over_x_result.elementary_part, x) -
+        zero_rate_e_over_x) == context.integer(0));
     exact_expr positive_rate_e_over_x = positive_rate_exponential / x;
     risch_result positive_rate_e_over_x_result = context.integrate_elementary(
         positive_rate_e_over_x, x);
