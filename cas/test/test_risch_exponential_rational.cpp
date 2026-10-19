@@ -326,6 +326,28 @@ int main(){
     assert(context.simplify(
         symbolic_exponential_polynomial_result.elementary_part -
         symbolic_exponential_polynomial_expected) == context.integer(0));
+    exact_expr symbolic_rate_exponential = context.exponential(a * x) *
+        (a * x + b);
+    risch_result symbolic_rate_exponential_result =
+        context.integrate_elementary(symbolic_rate_exponential, x);
+    assert(symbolic_rate_exponential_result.status ==
+        risch_status::elementary);
+    assert(symbolic_rate_exponential_result.conditions.size() == 1);
+    assert(symbolic_rate_exponential_result.conditions[0] == a);
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_exponential_result.elementary_part, x) -
+        symbolic_rate_exponential, 100000)) == context.integer(0));
+    exact_expr symbolic_rate_rational_primitive = context.exponential(a * x + b) /
+        (x + context.integer(1));
+    exact_expr symbolic_rate_rational_integrand = context.differentiate(
+        symbolic_rate_rational_primitive, x);
+    risch_result symbolic_rate_rational_result = context.integrate_elementary(
+        symbolic_rate_rational_integrand, x);
+    assert(symbolic_rate_rational_result.status == risch_status::elementary);
+    assert(symbolic_rate_rational_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_rational_result.elementary_part, x) -
+        symbolic_rate_rational_integrand, 100000)) == context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(
         x_over_e_power, x);
