@@ -9,6 +9,9 @@ int main(){
     exact_expr x = context.symbol("x");
     exact_expr a = context.symbol("a");
     exact_expr b = context.symbol("b");
+    exact_expr second_rate = context.symbol("second_rate");
+    exact_expr positive_rate = context.symbol("positive_rate");
+    context.assume(positive_rate, "positive");
     exact_expr q = context.symbol("q");
     exact_expr r = context.symbol("r");
     context.assume(q, "positive");
@@ -337,6 +340,71 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         symbolic_rate_exponential_result.elementary_part, x) -
         symbolic_rate_exponential, 100000)) == context.integer(0));
+    exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
+        context.exponential(second_rate * x);
+    risch_result sum_of_symbolic_rates_result = context.integrate_elementary(
+        sum_of_symbolic_rates, x);
+    assert(sum_of_symbolic_rates_result.status == risch_status::elementary);
+    assert(sum_of_symbolic_rates_result.conditions.size() == 2);
+    assert(std::find(sum_of_symbolic_rates_result.conditions.begin(),
+        sum_of_symbolic_rates_result.conditions.end(), a) !=
+        sum_of_symbolic_rates_result.conditions.end());
+    assert(std::find(sum_of_symbolic_rates_result.conditions.begin(),
+        sum_of_symbolic_rates_result.conditions.end(), second_rate) !=
+        sum_of_symbolic_rates_result.conditions.end());
+    assert(context.simplify(context.expand(context.differentiate(
+        sum_of_symbolic_rates_result.elementary_part, x) -
+        sum_of_symbolic_rates, 100000)) == context.integer(0));
+    exact_expr positive_rate_exponential = context.exponential(positive_rate * x);
+    risch_result positive_rate_result = context.integrate_elementary(
+        positive_rate_exponential, x);
+    assert(positive_rate_result.status == risch_status::elementary);
+    assert(positive_rate_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        positive_rate_result.elementary_part, x) -
+        positive_rate_exponential, 100000)) == context.integer(0));
+    exact_expr negative_positive_rate_exponential =
+        context.exponential(-positive_rate * x);
+    risch_result negative_positive_rate_result = context.integrate_elementary(
+        negative_positive_rate_exponential, x);
+    assert(negative_positive_rate_result.status == risch_status::elementary);
+    assert(negative_positive_rate_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        negative_positive_rate_result.elementary_part, x) -
+        negative_positive_rate_exponential, 100000)) == context.integer(0));
+    exact_expr symbolic_rate_e_over_x = context.exponential(a * x) / x;
+    risch_result symbolic_rate_e_over_x_result = context.integrate_elementary(
+        symbolic_rate_e_over_x, x);
+    assert(symbolic_rate_e_over_x_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_rate_e_over_x_result.remainder == symbolic_rate_e_over_x);
+    assert(symbolic_rate_e_over_x_result.conditions.size() == 1);
+    assert(symbolic_rate_e_over_x_result.conditions[0] == a);
+    exact_expr positive_rate_e_over_x = positive_rate_exponential / x;
+    risch_result positive_rate_e_over_x_result = context.integrate_elementary(
+        positive_rate_e_over_x, x);
+    assert(positive_rate_e_over_x_result.status ==
+        risch_status::proven_nonelementary);
+    assert(positive_rate_e_over_x_result.remainder == positive_rate_e_over_x);
+    assert(positive_rate_e_over_x_result.conditions.empty());
+    exact_expr negative_positive_rate_e_over_x =
+        negative_positive_rate_exponential / x;
+    risch_result negative_positive_rate_e_over_x_result =
+        context.integrate_elementary(negative_positive_rate_e_over_x, x);
+    assert(negative_positive_rate_e_over_x_result.status ==
+        risch_status::proven_nonelementary);
+    assert(negative_positive_rate_e_over_x_result.conditions.empty());
+    exact_expr merged_symbolic_rate_poles =
+        context.exponential(a * x) / x +
+        context.exponential(a * x) / (x + context.integer(1));
+    risch_result merged_symbolic_rate_poles_result =
+        context.integrate_elementary(merged_symbolic_rate_poles, x);
+    assert(merged_symbolic_rate_poles_result.status ==
+        risch_status::proven_nonelementary);
+    assert(context.simplify(merged_symbolic_rate_poles_result.remainder -
+        merged_symbolic_rate_poles) == context.integer(0));
+    assert(merged_symbolic_rate_poles_result.conditions.size() == 1);
+    assert(merged_symbolic_rate_poles_result.conditions[0] == a);
     exact_expr symbolic_rate_rational_primitive = context.exponential(a * x + b) /
         (x + context.integer(1));
     exact_expr symbolic_rate_rational_integrand = context.differentiate(
