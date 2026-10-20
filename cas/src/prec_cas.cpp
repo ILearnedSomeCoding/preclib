@@ -11180,7 +11180,7 @@ static exact_expr integration_symbolic_quadratic_primitive(
     integration_expr_poly numerator, denominator;
     if(!integration_parse_expr_rational(context, expression, variable,
             numerator, denominator, degree_budget) || denominator.size() != 3 ||
-       numerator.size() > 2)
+       numerator.size() > degree_budget + 1)
         return exact_expr();
     for(const exact_expr &coefficient : numerator)
         if(!integration_exact_expression_tree(coefficient) ||
@@ -11196,9 +11196,29 @@ static exact_expr integration_symbolic_quadratic_primitive(
         context.integer(4) * a * c - b * b);
     if(integration_expr_zero(context, a)) return exact_expr();
 
-    exact_expr linear = numerator.size() > 1
-        ? numerator[1] : context.integer(0);
-    exact_expr constant = numerator[0];
+    // Divide over the symbolic constant field so improper rational functions
+    // reduce to a polynomial primitive plus a proper quadratic fraction.
+    integration_expr_poly quotient(
+        numerator.size() >= denominator.size()
+            ? numerator.size() - denominator.size() + 1 : 1,
+        context.integer(0));
+    integration_expr_poly proper = numerator;
+    integration_expr_trim(context, proper);
+    while(proper.size() >= denominator.size() &&
+          !(proper.size() == 1 && integration_expr_zero(context, proper[0]))){
+        size_t shift = proper.size() - denominator.size();
+        exact_expr factor = context.simplify(proper.back() / a);
+        quotient[shift] = context.simplify(quotient[shift] + factor);
+        for(size_t i = 0; i < denominator.size(); ++i)
+            proper[shift + i] = context.simplify(proper[shift + i] -
+                factor * denominator[i]);
+        integration_expr_trim(context, proper);
+    }
+
+    exact_expr linear = proper.size() > 1
+        ? proper[1] : context.integer(0);
+    exact_expr constant = proper.empty()
+        ? context.integer(0) : proper[0];
     exact_expr logarithm_coefficient = context.simplify(linear /
         (context.integer(2) * a));
     exact_expr atan_coefficient = context.simplify(constant -
@@ -11209,6 +11229,12 @@ static exact_expr integration_symbolic_quadratic_primitive(
                                                        variable);
     exact_expr primitive = logarithm_coefficient *
         context.natural_logarithm(context.absolute_value(quadratic));
+    for(size_t i = 0; i < quotient.size(); ++i){
+        if(integration_expr_zero(context, quotient[i])) continue;
+        primitive = primitive + quotient[i] * context.power(variable,
+            context.integer((int64_t)(i + 1))) /
+            context.integer((int64_t)(i + 1));
+    }
     if(needs_atan){
         exact_expr shifted = context.integer(2) * a * variable + b;
         if(repeated_quadratic){
@@ -11243,10 +11269,11 @@ static exact_expr integration_symbolic_quadratic_primitive(
     if(q_derivative.empty()) q_derivative.push_back(context.integer(0));
     q_derivative[0] = context.simplify(q_derivative[0] + atan_coefficient);
     integration_expr_trim(context, q_derivative);
-    integration_expr_trim(context, numerator);
-    if(q_derivative.size() != numerator.size()) return exact_expr();
-    for(size_t i = 0; i < numerator.size(); ++i)
-        if(!integration_expr_zero(context, q_derivative[i] - numerator[i]))
+    integration_expr_trim(context, proper);
+    if(q_derivative.size() != proper.size()) return exact_expr();
+    for(size_t i = 0; i < proper.size(); ++i)
+        if(!integration_formal_constant_zero(context,
+                q_derivative[i] - proper[i], variable, degree_budget))
             return exact_expr();
 
     auto add_nonzero_condition = [&](const exact_expr &value){

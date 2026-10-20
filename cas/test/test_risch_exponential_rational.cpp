@@ -270,6 +270,14 @@ int main(){
     assert(std::find(general_quadratic_rational.conditions.begin(),
         general_quadratic_rational.conditions.end(), general_discriminant) !=
         general_quadratic_rational.conditions.end());
+    risch_result improper_quadratic_rational = context.integrate_elementary(
+        (context.power(x, context.integer(3)) + context.integer(1)) /
+            general_quadratic_denominator, x);
+    assert(improper_quadratic_rational.status == risch_status::elementary);
+    assert(improper_quadratic_rational.remainder == context.integer(0));
+    assert(std::find(improper_quadratic_rational.conditions.begin(),
+        improper_quadratic_rational.conditions.end(), a) !=
+        improper_quadratic_rational.conditions.end());
     exact_expr repeated_quadratic_denominator = a * context.power(x +
         context.integer(1), context.integer(2));
     risch_result repeated_quadratic_reciprocal = context.integrate_elementary(

@@ -1341,6 +1341,20 @@ int main(){
         context.power(x + context.integer(1), context.integer(80));
     risch_options extended_risch_budget;
     extended_risch_budget.maximum_degree = 96;
+    exact_expr eightieth_degree_squarefree_denominator =
+        context.power(x, context.integer(80)) + context.integer(1);
+    exact_expr eightieth_degree_squarefree_integrand =
+        context.integer(1) / eightieth_degree_squarefree_denominator;
+    risch_result eightieth_degree_squarefree_integral =
+        context.integrate_elementary(eightieth_degree_squarefree_integrand,
+            x, extended_risch_budget);
+    assert(eightieth_degree_squarefree_integral.status ==
+           risch_status::elementary);
+    assert(eightieth_degree_squarefree_integral.elementary_part.operation() ==
+           exact_opcode::log_root_sum);
+    assert(context.differentiate(
+        eightieth_degree_squarefree_integral.elementary_part, x) ==
+        eightieth_degree_squarefree_integrand);
     risch_result eightieth_order_integral = context.integrate_elementary(
         eightieth_order_pole, x, extended_risch_budget);
     assert(eightieth_order_integral.status == risch_status::elementary);
