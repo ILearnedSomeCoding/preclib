@@ -16140,6 +16140,212 @@ risch_result exact_context::integrate_elementary_impl(
                 }
             }
 
+            // The same local test works over an exact symbolic constant field
+            // in the numerator for repeated x factors, or for a denominator
+            // that is exactly one rational linear factor raised to a power.
+            integration_expr_poly symbolic_numerator, symbolic_denominator;
+            if(integration_parse_expr_rational(*this, cofactor, variable,
+                    symbolic_numerator, symbolic_denominator, degree_budget) &&
+               symbolic_denominator.size() > 2 &&
+               symbolic_denominator.size() <= degree_budget + 1 &&
+               symbolic_numerator.size() <= degree_budget + 1){
+                bool rational_denominator = true;
+                for(const exact_expr &coefficient : symbolic_denominator)
+                    if(!coefficient.is_value() ||
+                       coefficient.value().is_approximate())
+                        rational_denominator = false;
+                for(const exact_expr &coefficient : symbolic_numerator)
+                    if(!integration_exact_expression_tree(coefficient) ||
+                       integration_depends_on(coefficient, variable))
+                        rational_denominator = false;
+
+                size_t zero_center_order = 0;
+                while(zero_center_order < symbolic_denominator.size() &&
+                      integration_expr_zero(*this,
+                          symbolic_denominator[zero_center_order]))
+                    ++zero_center_order;
+                bool recognized_symbolic_pole = zero_center_order >= 2 &&
+                    zero_center_order < symbolic_denominator.size();
+                numeric_value symbolic_pole_center(0);
+                if(rational_denominator && !recognized_symbolic_pole){
+                    size_t degree = symbolic_denominator.size() - 1;
+                    symbolic_pole_center =
+                        -symbolic_denominator[degree - 1].value() /
+                        (symbolic_denominator[degree].value() *
+                         numeric_value((uint64_t)degree));
+                    std::vector<numeric_value> expected(degree + 1,
+                                                        numeric_value(0));
+                    expected[degree] =
+                        symbolic_denominator[degree].value();
+                    for(size_t index = degree; index > 0; --index)
+                        expected[index - 1] = expected[index] *
+                            (-symbolic_pole_center) *
+                            numeric_value((uint64_t)index) /
+                            numeric_value((uint64_t)(degree - index + 1));
+                    recognized_symbolic_pole = true;
+                    for(size_t index = 0; index <= degree; ++index)
+                        if(expected[index] !=
+                           symbolic_denominator[index].value()){
+                            recognized_symbolic_pole = false;
+                            break;
+                        }
+                }
+                if(rational_denominator && recognized_symbolic_pole){
+                    std::vector<exact_expr> translated_numerator(
+                        symbolic_numerator.size(), integer(0));
+                    std::vector<exact_expr> translated_denominator(
+                        symbolic_denominator.size(), integer(0));
+                    std::vector<numeric_value> center_powers(
+                        std::max(symbolic_numerator.size(),
+                                 symbolic_denominator.size()),
+                        numeric_value(1));
+                    for(size_t i = 1; i < center_powers.size(); ++i)
+                        center_powers[i] = center_powers[i - 1] *
+                            symbolic_pole_center;
+                    auto translate_coefficients = [&](const auto &source,
+                            auto &translated){
+                        for(size_t degree = 0; degree < source.size(); ++degree){
+                            numeric_value choose(1);
+                            for(size_t shifted_degree = 0;
+                                shifted_degree <= degree; ++shifted_degree){
+                                translated[shifted_degree] =
+                                    translated[shifted_degree] +
+                                    source[degree] * value(choose) *
+                                    value(center_powers[degree-shifted_degree]);
+                                if(shifted_degree < degree)
+                                    choose = choose * numeric_value(
+                                        (uint64_t)(degree-shifted_degree)) /
+                                        numeric_value((uint64_t)(shifted_degree+1));
+                            }
+                        }
+                    };
+                    translate_coefficients(symbolic_numerator,
+                                            translated_numerator);
+                    translate_coefficients(symbolic_denominator,
+                                           translated_denominator);
+                    size_t symbolic_pole_order = 0;
+                    while(symbolic_pole_order < translated_denominator.size() &&
+                          integration_expr_zero(*this,
+                              translated_denominator[symbolic_pole_order]))
+                        ++symbolic_pole_order;
+                    if(symbolic_pole_order < 2 ||
+                       symbolic_pole_order >= translated_denominator.size())
+                        return false;
+                    std::vector<exact_expr> regular_series(
+                        symbolic_pole_order, integer(0));
+                    for(size_t degree = 0; degree < symbolic_pole_order;
+                        ++degree){
+                        exact_expr coefficient = degree <
+                            translated_numerator.size()
+                            ? translated_numerator[degree] : integer(0);
+                        for(size_t offset = 1; offset <= degree; ++offset){
+                            size_t denominator_index =
+                                symbolic_pole_order + offset;
+                            if(denominator_index < translated_denominator.size())
+                                coefficient = coefficient -
+                                    translated_denominator[denominator_index] *
+                                    regular_series[degree - offset];
+                        }
+                        regular_series[degree] = simplify(coefficient /
+                            translated_denominator[symbolic_pole_order]);
+                    }
+                    std::vector<exact_expr> rhs(symbolic_pole_order + 1,
+                                                integer(0));
+                    std::vector<exact_expr> principal(symbolic_pole_order + 1,
+                                                      integer(0));
+                    for(size_t order = 1; order <= symbolic_pole_order; ++order)
+                        rhs[order] = regular_series[
+                            symbolic_pole_order - order];
+                    const exact_expr &rate = symbolic_rate[0];
+                    for(size_t order = symbolic_pole_order; order > 1; --order)
+                        principal[order - 1] = simplify(
+                            (rate * principal[order] - rhs[order]) /
+                            integer((int64_t)(order - 1)));
+                    exact_expr obstruction = simplify(
+                        rate * principal[1] - rhs[1]);
+                    if(obstruction != integer(0)){
+                        result.status = risch_status::proven_nonelementary;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        bool rate_nonzero = is_provably_nonzero_constant(
+                            is_provably_nonzero_constant, rate);
+                        bool obstruction_forces_nonzero_rate =
+                            substitute(obstruction, rate, integer(0)) ==
+                            integer(0);
+                        bool obstruction_is_rate = obstruction == rate ||
+                            simplify(obstruction + rate) == integer(0);
+                        if(obstruction_is_rate){
+                            if(!rate_nonzero)
+                                result.conditions.push_back(rate);
+                        }else{
+                            if(!rate_nonzero &&
+                               !obstruction_forces_nonzero_rate)
+                                result.conditions.push_back(rate);
+                            if(!is_provably_nonzero_constant(
+                                   is_provably_nonzero_constant, obstruction))
+                                result.conditions.push_back(obstruction);
+                        }
+                        result.diagnostic =
+                            "symbolic-coefficient repeated-pole Laurent "
+                            "compatibility obstructs a rational RDE solution";
+                        exact_expr rational_candidate = integer(0);
+                        exact_expr shifted_variable = variable -
+                            value(symbolic_pole_center);
+                        for(size_t order = 1; order <= symbolic_pole_order;
+                            ++order)
+                            if(principal[order] != integer(0))
+                                rational_candidate = rational_candidate +
+                                    principal[order] / power(shifted_variable,
+                                        integer((int64_t)order));
+                        exact_expr polynomial_remainder = simplify(expand(
+                            cofactor - differentiate(rational_candidate,
+                                variable) - rate * rational_candidate +
+                            obstruction / shifted_variable, 100000));
+                        integration_expr_poly polynomial_coefficients;
+                        if(integration_parse_expr_poly(*this,
+                                polynomial_remainder, variable,
+                                polynomial_coefficients)){
+                            exact_expr polynomial_primitive = integer(0);
+                            if(polynomial_remainder != integer(0))
+                                polynomial_primitive =
+                                    integration_hyperexponential_polynomial(
+                                        *this, polynomial_remainder,
+                                        exponential_factor.operand(0), variable);
+                            if(polynomial_primitive.valid() ||
+                               polynomial_remainder == integer(0)){
+                                exact_expr partial =
+                                    rational_candidate * exponential_factor +
+                                    polynomial_primitive;
+                                exact_expr simple_pole_remainder =
+                                    -obstruction * exponential_factor /
+                                    shifted_variable;
+                                if(simplify(expand(
+                                        differentiate(partial, variable) +
+                                        simple_pole_remainder - expression,
+                                        100000)) == integer(0)){
+                                    result.elementary_part = std::move(partial);
+                                    result.remainder =
+                                        std::move(simple_pole_remainder);
+                                }
+                            }
+                        }
+                        if(result.elementary_part == integer(0)){
+                            exact_expr partial = rational_candidate *
+                                exponential_factor;
+                            exact_expr partial_remainder = expression -
+                                differentiate(partial, variable);
+                            if(simplify(expand(differentiate(partial, variable) +
+                                    partial_remainder - expression, 100000)) ==
+                               integer(0)){
+                                result.elementary_part = std::move(partial);
+                                result.remainder = std::move(partial_remainder);
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
+
             // The expression-coefficient rational RDE solver works over the
             // constant field generated by exact parameters. Restrict this
             // entry to affine exponential arguments; nonconstant symbolic

@@ -421,6 +421,19 @@ int main(){
             shifted_repeated_symbolic_rate_pole_result.elementary_part, x) +
         shifted_repeated_symbolic_rate_pole_result.remainder -
         shifted_repeated_symbolic_rate_pole, 100000)) == context.integer(0));
+    exact_expr rational_center_repeated_pole = context.exponential(a * x) /
+        context.power(context.integer(3) * x - context.integer(2),
+                      context.integer(2));
+    risch_result rational_center_repeated_pole_result =
+        context.integrate_elementary(rational_center_repeated_pole, x);
+    assert(rational_center_repeated_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(rational_center_repeated_pole_result.conditions.size() == 1);
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            rational_center_repeated_pole_result.elementary_part, x) +
+        rational_center_repeated_pole_result.remainder -
+        rational_center_repeated_pole, 100000)) == context.integer(0));
     exact_expr repeated_factor_with_other_poles = context.exponential(a * x) /
         (context.power(x, context.integer(2)) * (x + context.integer(1)));
     risch_result repeated_factor_with_other_poles_result =
@@ -433,6 +446,107 @@ int main(){
             repeated_factor_with_other_poles_result.elementary_part, x) +
         repeated_factor_with_other_poles_result.remainder -
         repeated_factor_with_other_poles, 100000)) == context.integer(0));
+    exact_expr symbolic_coefficient_pole = context.exponential(b * x) *
+        (a * x + context.integer(1)) / context.power(x, context.integer(2));
+    risch_result symbolic_coefficient_pole_result = context.integrate_elementary(
+        symbolic_coefficient_pole, x);
+    assert(symbolic_coefficient_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_coefficient_pole_result.conditions.size() == 2);
+    assert(std::find(symbolic_coefficient_pole_result.conditions.begin(),
+        symbolic_coefficient_pole_result.conditions.end(), b) !=
+        symbolic_coefficient_pole_result.conditions.end());
+    assert(std::any_of(symbolic_coefficient_pole_result.conditions.begin(),
+        symbolic_coefficient_pole_result.conditions.end(),
+        [&](const exact_expr &condition){
+            return context.simplify(condition + a + b) == context.integer(0);
+        }));
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            symbolic_coefficient_pole_result.elementary_part, x) +
+        symbolic_coefficient_pole_result.remainder -
+        symbolic_coefficient_pole, 100000)) == context.integer(0));
+    exact_expr zero_rate_symbolic_coefficient_pole = context.substitute(
+        symbolic_coefficient_pole, b, context.integer(0));
+    risch_result zero_rate_symbolic_coefficient_pole_result =
+        context.integrate_elementary(zero_rate_symbolic_coefficient_pole, x);
+    assert(zero_rate_symbolic_coefficient_pole_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        zero_rate_symbolic_coefficient_pole_result.elementary_part, x) -
+        zero_rate_symbolic_coefficient_pole, 100000)) == context.integer(0));
+    exact_expr symbolic_coefficient_other_pole =
+        context.exponential(b * x) * (a * x + context.integer(1)) /
+        (context.power(x, context.integer(2)) *
+         (x + context.integer(1)));
+    risch_result symbolic_coefficient_other_pole_result =
+        context.integrate_elementary(symbolic_coefficient_other_pole, x);
+    assert(symbolic_coefficient_other_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_coefficient_other_pole_result.conditions.size() == 2);
+    assert(std::find(symbolic_coefficient_other_pole_result.conditions.begin(),
+        symbolic_coefficient_other_pole_result.conditions.end(), b) !=
+        symbolic_coefficient_other_pole_result.conditions.end());
+    assert(std::any_of(symbolic_coefficient_other_pole_result.conditions.begin(),
+        symbolic_coefficient_other_pole_result.conditions.end(),
+        [&](const exact_expr &condition){
+            return context.simplify(condition - context.integer(1) + a + b) ==
+                   context.integer(0);
+        }));
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            symbolic_coefficient_other_pole_result.elementary_part, x) +
+        symbolic_coefficient_other_pole_result.remainder -
+        symbolic_coefficient_other_pole, 100000)) == context.integer(0));
+    exact_expr symbolic_coefficient_rational_center =
+        context.exponential(b * x) * (a * x + context.integer(1)) /
+        context.power(context.integer(3) * x - context.integer(2),
+                      context.integer(2));
+    risch_result symbolic_coefficient_rational_center_result =
+        context.integrate_elementary(symbolic_coefficient_rational_center, x);
+    assert(symbolic_coefficient_rational_center_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_coefficient_rational_center_result.conditions.size() == 2);
+    assert(std::find(
+        symbolic_coefficient_rational_center_result.conditions.begin(),
+        symbolic_coefficient_rational_center_result.conditions.end(), b) !=
+        symbolic_coefficient_rational_center_result.conditions.end());
+    assert(std::any_of(
+        symbolic_coefficient_rational_center_result.conditions.begin(),
+        symbolic_coefficient_rational_center_result.conditions.end(),
+        [&](const exact_expr &condition){
+            return context.simplify(context.integer(9) * condition +
+                b * (context.integer(1) + context.integer(2) * a /
+                     context.integer(3)) + a) == context.integer(0);
+        }));
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            symbolic_coefficient_rational_center_result.elementary_part, x) +
+        symbolic_coefficient_rational_center_result.remainder -
+        symbolic_coefficient_rational_center, 100000)) == context.integer(0));
+    exact_expr symbolic_polynomial_tail_pole = context.exponential(b * x) *
+        (a * context.power(x, context.integer(2)) + context.integer(1)) /
+        context.power(x, context.integer(2));
+    risch_result symbolic_polynomial_tail_pole_result =
+        context.integrate_elementary(symbolic_polynomial_tail_pole, x);
+    assert(symbolic_polynomial_tail_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_polynomial_tail_pole_result.conditions.size() == 1);
+    assert(symbolic_polynomial_tail_pole_result.conditions[0] == b);
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            symbolic_polynomial_tail_pole_result.elementary_part, x) +
+        symbolic_polynomial_tail_pole_result.remainder -
+        symbolic_polynomial_tail_pole, 100000)) == context.integer(0));
+    exact_expr resonant_symbolic_coefficient_pole = context.substitute(
+        symbolic_coefficient_pole, a, -b);
+    risch_result resonant_symbolic_coefficient_pole_result =
+        context.integrate_elementary(resonant_symbolic_coefficient_pole, x);
+    assert(resonant_symbolic_coefficient_pole_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        resonant_symbolic_coefficient_pole_result.elementary_part, x) -
+        resonant_symbolic_coefficient_pole, 100000)) == context.integer(0));
     exact_expr repeated_pole_resonance = context.exponential(-x) *
         (context.integer(1) / context.power(x, context.integer(2)) +
          context.integer(1) / x);
