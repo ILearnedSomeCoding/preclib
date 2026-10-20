@@ -60,6 +60,19 @@ int main(){
         100000)) == context.integer(0));
     assert(context.integrate(x_over_two_power, x).operation() !=
         exact_opcode::integral);
+    exact_expr x_over_two_to_x = x / two_to_x;
+    risch_result x_over_two_to_x_result = context.integrate_elementary(
+        x_over_two_to_x, x);
+    assert(x_over_two_to_x_result.status == risch_status::elementary);
+    assert(context.simplify(x_over_two_to_x_result.elementary_part -
+        x_over_two_power_result.elementary_part) == context.integer(0));
+    exact_expr x_over_exp = x / context.exponential(x);
+    risch_result x_over_exp_result = context.integrate_elementary(x_over_exp, x);
+    assert(x_over_exp_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        x_over_exp_result.elementary_part, x) - x_over_exp, 100000)) ==
+        context.integer(0));
+    assert(context.integrate(x_over_exp, x).operation() != exact_opcode::integral);
     exact_expr symbolic_rational_linear_denominator =
         (a * x + context.integer(1)) /
         (context.power(x, context.integer(2)) *
@@ -71,6 +84,28 @@ int main(){
         symbolic_rational_linear_denominator, x);
     assert(symbolic_rational_linear_legacy.operation() !=
         exact_opcode::integral);
+    exact_expr symbolic_rational_squarefree_denominator =
+        (a * x + context.integer(1)) /
+        (context.power(x, context.integer(2)) + context.integer(1));
+    risch_result symbolic_rational_squarefree_result =
+        context.integrate_elementary(symbolic_rational_squarefree_denominator, x);
+    assert(symbolic_rational_squarefree_result.status == risch_status::elementary);
+    assert(symbolic_rational_squarefree_result.remainder == context.integer(0));
+    exact_expr symbolic_rational_squarefree_legacy = context.integrate(
+        symbolic_rational_squarefree_denominator, x);
+    assert(symbolic_rational_squarefree_legacy.operation() !=
+        exact_opcode::integral);
+    exact_expr irreducible_quadratic =
+        context.power(x, context.integer(2)) + context.integer(1);
+    exact_expr symbolic_rational_repeated_irreducible =
+        (a * x + context.integer(1)) /
+        context.power(irreducible_quadratic, context.integer(2));
+    risch_result symbolic_rational_repeated_result = context.integrate_elementary(
+        symbolic_rational_repeated_irreducible, x);
+    assert(symbolic_rational_repeated_result.status == risch_status::elementary);
+    assert(symbolic_rational_repeated_result.remainder == context.integer(0));
+    assert(context.integrate(symbolic_rational_repeated_irreducible, x).
+        operation() != exact_opcode::integral);
     exact_expr q_to_minus_x = context.power(q, -x);
     exact_expr x_over_q_power = x * q_to_minus_x;
     risch_result x_over_q_power_result = context.integrate_elementary(

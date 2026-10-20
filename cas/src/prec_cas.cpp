@@ -9822,22 +9822,34 @@ exact_expr exact_context::log_root_sum(const exact_expr &numerator,
        storage_->node(variable.root_).op != exact_opcode::symbol)
         throw std::invalid_argument(
             "LogRootSum requires expressions and a symbol in one context");
-    integration_poly p, q;
-    if(!integration_parse_poly(numerator, variable, p,
-            maximum_degree, maximum_degree) ||
+    integration_expr_poly p;
+    integration_poly q;
+    if(!integration_parse_expr_poly(*this, numerator, variable, p) ||
        !integration_parse_poly(denominator, variable, q,
             maximum_degree, maximum_degree))
         throw std::invalid_argument(
-            "LogRootSum requires exact rational polynomial operands");
-    if(integration_zero_poly(p)) return integer(0);
-    if(!integration_normalize_rational(p, q) || q.size() < 2 ||
-       p.size() >= q.size())
+            "LogRootSum requires an exact polynomial numerator and rational denominator");
+    integration_expr_trim(*this, p);
+    for(const exact_expr &coefficient : p)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable))
+            throw std::invalid_argument(
+                "LogRootSum numerator coefficients must be exact constants");
+    if(p.size() == 1 && integration_expr_zero(*this, p[0])) return integer(0);
+    integration_trim(q);
+    if(integration_zero_poly(q) || q.size() < 2 || p.size() >= q.size())
         throw std::invalid_argument(
             "LogRootSum requires a proper rational function");
+    numeric_value leading = q.back();
+    if(leading.is_zero())
+        throw std::invalid_argument("LogRootSum denominator must be nonzero");
+    for(numeric_value &coefficient : q) coefficient = coefficient / leading;
+    for(exact_expr &coefficient : p)
+        coefficient = simplify(coefficient / value(leading));
     if(integration_gcd_poly(q, integration_derivative_poly(q)).size() != 1)
         throw std::invalid_argument(
             "LogRootSum denominator must be square-free");
-    exact_expr normalized_numerator = integration_poly_expr(*this, p, variable);
+    exact_expr normalized_numerator = integration_expr_poly_expr(*this, p, variable);
     exact_expr normalized_denominator = integration_poly_expr(*this, q, variable);
     uint32_t root = storage_->intern_compound(exact_opcode::log_root_sum,
         {normalized_numerator.root_, normalized_denominator.root_,
@@ -10684,9 +10696,144 @@ exact_expr exact_context::integrate(const exact_expr &expression,
     return simplify(antiderivative(expanded.root_));
 }
 
-static exact_expr integration_symbolic_linear_rational_primitive(
+static bool integration_expr_hermite_reduce(
+    exact_context &context, const integration_expr_poly &numerator,
+    const integration_poly &denominator, size_t maximum_matrix_entries,
+    integration_expr_poly &rational_numerator,
+    integration_poly &rational_denominator,
+    integration_expr_poly &reduced_numerator,
+    integration_poly &reduced_denominator){
+    if(denominator.size() < 2 || numerator.size() >= denominator.size())
+        return false;
+    rational_denominator = integration_gcd_poly(
+        denominator, integration_derivative_poly(denominator));
+    if(!integration_divide_poly(denominator, rational_denominator,
+                                reduced_denominator)) return false;
+    if(integration_gcd_poly(reduced_denominator,
+            integration_derivative_poly(reduced_denominator)).size() != 1)
+        return false;
+    const size_t g_degree = rational_denominator.size() - 1;
+    const size_t s_degree = reduced_denominator.size() - 1;
+    if(g_degree == 0){
+        rational_numerator = {context.integer(0)};
+        reduced_numerator = numerator;
+        return true;
+    }
+    if(g_degree > (SIZE_MAX - s_degree) / 2) return false;
+    const size_t columns = g_degree + s_degree;
+    const size_t rows = 2 * g_degree + s_degree;
+    if(columns == SIZE_MAX || rows == 0 || columns + 1 > maximum_matrix_entries ||
+       rows > maximum_matrix_entries / (columns + 1)) return false;
+
+    auto as_expr_poly = [&](const integration_poly &source){
+        integration_expr_poly result;
+        result.reserve(source.size());
+        for(const numeric_value &coefficient : source)
+            result.push_back(context.value(coefficient));
+        return result;
+    };
+    integration_poly g_derivative = integration_derivative_poly(
+        rational_denominator);
+    integration_poly g_squared = integration_mul(rational_denominator,
+                                                  rational_denominator);
+    std::vector<std::vector<numeric_value>> matrix(rows,
+        std::vector<numeric_value>(columns, numeric_value(0)));
+    std::vector<exact_expr> right(rows, context.integer(0));
+    integration_expr_poly right_poly = integration_expr_mul(
+        context, numerator, as_expr_poly(rational_denominator));
+    for(size_t row = 0; row < right_poly.size(); ++row)
+        right[row] = right_poly[row];
+
+    for(size_t column = 0; column < columns; ++column){
+        integration_poly contribution;
+        if(column < g_degree){
+            integration_poly basis(column + 1, numeric_value(0));
+            basis.back() = numeric_value(1);
+            contribution = integration_mul(reduced_denominator,
+                integration_sub(
+                    integration_mul(integration_derivative_poly(basis),
+                                    rational_denominator),
+                    integration_mul(basis, g_derivative)));
+        }else{
+            integration_poly basis(column - g_degree + 1, numeric_value(0));
+            basis.back() = numeric_value(1);
+            contribution = integration_mul(basis, g_squared);
+        }
+        for(size_t row = 0; row < contribution.size(); ++row)
+            matrix[row][column] = contribution[row];
+    }
+
+    size_t pivot_row = 0;
+    std::vector<size_t> pivot_for_column(columns, SIZE_MAX);
+    for(size_t column = 0; column < columns && pivot_row < rows; ++column){
+        size_t row = pivot_row;
+        while(row < rows && matrix[row][column].is_zero()) ++row;
+        if(row == rows) continue;
+        if(row != pivot_row){
+            std::swap(matrix[row], matrix[pivot_row]);
+            std::swap(right[row], right[pivot_row]);
+        }
+        numeric_value pivot = matrix[pivot_row][column];
+        for(size_t j = column; j < columns; ++j)
+            matrix[pivot_row][j] = matrix[pivot_row][j] / pivot;
+        right[pivot_row] = context.simplify(right[pivot_row] /
+                                             context.value(pivot));
+        for(size_t i = 0; i < rows; ++i){
+            if(i == pivot_row || matrix[i][column].is_zero()) continue;
+            numeric_value scale = matrix[i][column];
+            for(size_t j = column; j < columns; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot_row][j];
+            right[i] = context.simplify(right[i] -
+                context.value(scale) * right[pivot_row]);
+        }
+        pivot_for_column[column] = pivot_row++;
+    }
+    for(size_t row = 0; row < rows; ++row){
+        bool empty = true;
+        for(size_t column = 0; column < columns; ++column)
+            if(!matrix[row][column].is_zero()){
+                empty = false;
+                break;
+            }
+        if(empty && !integration_expr_zero(context, right[row])) return false;
+    }
+    for(size_t column = 0; column < columns; ++column)
+        if(pivot_for_column[column] == SIZE_MAX) return false;
+    std::vector<exact_expr> solution(columns, context.integer(0));
+    for(size_t column = 0; column < columns; ++column)
+        solution[column] = right[pivot_for_column[column]];
+    rational_numerator.assign(solution.begin(), solution.begin() + g_degree);
+    reduced_numerator.assign(solution.begin() + g_degree, solution.end());
+    integration_expr_trim(context, rational_numerator);
+    integration_expr_trim(context, reduced_numerator);
+
+    integration_expr_poly g_expr = as_expr_poly(rational_denominator);
+    integration_expr_poly gp_expr = as_expr_poly(g_derivative);
+    integration_expr_poly s_expr = as_expr_poly(reduced_denominator);
+    integration_expr_poly u_derivative = integration_expr_derivative(
+        context, rational_numerator);
+    integration_expr_poly first = integration_expr_mul(context, s_expr,
+        integration_expr_mul(context, u_derivative, g_expr));
+    integration_expr_poly second = integration_expr_mul(context, s_expr,
+        integration_expr_mul(context, rational_numerator, gp_expr));
+    for(exact_expr &coefficient : second)
+        coefficient = context.simplify(-coefficient);
+    integration_expr_poly lhs = integration_expr_add(context, first, second);
+    integration_expr_poly v_term = integration_expr_mul(context,
+        reduced_numerator, as_expr_poly(g_squared));
+    lhs = integration_expr_add(context, lhs, v_term);
+    integration_expr_trim(context, lhs);
+    integration_expr_trim(context, right_poly);
+    if(lhs.size() != right_poly.size()) return false;
+    for(size_t i = 0; i < lhs.size(); ++i)
+        if(!integration_expr_zero(context, lhs[i] - right_poly[i])) return false;
+    return true;
+}
+
+static exact_expr integration_symbolic_rational_primitive(
     exact_context &context, const exact_expr &expression,
-    const exact_expr &variable, size_t degree_budget, size_t node_budget){
+    const exact_expr &variable, size_t degree_budget, size_t node_budget,
+    size_t matrix_budget){
     integration_expr_poly numerator, denominator;
     if(!integration_parse_expr_rational(context, expression, variable,
             numerator, denominator, degree_budget) || denominator.empty() ||
@@ -10706,6 +10853,138 @@ static exact_expr integration_symbolic_linear_rational_primitive(
         if(!integration_exact_expression_tree(coefficient) ||
            integration_depends_on(coefficient, variable))
             return exact_expr();
+
+    if(integration_gcd_poly(numeric_denominator,
+            integration_derivative_poly(numeric_denominator)).size() == 1){
+        std::vector<exact_expr> proper = numerator;
+        auto trim_proper = [&](){
+            while(proper.size() > 1 &&
+                  integration_expr_zero(context, proper.back()))
+                proper.pop_back();
+        };
+        trim_proper();
+        std::vector<exact_expr> quotient(
+            proper.size() >= numeric_denominator.size()
+                ? proper.size() - numeric_denominator.size() + 1 : 1,
+            context.integer(0));
+        if(!(proper.size() == 1 && integration_expr_zero(context, proper[0]))){
+            while(proper.size() >= numeric_denominator.size() &&
+                  !(proper.size() == 1 &&
+                    integration_expr_zero(context, proper[0]))){
+                size_t shift = proper.size() - numeric_denominator.size();
+                exact_expr coefficient = context.simplify(proper.back() /
+                    context.value(numeric_denominator.back()));
+                quotient[shift] = coefficient;
+                for(size_t j = 0; j < numeric_denominator.size(); ++j)
+                    proper[shift + j] = context.simplify(proper[shift + j] -
+                        coefficient * context.value(numeric_denominator[j]));
+                trim_proper();
+            }
+        }
+        exact_expr candidate = context.integer(0);
+        for(size_t i = 0; i < quotient.size(); ++i)
+            if(!integration_expr_zero(context, quotient[i]))
+                candidate = candidate + quotient[i] *
+                    context.power(variable,
+                        context.integer((int64_t)(i + 1))) /
+                    context.integer((int64_t)(i + 1));
+        if(!(proper.size() == 1 && integration_expr_zero(context, proper[0]))){
+            exact_expr log_sum = context.log_root_sum(
+                integration_expr_poly_expr(context, proper, variable),
+                integration_poly_expr(context, numeric_denominator, variable),
+                variable, degree_budget);
+            candidate = candidate + log_sum;
+        }
+        candidate = context.simplify(candidate);
+        if(candidate.valid() && candidate.reachable_node_count() <= node_budget){
+            integration_expr_poly error_numerator, error_denominator;
+            if(integration_parse_expr_rational(context,
+                    context.differentiate(candidate, variable) - expression,
+                    variable, error_numerator, error_denominator, degree_budget)){
+                integration_expr_trim(context, error_numerator);
+                if(error_numerator.size() == 1 &&
+                   integration_expr_zero(context, error_numerator[0]))
+                    return candidate;
+            }
+        }
+    }
+
+    std::vector<exact_expr> hermite_proper = numerator;
+    auto trim_hermite_proper = [&](){
+        while(hermite_proper.size() > 1 &&
+              integration_expr_zero(context, hermite_proper.back()))
+            hermite_proper.pop_back();
+    };
+    trim_hermite_proper();
+    std::vector<exact_expr> hermite_quotient(
+        hermite_proper.size() >= numeric_denominator.size()
+            ? hermite_proper.size() - numeric_denominator.size() + 1 : 1,
+        context.integer(0));
+    if(!(hermite_proper.size() == 1 &&
+         integration_expr_zero(context, hermite_proper[0]))){
+        while(hermite_proper.size() >= numeric_denominator.size() &&
+              !(hermite_proper.size() == 1 &&
+                integration_expr_zero(context, hermite_proper[0]))){
+            size_t shift = hermite_proper.size() - numeric_denominator.size();
+            exact_expr coefficient = context.simplify(hermite_proper.back() /
+                context.value(numeric_denominator.back()));
+            hermite_quotient[shift] = coefficient;
+            for(size_t j = 0; j < numeric_denominator.size(); ++j)
+                hermite_proper[shift + j] = context.simplify(
+                    hermite_proper[shift + j] - coefficient *
+                    context.value(numeric_denominator[j]));
+            trim_hermite_proper();
+        }
+    }
+    exact_expr hermite_candidate = context.integer(0);
+    for(size_t i = 0; i < hermite_quotient.size(); ++i)
+        if(!integration_expr_zero(context, hermite_quotient[i]))
+            hermite_candidate = hermite_candidate + hermite_quotient[i] *
+                context.power(variable, context.integer((int64_t)(i + 1))) /
+                context.integer((int64_t)(i + 1));
+    if(!(hermite_proper.size() == 1 &&
+         integration_expr_zero(context, hermite_proper[0]))){
+        integration_expr_poly rational_part, reduced_part;
+        integration_poly rational_denominator, reduced_denominator;
+        bool hermite_ok = integration_expr_hermite_reduce(context, hermite_proper,
+                numeric_denominator, matrix_budget, rational_part,
+                rational_denominator, reduced_part, reduced_denominator);
+        if(hermite_ok){
+            auto is_zero_expr_poly = [&](const integration_expr_poly &poly){
+                return poly.empty() || (poly.size() == 1 &&
+                    integration_expr_zero(context, poly[0]));
+            };
+            if(!is_zero_expr_poly(rational_part)){
+                hermite_candidate = hermite_candidate +
+                    integration_expr_poly_expr(context, rational_part, variable) /
+                    integration_poly_expr(context, rational_denominator, variable);
+            }
+            if(!is_zero_expr_poly(reduced_part)){
+                if(reduced_denominator.size() == 1){
+                    hermite_candidate = hermite_candidate + reduced_part[0] /
+                        context.value(reduced_denominator[0]) * variable;
+                }else{
+                    hermite_candidate = hermite_candidate + context.log_root_sum(
+                        integration_expr_poly_expr(context, reduced_part, variable),
+                        integration_poly_expr(context, reduced_denominator, variable),
+                        variable, degree_budget);
+                }
+            }
+            hermite_candidate = context.simplify(hermite_candidate);
+            if(hermite_candidate.valid() &&
+               hermite_candidate.reachable_node_count() <= node_budget){
+                integration_expr_poly error_numerator, error_denominator;
+                if(integration_parse_expr_rational(context,
+                        context.differentiate(hermite_candidate, variable) - expression,
+                        variable, error_numerator, error_denominator, degree_budget)){
+                    integration_expr_trim(context, error_numerator);
+                    if(error_numerator.size() == 1 &&
+                       integration_expr_zero(context, error_numerator[0]))
+                        return hermite_candidate;
+                }
+            }
+        }
+    }
 
     exact_expr denominator_expression = integration_poly_expr(
         context, numeric_denominator, variable);
@@ -17178,9 +17457,9 @@ risch_result exact_context::integrate_elementary_impl(
         if(shape == invalid){
             if(try_verified_elementary()) return result;
             exact_expr symbolic_rational_primitive =
-                integration_symbolic_linear_rational_primitive(*this,
+                integration_symbolic_rational_primitive(*this,
                     expression, variable, degree_budget,
-                    options.maximum_nodes);
+                    options.maximum_nodes, options.maximum_matrix_entries);
             if(symbolic_rational_primitive.valid()){
                 result.status = risch_status::elementary;
                 result.elementary_part =
