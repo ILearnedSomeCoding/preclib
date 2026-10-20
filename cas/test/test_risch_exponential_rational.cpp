@@ -73,6 +73,31 @@ int main(){
         x_over_exp_result.elementary_part, x) - x_over_exp, 100000)) ==
         context.integer(0));
     assert(context.integrate(x_over_exp, x).operation() != exact_opcode::integral);
+    exact_expr polynomial_times_exp =
+        (context.power(x, context.integer(5)) +
+         context.integer(3) * context.power(x, context.integer(2)) -
+         context.integer(7)) * context.exponential(x);
+    risch_result polynomial_times_exp_result = context.integrate_elementary(
+        polynomial_times_exp, x);
+    assert(polynomial_times_exp_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        polynomial_times_exp_result.elementary_part, x) - polynomial_times_exp,
+        100000)) == context.integer(0));
+    exact_expr quadratic_exponential =
+        context.exponential(context.power(x, context.integer(2)));
+    risch_result quadratic_exponential_result = context.integrate_elementary(
+        quadratic_exponential, x);
+    assert(quadratic_exponential_result.status ==
+        risch_status::proven_nonelementary);
+    exact_expr quadratic_exponential_derivative =
+        context.integer(2) * x * quadratic_exponential;
+    risch_result quadratic_exponential_derivative_result =
+        context.integrate_elementary(quadratic_exponential_derivative, x);
+    assert(quadratic_exponential_derivative_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        quadratic_exponential_derivative_result.elementary_part, x) -
+        quadratic_exponential_derivative) == context.integer(0));
     exact_expr symbolic_rational_linear_denominator =
         (a * x + context.integer(1)) /
         (context.power(x, context.integer(2)) *
@@ -84,6 +109,8 @@ int main(){
         symbolic_rational_linear_denominator, x);
     assert(symbolic_rational_linear_legacy.operation() !=
         exact_opcode::integral);
+    exact_expr irreducible_quadratic =
+        context.power(x, context.integer(2)) + context.integer(1);
     exact_expr symbolic_rational_squarefree_denominator =
         (a * x + context.integer(1)) /
         (context.power(x, context.integer(2)) + context.integer(1));
@@ -95,8 +122,13 @@ int main(){
         symbolic_rational_squarefree_denominator, x);
     assert(symbolic_rational_squarefree_legacy.operation() !=
         exact_opcode::integral);
-    exact_expr irreducible_quadratic =
-        context.power(x, context.integer(2)) + context.integer(1);
+    exact_expr symbolic_rational_improper =
+        (a * context.power(x, context.integer(3)) + context.integer(1)) /
+        irreducible_quadratic;
+    risch_result symbolic_rational_improper_result = context.integrate_elementary(
+        symbolic_rational_improper, x);
+    assert(symbolic_rational_improper_result.status == risch_status::elementary);
+    assert(symbolic_rational_improper_result.remainder == context.integer(0));
     exact_expr symbolic_rational_repeated_irreducible =
         (a * x + context.integer(1)) /
         context.power(irreducible_quadratic, context.integer(2));
@@ -106,6 +138,24 @@ int main(){
     assert(symbolic_rational_repeated_result.remainder == context.integer(0));
     assert(context.integrate(symbolic_rational_repeated_irreducible, x).
         operation() != exact_opcode::integral);
+    exact_expr symbolic_rational_triple_irreducible =
+        (a * x + context.integer(1)) /
+        context.power(irreducible_quadratic, context.integer(3));
+    risch_result symbolic_rational_triple_result = context.integrate_elementary(
+        symbolic_rational_triple_irreducible, x);
+    assert(symbolic_rational_triple_result.status == risch_status::elementary);
+    assert(symbolic_rational_triple_result.remainder == context.integer(0));
+    risch_options hermite_budget_options;
+    hermite_budget_options.maximum_matrix_entries = 1;
+    risch_result symbolic_rational_budget_result = context.integrate_elementary(
+        symbolic_rational_triple_irreducible, x, hermite_budget_options);
+    assert(symbolic_rational_budget_result.status == risch_status::resource_limit);
+    risch_options node_budget_options;
+    node_budget_options.maximum_nodes =
+        symbolic_rational_triple_irreducible.reachable_node_count();
+    risch_result symbolic_rational_node_budget_result = context.integrate_elementary(
+        symbolic_rational_triple_irreducible, x, node_budget_options);
+    assert(symbolic_rational_node_budget_result.status == risch_status::resource_limit);
     exact_expr q_to_minus_x = context.power(q, -x);
     exact_expr x_over_q_power = x * q_to_minus_x;
     risch_result x_over_q_power_result = context.integrate_elementary(

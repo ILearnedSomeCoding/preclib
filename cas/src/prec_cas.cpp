@@ -10702,7 +10702,8 @@ static bool integration_expr_hermite_reduce(
     integration_expr_poly &rational_numerator,
     integration_poly &rational_denominator,
     integration_expr_poly &reduced_numerator,
-    integration_poly &reduced_denominator){
+    integration_poly &reduced_denominator,
+    bool *resource_limited){
     if(denominator.size() < 2 || numerator.size() >= denominator.size())
         return false;
     rational_denominator = integration_gcd_poly(
@@ -10719,11 +10720,21 @@ static bool integration_expr_hermite_reduce(
         reduced_numerator = numerator;
         return true;
     }
-    if(g_degree > (SIZE_MAX - s_degree) / 2) return false;
+    if(g_degree > (SIZE_MAX - s_degree) / 2){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
     const size_t columns = g_degree + s_degree;
     const size_t rows = 2 * g_degree + s_degree;
-    if(columns == SIZE_MAX || rows == 0 || columns + 1 > maximum_matrix_entries ||
-       rows > maximum_matrix_entries / (columns + 1)) return false;
+    if(columns == SIZE_MAX || rows == 0){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    if(columns + 1 > maximum_matrix_entries ||
+       rows > maximum_matrix_entries / (columns + 1)){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
 
     auto as_expr_poly = [&](const integration_poly &source){
         integration_expr_poly result;
@@ -10833,7 +10844,8 @@ static bool integration_expr_hermite_reduce(
 static exact_expr integration_symbolic_rational_primitive(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, size_t degree_budget, size_t node_budget,
-    size_t matrix_budget){
+    size_t matrix_budget, bool *resource_limited){
+    if(resource_limited) *resource_limited = false;
     integration_expr_poly numerator, denominator;
     if(!integration_parse_expr_rational(context, expression, variable,
             numerator, denominator, degree_budget) || denominator.empty() ||
@@ -10906,6 +10918,8 @@ static exact_expr integration_symbolic_rational_primitive(
                    integration_expr_zero(context, error_numerator[0]))
                     return candidate;
             }
+        }else if(candidate.valid() && resource_limited){
+            *resource_limited = true;
         }
     }
 
@@ -10946,9 +10960,13 @@ static exact_expr integration_symbolic_rational_primitive(
          integration_expr_zero(context, hermite_proper[0]))){
         integration_expr_poly rational_part, reduced_part;
         integration_poly rational_denominator, reduced_denominator;
+        bool hermite_resource_limited = false;
         bool hermite_ok = integration_expr_hermite_reduce(context, hermite_proper,
                 numeric_denominator, matrix_budget, rational_part,
-                rational_denominator, reduced_part, reduced_denominator);
+                rational_denominator, reduced_part, reduced_denominator,
+                &hermite_resource_limited);
+        if(hermite_resource_limited && resource_limited)
+            *resource_limited = true;
         if(hermite_ok){
             auto is_zero_expr_poly = [&](const integration_expr_poly &poly){
                 return poly.empty() || (poly.size() == 1 &&
@@ -10982,6 +11000,8 @@ static exact_expr integration_symbolic_rational_primitive(
                        integration_expr_zero(context, error_numerator[0]))
                         return hermite_candidate;
                 }
+            }else if(hermite_candidate.valid() && resource_limited){
+                *resource_limited = true;
             }
         }
     }
@@ -11135,8 +11155,12 @@ static exact_expr integration_symbolic_rational_primitive(
                 context.natural_logarithm(shifted_variable);
     }
     primitive = context.simplify(primitive);
-    if(!primitive.valid() || primitive.reachable_node_count() > node_budget)
+    if(!primitive.valid())
         return exact_expr();
+    if(primitive.reachable_node_count() > node_budget){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     integration_expr_poly error_numerator, error_denominator;
     if(!integration_parse_expr_rational(context,
             context.differentiate(primitive, variable) - expression,
@@ -17456,16 +17480,23 @@ risch_result exact_context::integrate_elementary_impl(
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
             if(try_verified_elementary()) return result;
+            bool symbolic_resource_limited = false;
             exact_expr symbolic_rational_primitive =
                 integration_symbolic_rational_primitive(*this,
                     expression, variable, degree_budget,
-                    options.maximum_nodes, options.maximum_matrix_entries);
+                    options.maximum_nodes, options.maximum_matrix_entries,
+                    &symbolic_resource_limited);
             if(symbolic_rational_primitive.valid()){
                 result.status = risch_status::elementary;
                 result.elementary_part =
                     std::move(symbolic_rational_primitive);
                 result.remainder = integer(0);
                 result.diagnostic.clear();
+                return result;
+            }
+            if(symbolic_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "symbolic rational integration resource budget exceeded";
                 return result;
             }
             result.diagnostic = "unsupported transcendental or algebraic extension";
