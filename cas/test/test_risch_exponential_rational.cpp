@@ -230,6 +230,56 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         parameter_pole_result.elementary_part, x) - parameter_pole_input,
         100000)) == context.integer(0));
+    exact_expr parameter_pole = x + a;
+    risch_result parameter_logarithm = context.integrate_elementary(
+        context.integer(1) / parameter_pole, x);
+    assert(parameter_logarithm.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        parameter_logarithm.elementary_part, x) -
+        context.integer(1) / parameter_pole) == context.integer(0));
+    exact_expr parameter_quadratic_denominator =
+        context.power(x, context.integer(2)) + a;
+    risch_result parameter_quadratic_reciprocal = context.integrate_elementary(
+        context.integer(1) / parameter_quadratic_denominator, x);
+    assert(parameter_quadratic_reciprocal.status == risch_status::elementary);
+    assert(std::any_of(parameter_quadratic_reciprocal.conditions.begin(),
+        parameter_quadratic_reciprocal.conditions.end(),
+        [&](const exact_expr &condition){
+            exact_expr ratio = context.simplify(condition / a);
+            return ratio.is_value() && !ratio.value().is_approximate() &&
+                   !ratio.value().is_zero();
+        }));
+    exact_expr expected_parameter_quadratic_primitive =
+        context.arc_tangent(x / context.square_root(a)) /
+        context.square_root(a);
+    assert(context.simplify(parameter_quadratic_reciprocal.elementary_part -
+        expected_parameter_quadratic_primitive) == context.integer(0));
+    exact_expr c_parameter = context.symbol("c_parameter");
+    exact_expr general_quadratic_denominator = a * context.power(x,
+        context.integer(2)) + b * x + c_parameter;
+    risch_result general_quadratic_rational = context.integrate_elementary(
+        (x + context.integer(1)) / general_quadratic_denominator, x);
+    assert(general_quadratic_rational.status == risch_status::elementary);
+    assert(general_quadratic_rational.remainder == context.integer(0));
+    assert(std::find(general_quadratic_rational.conditions.begin(),
+        general_quadratic_rational.conditions.end(), a) !=
+        general_quadratic_rational.conditions.end());
+    exact_expr general_discriminant = context.simplify(
+        context.integer(4) * a * c_parameter - context.power(b,
+            context.integer(2)));
+    assert(std::find(general_quadratic_rational.conditions.begin(),
+        general_quadratic_rational.conditions.end(), general_discriminant) !=
+        general_quadratic_rational.conditions.end());
+    exact_expr repeated_quadratic_denominator = a * context.power(x +
+        context.integer(1), context.integer(2));
+    risch_result repeated_quadratic_reciprocal = context.integrate_elementary(
+        context.integer(1) / repeated_quadratic_denominator, x);
+    assert(repeated_quadratic_reciprocal.status == risch_status::elementary);
+    assert(repeated_quadratic_reciprocal.conditions.size() == 1);
+    assert(repeated_quadratic_reciprocal.conditions[0] == a);
+    assert(context.simplify(repeated_quadratic_reciprocal.elementary_part -
+        context.integer(-1) / (a * (x + context.integer(1)))) ==
+        context.integer(0));
     exact_expr quadratic_reciprocal_input = x /
         context.power(context.integer(2), context.power(x, context.integer(2)));
     exact_expr normalized_quadratic_reciprocal = x * context.power(

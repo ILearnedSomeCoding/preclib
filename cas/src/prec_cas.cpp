@@ -11172,6 +11172,96 @@ static exact_expr integration_symbolic_rational_primitive(
         ? primitive : exact_expr();
 }
 
+static exact_expr integration_symbolic_quadratic_primitive(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, size_t degree_budget, size_t node_budget,
+    std::vector<exact_expr> &conditions, bool *resource_limited){
+    if(resource_limited) *resource_limited = false;
+    integration_expr_poly numerator, denominator;
+    if(!integration_parse_expr_rational(context, expression, variable,
+            numerator, denominator, degree_budget) || denominator.size() != 3 ||
+       numerator.size() > 2)
+        return exact_expr();
+    for(const exact_expr &coefficient : numerator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return exact_expr();
+    for(const exact_expr &coefficient : denominator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return exact_expr();
+
+    exact_expr c = denominator[0];
+    exact_expr b = denominator[1];
+    exact_expr a = denominator[2];
+    exact_expr discriminant = context.simplify(
+        context.integer(4) * a * c - b * b);
+    if(integration_expr_zero(context, a)) return exact_expr();
+
+    exact_expr linear = numerator.size() > 1
+        ? numerator[1] : context.integer(0);
+    exact_expr constant = numerator[0];
+    exact_expr logarithm_coefficient = context.simplify(linear /
+        (context.integer(2) * a));
+    exact_expr atan_coefficient = context.simplify(constant -
+        logarithm_coefficient * b);
+    bool needs_atan = !integration_expr_zero(context, atan_coefficient);
+    bool repeated_quadratic = integration_expr_zero(context, discriminant);
+    exact_expr quadratic = integration_expr_poly_expr(context, denominator,
+                                                       variable);
+    exact_expr primitive = logarithm_coefficient *
+        context.natural_logarithm(context.absolute_value(quadratic));
+    if(needs_atan){
+        exact_expr shifted = context.integer(2) * a * variable + b;
+        if(repeated_quadratic){
+            primitive = primitive - context.integer(2) * atan_coefficient /
+                shifted;
+        }else{
+            exact_expr root_discriminant = context.square_root(discriminant);
+            exact_expr atan_scale = context.integer(2) / root_discriminant;
+            exact_expr atan_argument = shifted / root_discriminant;
+            if(a == context.integer(1) && integration_expr_zero(context, b)){
+                root_discriminant = context.square_root(c);
+                atan_scale = context.integer(1) / root_discriminant;
+                atan_argument = variable / root_discriminant;
+            }
+            primitive = primitive + atan_coefficient * atan_scale *
+                context.arc_tangent(atan_argument);
+        }
+    }
+    primitive = context.simplify(primitive);
+    if(!primitive.valid()) return exact_expr();
+    if(primitive.reachable_node_count() > node_budget){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+    // The derivative is (alpha*Q' + beta)/Q. Check that rational identity
+    // coefficient-by-coefficient instead of asking the general simplifier to
+    // rediscover the discriminant identity hidden inside atan and sqrt.
+    integration_expr_poly q_derivative = integration_expr_derivative(
+        context, denominator);
+    for(exact_expr &coefficient : q_derivative)
+        coefficient = context.simplify(logarithm_coefficient * coefficient);
+    if(q_derivative.empty()) q_derivative.push_back(context.integer(0));
+    q_derivative[0] = context.simplify(q_derivative[0] + atan_coefficient);
+    integration_expr_trim(context, q_derivative);
+    integration_expr_trim(context, numerator);
+    if(q_derivative.size() != numerator.size()) return exact_expr();
+    for(size_t i = 0; i < numerator.size(); ++i)
+        if(!integration_expr_zero(context, q_derivative[i] - numerator[i]))
+            return exact_expr();
+
+    auto add_nonzero_condition = [&](const exact_expr &value){
+        exact_expr normalized = context.simplify(value);
+        if(normalized.is_value() && !normalized.value().is_approximate() &&
+           !normalized.value().is_zero()) return;
+        if(std::find(conditions.begin(), conditions.end(), normalized) ==
+           conditions.end()) conditions.push_back(normalized);
+    };
+    add_nonzero_condition(a);
+    if(needs_atan && !repeated_quadratic)
+        add_nonzero_condition(discriminant);
+    return primitive;
+}
+
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
@@ -17480,6 +17570,23 @@ risch_result exact_context::integrate_elementary_impl(
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
             if(try_verified_elementary()) return result;
+            bool quadratic_resource_limited = false;
+            exact_expr quadratic_primitive =
+                integration_symbolic_quadratic_primitive(*this, expression,
+                    variable, degree_budget, options.maximum_nodes,
+                    result.conditions, &quadratic_resource_limited);
+            if(quadratic_primitive.valid()){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(quadratic_primitive);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+            if(quadratic_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "symbolic quadratic integration node budget exceeded";
+                return result;
+            }
             bool symbolic_resource_limited = false;
             exact_expr symbolic_rational_primitive =
                 integration_symbolic_rational_primitive(*this,
@@ -17511,8 +17618,25 @@ risch_result exact_context::integrate_elementary_impl(
         if(!integration_parse_rational(expression, variable,
                                        numerator, denominator, degree_budget,
                                        degree_budget) ||
-           !integration_normalize_rational(numerator, denominator))
+           !integration_normalize_rational(numerator, denominator)){
+            bool quadratic_resource_limited = false;
+            exact_expr quadratic_primitive =
+                integration_symbolic_quadratic_primitive(*this, expression,
+                    variable, degree_budget, options.maximum_nodes,
+                    result.conditions, &quadratic_resource_limited);
+            if(quadratic_primitive.valid()){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(quadratic_primitive);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+            if(quadratic_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "symbolic quadratic integration node budget exceeded";
+            }
             return result;
+        }
         integration_poly polynomial_part, proper_numerator;
         if(!integration_divmod_poly(numerator, denominator,
                                     polynomial_part, proper_numerator))
