@@ -498,6 +498,34 @@ int main(){
             symbolic_coefficient_other_pole_result.elementary_part, x) +
         symbolic_coefficient_other_pole_result.remainder -
         symbolic_coefficient_other_pole, 100000)) == context.integer(0));
+    exact_expr resonant_symbolic_coefficient_other_pole = context.substitute(
+        symbolic_coefficient_other_pole, a, context.integer(1) - b);
+    risch_result resonant_symbolic_coefficient_other_pole_result =
+        context.integrate_elementary(resonant_symbolic_coefficient_other_pole,
+                                     x);
+    assert(resonant_symbolic_coefficient_other_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(resonant_symbolic_coefficient_other_pole_result.conditions.size() ==
+        1);
+    assert(resonant_symbolic_coefficient_other_pole_result.conditions[0] == b);
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            resonant_symbolic_coefficient_other_pole_result.elementary_part,
+            x) + resonant_symbolic_coefficient_other_pole_result.remainder -
+        resonant_symbolic_coefficient_other_pole, 100000)) ==
+        context.integer(0));
+    exact_expr cancelled_simple_pole = context.exponential(b * x) *
+        (x + context.integer(1)) * (a * x + context.integer(1)) /
+        (context.power(x, context.integer(2)) *
+         (x + context.integer(1)));
+    exact_expr cancelled_simple_pole_resonance = context.substitute(
+        cancelled_simple_pole, a, -b);
+    risch_result cancelled_simple_pole_result = context.integrate_elementary(
+        cancelled_simple_pole_resonance, x);
+    assert(cancelled_simple_pole_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(context.differentiate(
+        cancelled_simple_pole_result.elementary_part, x) -
+        cancelled_simple_pole_resonance, 100000)) == context.integer(0));
     exact_expr symbolic_coefficient_rational_center =
         context.exponential(b * x) * (a * x + context.integer(1)) /
         context.power(context.integer(3) * x - context.integer(2),
@@ -556,6 +584,21 @@ int main(){
     assert(context.simplify(context.differentiate(
         repeated_pole_resonance_result.elementary_part, x) -
         repeated_pole_resonance) == context.integer(0));
+    exact_expr repeated_and_simple_pole_resonance =
+        context.exponential(-x) * (context.integer(2) * x +
+            context.integer(1)) /
+        (context.power(x, context.integer(2)) *
+         (x + context.integer(1)));
+    risch_result repeated_and_simple_pole_resonance_result =
+        context.integrate_elementary(repeated_and_simple_pole_resonance, x);
+    assert(repeated_and_simple_pole_resonance_result.status ==
+        risch_status::proven_nonelementary);
+    assert(repeated_and_simple_pole_resonance_result.conditions.empty());
+    assert(repeated_and_simple_pole_resonance_result.elementary_part ==
+        context.integer(0));
+    assert(repeated_and_simple_pole_resonance_result.remainder.valid());
+    assert(repeated_and_simple_pole_resonance_result.remainder !=
+        context.integer(0));
     exact_expr zero_rate_e_over_x = context.substitute(
         symbolic_rate_e_over_x, a, context.integer(0));
     risch_result zero_rate_e_over_x_result = context.integrate_elementary(

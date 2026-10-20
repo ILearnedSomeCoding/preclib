@@ -16137,6 +16137,52 @@ risch_result exact_context::integrate_elementary_impl(
                         }
                         return true;
                     }
+                    exact_expr denominator_expression = integration_poly_expr(
+                        *this, pole_denominator, variable);
+                    exact_expr factored_denominator = factor(
+                        denominator_expression);
+                    std::vector<exact_expr> denominator_factors;
+                    auto collect_factors = [&](auto &&self,
+                            const exact_expr &part) -> void{
+                        if(part.operation() == exact_opcode::multiply){
+                            for(size_t i = 0; i < part.operand_count(); ++i)
+                                self(self, part.operand(i));
+                        }else denominator_factors.push_back(part);
+                    };
+                    collect_factors(collect_factors, factored_denominator);
+                    for(const exact_expr &factor_term : denominator_factors){
+                        exact_expr linear_factor = factor_term;
+                        int64_t multiplicity = 1;
+                        if(factor_term.operation() == exact_opcode::power &&
+                           integration_signed_exponent(factor_term.operand(1),
+                               multiplicity))
+                            linear_factor = factor_term.operand(0);
+                        if(multiplicity != 1) continue;
+                        integration_expr_poly factor_numerator,
+                                               factor_denominator;
+                        if(!integration_parse_expr_rational(*this,
+                                linear_factor, variable, factor_numerator,
+                                factor_denominator, 2) ||
+                           factor_numerator.size() != 2 ||
+                           factor_denominator.size() != 1 ||
+                           !factor_numerator[0].is_value() ||
+                           !factor_numerator[1].is_value() ||
+                           !factor_denominator[0].is_value() ||
+                           factor_numerator[0].value().is_approximate() ||
+                           factor_numerator[1].value().is_approximate() ||
+                           factor_denominator[0].value().is_approximate() ||
+                           factor_numerator[1].value().is_zero())
+                            continue;
+                        bool rate_nonzero = is_provably_nonzero_constant(
+                            is_provably_nonzero_constant, rate);
+                        result.status = risch_status::proven_nonelementary;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        if(!rate_nonzero) result.conditions.push_back(rate);
+                        result.diagnostic =
+                            "a distinct simple pole obstructs the rational RDE";
+                        return true;
+                    }
                 }
             }
 
@@ -16341,6 +16387,77 @@ risch_result exact_context::integrate_elementary_impl(
                                 result.remainder = std::move(partial_remainder);
                             }
                         }
+                        return true;
+                    }
+
+                    exact_expr denominator_polynomial = integer(0);
+                    for(size_t i = symbolic_denominator.size(); i > 0; --i)
+                        denominator_polynomial = simplify(
+                            denominator_polynomial * variable +
+                            symbolic_denominator[i - 1]);
+                    exact_expr factored_denominator = factor(
+                        denominator_polynomial);
+                    std::vector<exact_expr> denominator_factors;
+                    auto collect_factors = [&](auto &&self,
+                            const exact_expr &part) -> void{
+                        if(part.operation() == exact_opcode::multiply){
+                            for(size_t i = 0; i < part.operand_count(); ++i)
+                                self(self, part.operand(i));
+                        }else denominator_factors.push_back(part);
+                    };
+                    collect_factors(collect_factors, factored_denominator);
+                    for(const exact_expr &factor_term : denominator_factors){
+                        exact_expr linear_factor = factor_term;
+                        int64_t multiplicity = 1;
+                        if(factor_term.operation() == exact_opcode::power &&
+                           integration_signed_exponent(factor_term.operand(1),
+                               multiplicity))
+                            linear_factor = factor_term.operand(0);
+                        if(multiplicity != 1) continue;
+                        integration_expr_poly factor_numerator,
+                                               factor_denominator;
+                        if(!integration_parse_expr_rational(*this,
+                                linear_factor, variable, factor_numerator,
+                                factor_denominator, 2) ||
+                           factor_numerator.size() != 2 ||
+                           factor_denominator.size() != 1 ||
+                           !factor_numerator[0].is_value() ||
+                           !factor_numerator[1].is_value() ||
+                           !factor_denominator[0].is_value() ||
+                           factor_numerator[0].value().is_approximate() ||
+                           factor_numerator[1].value().is_approximate() ||
+                           factor_denominator[0].value().is_approximate() ||
+                           factor_numerator[1].value().is_zero())
+                            continue;
+                        numeric_value root = -factor_numerator[0].value() /
+                            factor_numerator[1].value();
+                        exact_expr numerator_at_root = integer(0);
+                        for(size_t i = symbolic_numerator.size(); i > 0; --i)
+                            numerator_at_root = simplify(
+                                numerator_at_root * value(root) +
+                                symbolic_numerator[i - 1]);
+                        if(numerator_at_root == integer(0) ||
+                           !integration_exact_expression_tree(numerator_at_root) ||
+                           integration_depends_on(numerator_at_root, variable))
+                            continue;
+                        bool rate_nonzero = is_provably_nonzero_constant(
+                            is_provably_nonzero_constant, rate);
+                        bool residue_forces_nonzero_rate = substitute(
+                            numerator_at_root, rate, integer(0)) == integer(0);
+                        result.status = risch_status::proven_nonelementary;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        if(!rate_nonzero && !residue_forces_nonzero_rate)
+                            result.conditions.push_back(rate);
+                        if(!is_provably_nonzero_constant(
+                               is_provably_nonzero_constant,
+                               numerator_at_root) &&
+                           std::find(result.conditions.begin(),
+                               result.conditions.end(), numerator_at_root) ==
+                               result.conditions.end())
+                            result.conditions.push_back(numerator_at_root);
+                        result.diagnostic =
+                            "a distinct simple pole obstructs the rational RDE";
                         return true;
                     }
                 }
