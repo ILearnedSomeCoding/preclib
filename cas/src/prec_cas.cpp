@@ -10684,6 +10684,191 @@ exact_expr exact_context::integrate(const exact_expr &expression,
     return simplify(antiderivative(expanded.root_));
 }
 
+static exact_expr integration_symbolic_linear_rational_primitive(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, size_t degree_budget, size_t node_budget){
+    integration_expr_poly numerator, denominator;
+    if(!integration_parse_expr_rational(context, expression, variable,
+            numerator, denominator, degree_budget) || denominator.empty() ||
+       numerator.size() > degree_budget + 1 ||
+       denominator.size() > degree_budget + 1)
+        return exact_expr();
+    integration_poly numeric_denominator;
+    for(const exact_expr &coefficient : denominator){
+        if(!coefficient.is_value() || coefficient.value().is_approximate())
+            return exact_expr();
+        numeric_denominator.push_back(coefficient.value());
+    }
+    integration_trim(numeric_denominator);
+    if(numeric_denominator.empty() || integration_zero_poly(numeric_denominator))
+        return exact_expr();
+    for(const exact_expr &coefficient : numerator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable))
+            return exact_expr();
+
+    exact_expr denominator_expression = integration_poly_expr(
+        context, numeric_denominator, variable);
+    exact_expr factored_denominator = context.factor(denominator_expression);
+    integration_poly factored_numerator, factored_denominator_poly;
+    if(!integration_parse_rational(factored_denominator, variable,
+            factored_numerator, factored_denominator_poly, degree_budget,
+            degree_budget) ||
+       !integration_normalize_rational(factored_numerator,
+                                       factored_denominator_poly))
+        return exact_expr();
+    integration_poly original_numerator = numeric_denominator;
+    integration_poly original_denominator{numeric_value(1)};
+    if(!integration_normalize_rational(original_numerator,
+                                       original_denominator) ||
+       factored_numerator != original_numerator ||
+       factored_denominator_poly != original_denominator)
+        return exact_expr();
+
+    std::vector<exact_expr> factors;
+    auto collect_factors = [&](auto &&self, const exact_expr &part) -> void{
+        if(part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        }else factors.push_back(part);
+    };
+    collect_factors(collect_factors, factored_denominator);
+    struct linear_pole{ numeric_value root; size_t multiplicity; };
+    std::vector<linear_pole> poles;
+    for(const exact_expr &factor : factors){
+        exact_expr base = factor;
+        int64_t exponent = 1;
+        if(factor.operation() == exact_opcode::power){
+            if(!integration_signed_exponent(factor.operand(1), exponent) ||
+               exponent <= 0) return exact_expr();
+            base = factor.operand(0);
+        }
+        integration_poly base_numerator, base_denominator;
+        if(!integration_parse_rational(base, variable, base_numerator,
+                base_denominator, 2, 2) ||
+           !integration_normalize_rational(base_numerator, base_denominator))
+            return exact_expr();
+        if(base_numerator.size() == 1 && base_denominator.size() == 1)
+            continue;
+        if(base_denominator.size() != 1 || base_numerator.size() != 2 ||
+           base_numerator[1].is_zero())
+            return exact_expr();
+        numeric_value root = -base_numerator[0] / base_numerator[1];
+        auto existing = std::find_if(poles.begin(), poles.end(),
+            [&](const linear_pole &pole){ return pole.root == root; });
+        if(existing == poles.end())
+            poles.push_back({std::move(root), (size_t)exponent});
+        else existing->multiplicity += (size_t)exponent;
+    }
+
+    std::vector<exact_expr> proper = numerator;
+    auto trim_expr_poly = [&](std::vector<exact_expr> &poly){
+        while(poly.size() > 1 &&
+              integration_expr_zero(context, poly.back())) poly.pop_back();
+    };
+    trim_expr_poly(proper);
+    std::vector<exact_expr> quotient(
+        proper.size() >= numeric_denominator.size()
+            ? proper.size() - numeric_denominator.size() + 1 : 1,
+        context.integer(0));
+    if(!(proper.size() == 1 && integration_expr_zero(context, proper[0]))){
+        while(proper.size() >= numeric_denominator.size() &&
+              !(proper.size() == 1 &&
+                integration_expr_zero(context, proper[0]))){
+            size_t shift = proper.size() - numeric_denominator.size();
+            exact_expr coefficient = context.simplify(proper.back() /
+                context.value(numeric_denominator.back()));
+            quotient[shift] = coefficient;
+            for(size_t j = 0; j < numeric_denominator.size(); ++j)
+                proper[shift + j] = context.simplify(proper[shift + j] -
+                    coefficient * context.value(numeric_denominator[j]));
+            trim_expr_poly(proper);
+        }
+    }
+    exact_expr primitive = context.integer(0);
+    for(size_t i = 0; i < quotient.size(); ++i)
+        if(!integration_expr_zero(context, quotient[i]))
+            primitive = primitive + quotient[i] *
+                context.power(variable, context.integer((int64_t)(i + 1))) /
+                context.integer((int64_t)(i + 1));
+
+    for(const linear_pole &pole : poles){
+        size_t multiplicity = pole.multiplicity;
+        size_t source_size = std::max(proper.size(), numeric_denominator.size());
+        std::vector<numeric_value> powers(source_size, numeric_value(1));
+        for(size_t i = 1; i < powers.size(); ++i)
+            powers[i] = powers[i - 1] * pole.root;
+        std::vector<exact_expr> shifted_numerator(
+            std::max<size_t>(proper.size(), 1), context.integer(0));
+        std::vector<numeric_value> shifted_denominator(
+            numeric_denominator.size(), numeric_value(0));
+        for(size_t degree = 0; degree < proper.size(); ++degree){
+            numeric_value choose(1);
+            for(size_t j = 0; j <= degree; ++j){
+                shifted_numerator[j] = shifted_numerator[j] + proper[degree] *
+                    context.value(choose * powers[degree - j]);
+                if(j < degree)
+                    choose = choose * numeric_value((uint64_t)(degree-j)) /
+                        numeric_value((uint64_t)(j+1));
+            }
+        }
+        for(size_t degree = 0; degree < numeric_denominator.size(); ++degree){
+            numeric_value choose(1);
+            for(size_t j = 0; j <= degree; ++j){
+                shifted_denominator[j] = shifted_denominator[j] +
+                    numeric_denominator[degree] * choose *
+                    powers[degree - j];
+                if(j < degree)
+                    choose = choose * numeric_value((uint64_t)(degree-j)) /
+                        numeric_value((uint64_t)(j+1));
+            }
+        }
+        size_t actual_multiplicity = 0;
+        while(actual_multiplicity < shifted_denominator.size() &&
+              shifted_denominator[actual_multiplicity].is_zero())
+            ++actual_multiplicity;
+        if(actual_multiplicity != multiplicity ||
+           actual_multiplicity >= shifted_denominator.size())
+            return exact_expr();
+        std::vector<exact_expr> local_series(multiplicity,
+                                             context.integer(0));
+        for(size_t degree = 0; degree < multiplicity; ++degree){
+            exact_expr coefficient = degree < shifted_numerator.size()
+                ? shifted_numerator[degree] : context.integer(0);
+            for(size_t offset = 1; offset <= degree; ++offset)
+                if(multiplicity + offset < shifted_denominator.size())
+                    coefficient = coefficient -
+                        context.value(shifted_denominator[multiplicity + offset]) *
+                        local_series[degree - offset];
+            local_series[degree] = context.simplify(coefficient /
+                context.value(shifted_denominator[multiplicity]));
+        }
+        exact_expr shifted_variable = variable - context.value(pole.root);
+        for(size_t order = 2; order <= multiplicity; ++order)
+            if(!integration_expr_zero(context,
+                    local_series[multiplicity - order]))
+                primitive = primitive - local_series[multiplicity - order] /
+                    context.integer((int64_t)(order - 1)) /
+                    context.power(shifted_variable,
+                                  context.integer((int64_t)(order - 1)));
+        if(!integration_expr_zero(context, local_series[multiplicity - 1]))
+            primitive = primitive + local_series[multiplicity - 1] *
+                context.natural_logarithm(shifted_variable);
+    }
+    primitive = context.simplify(primitive);
+    if(!primitive.valid() || primitive.reachable_node_count() > node_budget)
+        return exact_expr();
+    integration_expr_poly error_numerator, error_denominator;
+    if(!integration_parse_expr_rational(context,
+            context.differentiate(primitive, variable) - expression,
+            variable, error_numerator, error_denominator, degree_budget))
+        return exact_expr();
+    integration_expr_trim(context, error_numerator);
+    return error_numerator.size() == 1 &&
+           integration_expr_zero(context, error_numerator[0])
+        ? primitive : exact_expr();
+}
+
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
@@ -16214,6 +16399,70 @@ risch_result exact_context::integrate_elementary_impl(
                     zero_center_order < symbolic_denominator.size();
                 numeric_value symbolic_pole_center(0);
                 if(rational_denominator && !recognized_symbolic_pole){
+                    exact_expr denominator_polynomial = integer(0);
+                    for(size_t i = symbolic_denominator.size(); i > 0; --i)
+                        denominator_polynomial = simplify(
+                            denominator_polynomial * variable +
+                            symbolic_denominator[i - 1]);
+                    exact_expr factored_denominator = factor(
+                        denominator_polynomial);
+                    std::vector<exact_expr> denominator_factors;
+                    auto collect_factors = [&](auto &&self,
+                            const exact_expr &part) -> void{
+                        if(part.operation() == exact_opcode::multiply){
+                            for(size_t i = 0; i < part.operand_count(); ++i)
+                                self(self, part.operand(i));
+                        }else denominator_factors.push_back(part);
+                    };
+                    collect_factors(collect_factors, factored_denominator);
+                    for(const exact_expr &factor_term : denominator_factors){
+                        exact_expr linear_factor = factor_term;
+                        if(factor_term.operation() == exact_opcode::power)
+                            linear_factor = factor_term.operand(0);
+                        integration_expr_poly linear_numerator,
+                                               linear_denominator;
+                        if(!integration_parse_expr_rational(*this,
+                                linear_factor, variable, linear_numerator,
+                                linear_denominator, 2) ||
+                           linear_numerator.size() != 2 ||
+                           linear_denominator.size() != 1 ||
+                           !linear_numerator[0].is_value() ||
+                           !linear_numerator[1].is_value() ||
+                           !linear_denominator[0].is_value() ||
+                           linear_numerator[0].value().is_approximate() ||
+                           linear_numerator[1].value().is_approximate() ||
+                           linear_denominator[0].value().is_approximate() ||
+                           linear_numerator[1].value().is_zero())
+                            continue;
+                        numeric_value root = -linear_numerator[0].value() /
+                            linear_numerator[1].value();
+                        integration_poly quotient;
+                        quotient.reserve(symbolic_denominator.size());
+                        for(const exact_expr &coefficient : symbolic_denominator)
+                            quotient.push_back(coefficient.value());
+                        size_t root_multiplicity = 0;
+                        while(quotient.size() > 1){
+                            integration_poly divided(quotient.size() - 1,
+                                                     numeric_value(0));
+                            divided.back() = quotient.back();
+                            for(size_t i = quotient.size() - 1; i > 1; --i)
+                                divided[i - 2] = quotient[i - 1] +
+                                    root * divided[i - 1];
+                            numeric_value remainder = quotient[0] +
+                                root * divided[0];
+                            if(!remainder.is_zero()) break;
+                            ++root_multiplicity;
+                            quotient = std::move(divided);
+                            integration_trim(quotient);
+                        }
+                        if(root_multiplicity >= 2){
+                            symbolic_pole_center = std::move(root);
+                            recognized_symbolic_pole = true;
+                            break;
+                        }
+                    }
+                }
+                if(rational_denominator && !recognized_symbolic_pole){
                     size_t degree = symbolic_denominator.size() - 1;
                     symbolic_pole_center =
                         -symbolic_denominator[degree - 1].value() /
@@ -16928,6 +17177,18 @@ risch_result exact_context::integrate_elementary_impl(
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
             if(try_verified_elementary()) return result;
+            exact_expr symbolic_rational_primitive =
+                integration_symbolic_linear_rational_primitive(*this,
+                    expression, variable, degree_budget,
+                    options.maximum_nodes);
+            if(symbolic_rational_primitive.valid()){
+                result.status = risch_status::elementary;
+                result.elementary_part =
+                    std::move(symbolic_rational_primitive);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
             result.diagnostic = "unsupported transcendental or algebraic extension";
             return result;
         }

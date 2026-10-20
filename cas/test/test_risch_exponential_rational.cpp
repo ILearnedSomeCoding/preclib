@@ -60,6 +60,17 @@ int main(){
         100000)) == context.integer(0));
     assert(context.integrate(x_over_two_power, x).operation() !=
         exact_opcode::integral);
+    exact_expr symbolic_rational_linear_denominator =
+        (a * x + context.integer(1)) /
+        (context.power(x, context.integer(2)) *
+         (x + context.integer(1)));
+    risch_result symbolic_rational_linear_result =
+        context.integrate_elementary(symbolic_rational_linear_denominator, x);
+    assert(symbolic_rational_linear_result.status == risch_status::elementary);
+    exact_expr symbolic_rational_linear_legacy = context.integrate(
+        symbolic_rational_linear_denominator, x);
+    assert(symbolic_rational_linear_legacy.operation() !=
+        exact_opcode::integral);
     exact_expr q_to_minus_x = context.power(q, -x);
     exact_expr x_over_q_power = x * q_to_minus_x;
     risch_result x_over_q_power_result = context.integrate_elementary(
@@ -552,6 +563,21 @@ int main(){
             symbolic_coefficient_rational_center_result.elementary_part, x) +
         symbolic_coefficient_rational_center_result.remainder -
         symbolic_coefficient_rational_center, 100000)) == context.integer(0));
+    exact_expr symbolic_composite_nonzero_center =
+        context.exponential(b * x) * (a * x + context.integer(1)) /
+        (context.power(context.integer(3) * x - context.integer(2),
+                       context.integer(2)) *
+         (x + context.integer(1)));
+    risch_result symbolic_composite_nonzero_center_result =
+        context.integrate_elementary(symbolic_composite_nonzero_center, x);
+    assert(symbolic_composite_nonzero_center_result.status ==
+        risch_status::proven_nonelementary);
+    assert(symbolic_composite_nonzero_center_result.conditions.size() == 2);
+    assert(context.simplify(context.expand(
+        context.differentiate(
+            symbolic_composite_nonzero_center_result.elementary_part, x) +
+        symbolic_composite_nonzero_center_result.remainder -
+        symbolic_composite_nonzero_center, 100000)) == context.integer(0));
     exact_expr symbolic_polynomial_tail_pole = context.exponential(b * x) *
         (a * context.power(x, context.integer(2)) + context.integer(1)) /
         context.power(x, context.integer(2));
