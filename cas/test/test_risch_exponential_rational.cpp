@@ -73,6 +73,21 @@ int main(){
         x_over_exp_result.elementary_part, x) - x_over_exp, 100000)) ==
         context.integer(0));
     assert(context.integrate(x_over_exp, x).operation() != exact_opcode::integral);
+    for(int degree : {2, 3, 4, 5, 6, 12}){
+        exact_expr binomial_denominator = context.power(x,
+            context.integer(degree)) + context.integer(1);
+        exact_expr binomial_input = context.integer(1) / binomial_denominator;
+        if(degree >= 5){
+            risch_result binomial_integral = context.integrate_elementary(
+                binomial_input, x);
+            assert(binomial_integral.status == risch_status::elementary);
+            assert(binomial_integral.remainder == context.integer(0));
+            assert(binomial_integral.elementary_part.operation() ==
+                exact_opcode::log_root_sum);
+        }
+        assert(context.integrate(binomial_input, x).operation() !=
+            exact_opcode::integral);
+    }
     exact_expr polynomial_times_exp =
         (context.power(x, context.integer(5)) +
          context.integer(3) * context.power(x, context.integer(2)) -
@@ -237,6 +252,32 @@ int main(){
     assert(context.simplify(context.differentiate(
         parameter_logarithm.elementary_part, x) -
         context.integer(1) / parameter_pole) == context.integer(0));
+    exact_expr parameter_linear_denominator = a * x + b;
+    risch_result parameter_linear_reciprocal = context.integrate_elementary(
+        context.integer(1) / parameter_linear_denominator, x);
+    assert(parameter_linear_reciprocal.status == risch_status::elementary);
+    assert(parameter_linear_reciprocal.conditions.size() == 1);
+    assert(parameter_linear_reciprocal.conditions[0] == a);
+    exact_expr expected_parameter_linear_primitive =
+        context.natural_logarithm(parameter_linear_denominator) / a;
+    assert(context.simplify(parameter_linear_reciprocal.elementary_part -
+        expected_parameter_linear_primitive) == context.integer(0));
+    risch_result improper_parameter_linear = context.integrate_elementary(
+        context.power(x, context.integer(3)) / parameter_linear_denominator,
+        x);
+    assert(improper_parameter_linear.status == risch_status::elementary);
+    assert(improper_parameter_linear.conditions.size() == 1);
+    assert(improper_parameter_linear.conditions[0] == a);
+    exact_expr positive_linear_slope = context.symbol("positive_linear_slope");
+    context.assume(positive_linear_slope, "positive");
+    exact_expr assumed_linear_input = context.integer(1) /
+        (positive_linear_slope * x + b);
+    risch_result assumed_linear_result = context.integrate_elementary(
+        assumed_linear_input, x);
+    assert(assumed_linear_result.status == risch_status::elementary);
+    assert(assumed_linear_result.conditions.empty());
+    exact_expr assumed_linear_legacy = context.integrate(assumed_linear_input, x);
+    assert(assumed_linear_legacy.operation() != exact_opcode::integral);
     exact_expr parameter_quadratic_denominator =
         context.power(x, context.integer(2)) + a;
     risch_result parameter_quadratic_reciprocal = context.integrate_elementary(
@@ -257,8 +298,10 @@ int main(){
     exact_expr c_parameter = context.symbol("c_parameter");
     exact_expr general_quadratic_denominator = a * context.power(x,
         context.integer(2)) + b * x + c_parameter;
+    exact_expr general_quadratic_input = (x + context.integer(1)) /
+        general_quadratic_denominator;
     risch_result general_quadratic_rational = context.integrate_elementary(
-        (x + context.integer(1)) / general_quadratic_denominator, x);
+        general_quadratic_input, x);
     assert(general_quadratic_rational.status == risch_status::elementary);
     assert(general_quadratic_rational.remainder == context.integer(0));
     assert(std::find(general_quadratic_rational.conditions.begin(),
@@ -278,6 +321,21 @@ int main(){
     assert(std::find(improper_quadratic_rational.conditions.begin(),
         improper_quadratic_rational.conditions.end(), a) !=
         improper_quadratic_rational.conditions.end());
+    exact_expr linearized_quadratic_input = context.substitute(
+        general_quadratic_input, a, context.integer(0));
+    risch_result linearized_quadratic = context.integrate_elementary(
+        linearized_quadratic_input, x);
+    assert(linearized_quadratic.status == risch_status::elementary);
+    assert(std::find(linearized_quadratic.conditions.begin(),
+        linearized_quadratic.conditions.end(), b) !=
+        linearized_quadratic.conditions.end());
+    exact_expr constant_denominator_input = context.substitute(
+        linearized_quadratic_input, b, context.integer(0));
+    risch_result constant_denominator_result = context.integrate_elementary(
+        constant_denominator_input, x);
+    assert(constant_denominator_result.status == risch_status::elementary);
+    assert(constant_denominator_result.conditions.size() == 1);
+    assert(constant_denominator_result.conditions[0] == c_parameter);
     exact_expr repeated_quadratic_denominator = a * context.power(x +
         context.integer(1), context.integer(2));
     risch_result repeated_quadratic_reciprocal = context.integrate_elementary(

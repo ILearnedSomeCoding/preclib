@@ -11289,6 +11289,83 @@ static exact_expr integration_symbolic_quadratic_primitive(
     return primitive;
 }
 
+static exact_expr integration_symbolic_linear_primitive(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, size_t degree_budget, size_t node_budget,
+    std::vector<exact_expr> &conditions, bool *resource_limited){
+    if(resource_limited) *resource_limited = false;
+    integration_expr_poly numerator, denominator;
+    if(!integration_parse_expr_rational(context, expression, variable,
+            numerator, denominator, degree_budget) || denominator.empty() ||
+       denominator.size() > 2 ||
+       numerator.size() > degree_budget + 1)
+        return exact_expr();
+    for(const exact_expr &coefficient : numerator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return exact_expr();
+    for(const exact_expr &coefficient : denominator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return exact_expr();
+
+    exact_expr slope = denominator.back();
+    if(integration_expr_zero(context, slope)) return exact_expr();
+    integration_expr_poly quotient(
+        numerator.size() >= denominator.size()
+            ? numerator.size() - denominator.size() + 1 : 1,
+        context.integer(0));
+    integration_expr_poly remainder = numerator;
+    integration_expr_trim(context, remainder);
+    while(remainder.size() >= denominator.size() &&
+          !(remainder.size() == 1 &&
+            integration_expr_zero(context, remainder[0]))){
+        size_t shift = remainder.size() - denominator.size();
+        exact_expr factor = context.simplify(remainder.back() / slope);
+        quotient[shift] = context.simplify(quotient[shift] + factor);
+        for(size_t i = 0; i < denominator.size(); ++i)
+            remainder[shift + i] = context.simplify(remainder[shift + i] -
+                factor * denominator[i]);
+        integration_expr_trim(context, remainder);
+    }
+    if(remainder.size() > 1) return exact_expr();
+
+    exact_expr candidate = context.integer(0);
+    for(size_t i = 0; i < quotient.size(); ++i){
+        if(integration_expr_zero(context, quotient[i])) continue;
+        candidate = candidate + quotient[i] * context.power(variable,
+            context.integer((int64_t)(i + 1))) /
+            context.integer((int64_t)(i + 1));
+    }
+    if(denominator.size() == 2 &&
+       !integration_expr_zero(context, remainder[0]))
+        candidate = candidate + remainder[0] / slope *
+            context.natural_logarithm(context.absolute_value(
+                integration_expr_poly_expr(context, denominator, variable)));
+    candidate = context.simplify(candidate);
+    if(!candidate.valid()) return exact_expr();
+    if(candidate.reachable_node_count() > node_budget){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+
+    integration_expr_poly reconstruction = integration_expr_add(context,
+        integration_expr_mul(context, quotient, denominator), remainder);
+    integration_expr_trim(context, numerator);
+    if(reconstruction.size() != numerator.size()) return exact_expr();
+    for(size_t i = 0; i < numerator.size(); ++i)
+        if(!integration_formal_constant_zero(context,
+                reconstruction[i] - numerator[i], variable, degree_budget))
+            return exact_expr();
+
+    exact_expr normalized_slope = context.simplify(slope);
+    if(!(normalized_slope.is_value() &&
+         !normalized_slope.value().is_approximate() &&
+         !normalized_slope.value().is_zero()) &&
+       std::find(conditions.begin(), conditions.end(), normalized_slope) ==
+           conditions.end())
+        conditions.push_back(normalized_slope);
+    return candidate;
+}
+
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
@@ -11411,6 +11488,18 @@ risch_result exact_context::integrate_elementary(
             self(self, part.operand(i));
     };
     collect(collect, result.elementary_part);
+    std::vector<exact_expr> unresolved_conditions;
+    unresolved_conditions.reserve(result.conditions.size());
+    for(const exact_expr &condition : result.conditions){
+        if(known_nonzero(known_nonzero, condition)) continue;
+        if(condition.is_value() && !condition.value().is_approximate() &&
+           condition.value().is_zero()){
+            invalid = true;
+            continue;
+        }
+        unresolved_conditions.push_back(condition);
+    }
+    result.conditions = std::move(unresolved_conditions);
     if(invalid){
         result.status = risch_status::verification_failed;
         result.elementary_part = integer(0);
@@ -17597,6 +17686,23 @@ risch_result exact_context::integrate_elementary_impl(
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
             if(try_verified_elementary()) return result;
+            bool linear_resource_limited = false;
+            exact_expr linear_primitive =
+                integration_symbolic_linear_primitive(*this, expression,
+                    variable, degree_budget, options.maximum_nodes,
+                    result.conditions, &linear_resource_limited);
+            if(linear_primitive.valid()){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(linear_primitive);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+            if(linear_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "symbolic linear integration node budget exceeded";
+                return result;
+            }
             bool quadratic_resource_limited = false;
             exact_expr quadratic_primitive =
                 integration_symbolic_quadratic_primitive(*this, expression,
@@ -17646,6 +17752,23 @@ risch_result exact_context::integrate_elementary_impl(
                                        numerator, denominator, degree_budget,
                                        degree_budget) ||
            !integration_normalize_rational(numerator, denominator)){
+            bool linear_resource_limited = false;
+            exact_expr linear_primitive =
+                integration_symbolic_linear_primitive(*this, expression,
+                    variable, degree_budget, options.maximum_nodes,
+                    result.conditions, &linear_resource_limited);
+            if(linear_primitive.valid()){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(linear_primitive);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+            if(linear_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.diagnostic = "symbolic linear integration node budget exceeded";
+                return result;
+            }
             bool quadratic_resource_limited = false;
             exact_expr quadratic_primitive =
                 integration_symbolic_quadratic_primitive(*this, expression,
