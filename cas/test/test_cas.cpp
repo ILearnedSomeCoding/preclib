@@ -184,6 +184,50 @@ int main(){
            risch_status::elementary);
     assert(context.integrate_elementary(x * context.exponential(x), x).status ==
            risch_status::elementary);
+    exact_expr e_to_x = context.power(context.e(), x);
+    auto assert_public_integral = [&](const exact_expr &integrand,
+                                      const risch_result &verified){
+        exact_expr primitive = context.integrate(integrand, x);
+        assert(primitive.operation() != exact_opcode::integral);
+        assert(primitive == verified.elementary_part);
+    };
+    exact_expr logistic_exponential = context.integer(1) /
+        (context.integer(1) + e_to_x);
+    risch_result logistic_exponential_integral =
+        context.integrate_elementary(logistic_exponential, x);
+    assert(logistic_exponential_integral.status == risch_status::elementary);
+    assert(logistic_exponential_integral.remainder == context.integer(0));
+    assert(logistic_exponential_integral.conditions.empty());
+    assert_public_integral(logistic_exponential,
+                           logistic_exponential_integral);
+    exact_expr inverse_e_power_integrand = x / e_to_x;
+    risch_result inverse_e_power_integral =
+        context.integrate_elementary(inverse_e_power_integrand, x);
+    assert(inverse_e_power_integral.status == risch_status::elementary);
+    assert(inverse_e_power_integral.remainder == context.integer(0));
+    assert(inverse_e_power_integral.conditions.empty());
+    assert_public_integral(inverse_e_power_integrand,
+                           inverse_e_power_integral);
+    exact_expr two_to_x = context.power(context.integer(2), x);
+    exact_expr inverse_two_power_integrand = x / two_to_x;
+    risch_result inverse_two_power_integral =
+        context.integrate_elementary(inverse_two_power_integrand, x);
+    assert(inverse_two_power_integral.status == risch_status::elementary);
+    assert(inverse_two_power_integral.remainder == context.integer(0));
+    assert(inverse_two_power_integral.conditions.empty());
+    exact_expr public_inverse_two_power =
+        context.integrate(inverse_two_power_integrand, x);
+    exact_expr log_two = context.natural_logarithm(context.integer(2));
+    exact_expr inverse_two_power_expected =
+        (context.integer(-1) / context.power(log_two, context.integer(2)) -
+         x / log_two) / two_to_x;
+    exact_expr strict_inverse_two_power_expected =
+        (context.integer(-1) / context.power(log_two, context.integer(2)) -
+         x / log_two) * context.power(context.integer(2), -x);
+    assert(public_inverse_two_power.operation() != exact_opcode::integral);
+    assert(public_inverse_two_power == inverse_two_power_expected);
+    assert(inverse_two_power_integral.elementary_part ==
+           strict_inverse_two_power_expected);
     assert(context.integrate_elementary(
                context.integer(2) * x * context.exponential(
                    context.power(x, context.integer(2))), x).status ==
