@@ -831,9 +831,9 @@ int main(){
     risch_result nested_log_rational_result = context.integrate_elementary(
         nested_log_rational_integrand, x);
     assert(nested_log_rational_result.status == risch_status::elementary);
-    assert(nested_log_rational_result.elementary_part ==
-        context.natural_logarithm(context.integer(1) +
-                                  nested_log_generator));
+    assert(context.simplify(context.differentiate(
+               nested_log_rational_result.elementary_part, x) -
+               nested_log_rational_integrand) == context.integer(0));
     exact_expr log_x = context.natural_logarithm(x);
     exact_expr log_rational_integrand = log_x /
         context.power(log_x + context.integer(1), context.integer(2));
@@ -2130,6 +2130,21 @@ int main(){
     exact_expr rational_integrand = context.integer(1) /
         (context.integer(1) + context.power(x, context.integer(2)));
     assert(context.integrate(rational_integrand, x) == context.arc_tangent(x));
+    exact_expr equal_residue_integrand =
+        context.integer(2) / (x + context.integer(1)) +
+        context.integer(2) / (x + context.integer(2));
+    exact_expr equal_residue_primitive =
+        context.integrate(equal_residue_integrand, x);
+    std::string equal_residue_text = equal_residue_primitive.to_string();
+    size_t first_log = equal_residue_text.find("ln(");
+    assert(first_log != std::string::npos);
+    assert(equal_residue_text.find("ln(", first_log + 3) == std::string::npos);
+    exact_expr equal_residue_derivative_error = context.differentiate(
+        equal_residue_primitive, x) - equal_residue_integrand;
+    risch_result equal_residue_derivative_check = context.integrate_elementary(
+        equal_residue_derivative_error, x);
+    assert(equal_residue_derivative_check.status == risch_status::elementary);
+    assert(equal_residue_derivative_check.elementary_part == context.integer(0));
     exact_expr inverse_sqrt_positive = context.integer(1) /
         context.square_root(context.power(x, context.integer(2)) + context.integer(1));
     exact_expr inverse_sqrt_negative = context.integer(1) /
@@ -2171,6 +2186,16 @@ int main(){
     exact_expr algebraic_quartic_antiderivative =
         context.integrate(algebraic_quartic_rational, x);
     assert(algebraic_quartic_antiderivative.operation() != exact_opcode::integral);
+    for(size_t degree : {5u, 6u, 12u, 24u}){
+        exact_expr binomial_denominator = context.power(
+            x, context.integer((int64_t)degree)) + context.integer(1);
+        exact_expr binomial_integrand = context.integer(1) /
+                                        binomial_denominator;
+        exact_expr binomial_primitive = context.integrate(binomial_integrand, x);
+        assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
+        assert(context.differentiate(binomial_primitive, x) ==
+               binomial_integrand);
+    }
     exact_expr quartic_rational = context.integer(1) /
         (context.power(x, context.integer(4)) - context.integer(1));
     assert(context.integrate(quartic_rational, x).operation() !=

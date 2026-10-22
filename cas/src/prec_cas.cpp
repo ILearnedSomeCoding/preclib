@@ -2564,8 +2564,13 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
                                square_root(inner + one));
             else if(node.op == exact_opcode::inverse_hyperbolic_tangent)
                 result = di / (one - power(inner, integer(2)));
-            else if(node.op == exact_opcode::natural_logarithm)
-                result = di / inner;
+            else if(node.op == exact_opcode::natural_logarithm){
+                if(inner.operation() == exact_opcode::absolute_value){
+                    // On each real interval where g is nonzero, D ln|g| = g'/g.
+                    exact_expr real_inner = inner.operand(0);
+                    result = derivative(real_inner.id()) / real_inner;
+                }else result = di / inner;
+            }
             else if(node.op == exact_opcode::logarithm_base_2)
                 result = di / (inner * natural_logarithm(integer(2)));
             else if(node.op == exact_opcode::logarithm_base_10)
@@ -2987,6 +2992,22 @@ static exact_expr integration_squarefree_rational(
     }
 
     exact_expr result = context.integer(0);
+    struct logarithmic_group{
+        numeric_value coefficient;
+        exact_expr argument;
+    };
+    std::vector<logarithmic_group> logarithms;
+    auto add_logarithm = [&](const numeric_value &coefficient,
+                             const exact_expr &argument){
+        if(coefficient.is_zero()) return;
+        for(logarithmic_group &group : logarithms){
+            if(group.coefficient == coefficient){
+                group.argument = group.argument * argument;
+                return;
+            }
+        }
+        logarithms.push_back({coefficient, argument});
+    };
     column = 0;
     for(const integration_factor &entry : factors){
         const integration_poly &factor = entry.polynomial;
@@ -2997,9 +3018,7 @@ static exact_expr integration_squarefree_rational(
             if(degree == 1){
                 numeric_value numerator = matrix[column++][unknowns];
                 if(order == 1){
-                    result = result + context.value(numerator / factor[1]) *
-                        context.natural_logarithm(
-                            context.absolute_value(factor_expression));
+                    add_logarithm(numerator / factor[1], factor_expression);
                 }else{
                     numeric_value coefficient = numerator /
                         (factor[1] * numeric_value(1 - (int64_t)order));
@@ -3014,9 +3033,7 @@ static exact_expr integration_squarefree_rational(
             numeric_value alpha = linear / (numeric_value(2) * factor[2]);
             numeric_value residual = constant - alpha * factor[1];
             if(order == 1){
-                result = result + context.value(alpha) *
-                    context.natural_logarithm(
-                        context.absolute_value(factor_expression));
+                add_logarithm(alpha, factor_expression);
             }else{
                 result = result + context.value(
                     alpha / numeric_value(1 - (int64_t)order)) *
@@ -3050,6 +3067,10 @@ static exact_expr integration_squarefree_rational(
             result = result + context.value(residual) * j;
         }
     }
+    for(const logarithmic_group &group : logarithms)
+        result = result + context.value(group.coefficient) *
+            context.natural_logarithm(
+                context.absolute_value(group.argument));
     return result;
 }
 

@@ -337,6 +337,13 @@ class parser{
 
     exact_expr function(const std::string &name,
                         const std::vector<exact_expr> &arguments){
+        if(name == "LogRootSum"){
+            if(arguments.size() != 3)
+                throw std::runtime_error(
+                    "LogRootSum requires numerator, denominator, and variable");
+            return state_.context.log_root_sum(
+                arguments[0], arguments[1], arguments[2]);
+        }
         if(name == "partial_gamma"){
             if(arguments.size() != 2)
                 throw std::runtime_error("partial_gamma requires two arguments");
@@ -570,7 +577,7 @@ static const char *help_text(){
         "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"
         "functions: exp, expm1, ln, log, log10, log2, Si, Ci, Ei, erf,\n"
         "           partial_gamma(a, x), erf, erfi, sin, cos, tan, asin, acos, atan,\n"
-        "           sinh, cosh, tanh, asinh, acosh, atanh\n"
+        "           sinh, cosh, tanh, asinh, acosh, atanh, LogRootSum(P, W, x)\n"
         "assumptions: assume(symbol, none|real|nonnegative|positive)\n"
         "commands: !precision BITS  !nodes  !gc  !dump [LIMIT]  !info [EXPR]\n"
         "          !tree [EXPR]  !time EXPR  !progress EXPR  !full  !clear  !help  !quit\n";
