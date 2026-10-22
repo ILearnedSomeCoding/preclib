@@ -3410,6 +3410,7 @@ enum class integration_rde_status{
     solved,
     no_polynomial_solution,
     resource_limit,
+    unsupported,
     verification_failed
 };
 
@@ -8854,14 +8855,20 @@ struct integration_rational_rde_result{
 // finite pole, differentiation fixes the pole order of y to one less than the
 // pole order of p/q, so gcd(q,q') is a complete denominator bound.
 static integration_rational_rde_result integration_rde_rational(
-    integration_poly p, integration_poly q, integration_poly a){
+    integration_poly p, integration_poly q, integration_poly a,
+    size_t maximum_matrix_entries = 65536){
     if(!integration_normalize_rational(p, q))
         return {integration_rde_status::verification_failed, {}, {}};
     integration_trim(a);
     if(integration_zero_poly(a))
         return {integration_rde_status::verification_failed, {}, {}};
     std::vector<integration_parametric_rational_basis> basis;
-    auto status = integration_parametric_rde_rational(a, {{p, q}}, basis, SIZE_MAX);
+    auto status = integration_parametric_rde_rational(a, {{p, q}}, basis,
+        maximum_matrix_entries);
+    if(status == integration_parametric_rde_status::resource_limit)
+        return {integration_rde_status::resource_limit, {}, {}};
+    if(status == integration_parametric_rde_status::unsupported)
+        return {integration_rde_status::unsupported, {}, {}};
     if(status != integration_parametric_rde_status::solved)
         return {integration_rde_status::verification_failed, {}, {}};
     for(auto &entry : basis){
@@ -13790,7 +13797,8 @@ risch_result exact_context::integrate_elementary_impl(
             }
 
             integration_rational_rde_result rde = integration_rde_rational(
-                p, q, integration_poly{numeric_value(exponential_rate)});
+                p, q, integration_poly{numeric_value(exponential_rate)},
+                options.maximum_matrix_entries);
             if(rde.status == integration_rde_status::solved){
                 exact_expr rational_solution = integration_poly_expr(
                     *this, rde.numerator, parameter) /
@@ -13804,11 +13812,18 @@ risch_result exact_context::integrate_elementary_impl(
                 has_nonelementary = true;
                 remainder = simplify(remainder + original_term);
             }else{
-                result.status = risch_status::verification_failed;
+                result.status = rde.status == integration_rde_status::resource_limit
+                    ? risch_status::resource_limit
+                    : rde.status == integration_rde_status::unsupported
+                        ? risch_status::unsupported
+                        : risch_status::verification_failed;
                 result.elementary_part = std::move(elementary_part);
-                result.remainder = std::move(remainder);
-                result.diagnostic =
-                    "logarithmic hyperexponential RDE verification failed";
+                result.remainder = simplify(expression - result.elementary_part);
+                result.diagnostic = rde.status == integration_rde_status::resource_limit
+                    ? "logarithmic hyperexponential RDE matrix budget exceeded"
+                    : rde.status == integration_rde_status::unsupported
+                        ? "logarithmic hyperexponential RDE unsupported"
+                        : "logarithmic hyperexponential RDE verification failed";
                 return true;
             }
         }
@@ -17857,8 +17872,24 @@ risch_result exact_context::integrate_elementary_impl(
                     integration_poly_expr(*this, reduced_denominator, variable))
                 : integration_rational_antiderivative(*this, residual, variable,
                     degree_budget);
-            if(logarithmic.valid() &&
-               verified(partial + logarithmic, integer(0))){
+            bool logarithmic_verified = logarithmic.valid() &&
+                verified(partial + logarithmic, integer(0));
+            if(!logarithmic_verified &&
+               !integration_zero_poly(reduced_numerator) &&
+               reduced_denominator.size() > 1 &&
+               integration_gcd_poly(reduced_denominator,
+                   integration_derivative_poly(reduced_denominator)).size() == 1){
+                exact_expr root_sum = log_root_sum(
+                    integration_poly_expr(*this, reduced_numerator, variable),
+                    integration_poly_expr(*this, reduced_denominator, variable),
+                    variable, degree_budget);
+                if(root_sum.valid() &&
+                   verified(partial + root_sum, integer(0))){
+                    logarithmic = std::move(root_sum);
+                    logarithmic_verified = true;
+                }
+            }
+            if(logarithmic_verified){
                 partial = partial + logarithmic;
                 residual = integer(0);
             }

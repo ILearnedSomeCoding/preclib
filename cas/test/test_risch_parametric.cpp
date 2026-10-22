@@ -4,6 +4,17 @@
 
 int main(){
     using status = integration_parametric_rde_status;
+    using rational_status = integration_rde_status;
+    auto bounded_rational_rde = integration_rde_rational(
+        {numeric_value(0), numeric_value(1)}, {numeric_value(1)},
+        {numeric_value(1)}, 1);
+    assert(bounded_rational_rde.status == rational_status::resource_limit);
+    auto solved_rational_rde = integration_rde_rational(
+        {numeric_value(0), numeric_value(1)}, {numeric_value(1)},
+        {numeric_value(1)});
+    assert(solved_rational_rde.status == rational_status::solved);
+    assert((solved_rational_rde.numerator ==
+        integration_poly{numeric_value(-1), numeric_value(1)}));
     std::vector<std::vector<numeric_value>> matrix{
         {numeric_value(1), numeric_value(1), numeric_value(2)},
         {numeric_value(2), numeric_value(2), numeric_value(4)}};

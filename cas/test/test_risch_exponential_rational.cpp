@@ -77,16 +77,30 @@ int main(){
         exact_expr binomial_denominator = context.power(x,
             context.integer(degree)) + context.integer(1);
         exact_expr binomial_input = context.integer(1) / binomial_denominator;
-        if(degree >= 5){
-            risch_result binomial_integral = context.integrate_elementary(
-                binomial_input, x);
-            assert(binomial_integral.status == risch_status::elementary);
-            assert(binomial_integral.remainder == context.integer(0));
+        risch_result binomial_integral = context.integrate_elementary(
+            binomial_input, x);
+        assert(binomial_integral.status == risch_status::elementary);
+        assert(binomial_integral.remainder == context.integer(0));
+        if(degree >= 5)
             assert(binomial_integral.elementary_part.operation() ==
                 exact_opcode::log_root_sum);
-        }
         assert(context.integrate(binomial_input, x).operation() !=
             exact_opcode::integral);
+    }
+    for(int seed = 1; seed <= 4; ++seed){
+        exact_expr shifted = x + context.integer(seed);
+        exact_expr quadratic = context.power(x, context.integer(2)) +
+            context.integer(seed + 1);
+        exact_expr rational_primitive =
+            (context.power(x, context.integer(seed + 1)) +
+             context.integer(seed + 2) * x + context.integer(1)) /
+            (context.power(shifted, context.integer(2)) * quadratic);
+        exact_expr rational_derivative = context.differentiate(
+            rational_primitive, x);
+        risch_result reconstructed_rational = context.integrate_elementary(
+            rational_derivative, x);
+        assert(reconstructed_rational.status == risch_status::elementary);
+        assert(reconstructed_rational.remainder == context.integer(0));
     }
     exact_expr polynomial_times_exp =
         (context.power(x, context.integer(5)) +
