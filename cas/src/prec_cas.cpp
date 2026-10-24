@@ -792,6 +792,12 @@ uint32_t exact_storage::make_power(uint32_t base, uint32_t exponent){
         }
 
         exact_node base_copy = node(base);
+        if(base_copy.op == exact_opcode::square_root && integer_exponent < 0 &&
+           integer_exponent % 2 == 0){
+            uint32_t radicand = children(base_copy)[0];
+            return make_power(radicand, intern_value(numeric_value(
+                integer_exponent / 2)));
+        }
         if(base_copy.op == exact_opcode::square_root && integer_exponent > 0){
             uint32_t radicand = children(base_copy)[0];
             uint32_t half_exponent = intern_value(

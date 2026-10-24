@@ -2265,6 +2265,9 @@ int main(){
     exact_expr abs_linear = context.absolute_value(x - context.integer(1));
     assert(context.differentiate(abs_linear, x) ==
            abs_linear / (x - context.integer(1)));
+    assert(context.power(context.square_root(context.integer(3)),
+                         context.integer(-2)) ==
+           context.integer(1) / context.integer(3));
     exact_expr sixth_minus_one = context.power(x, context.integer(6)) -
                                  context.integer(1);
     exact_expr expanded_sixth_minus_one = context.expand(context.integrate(
