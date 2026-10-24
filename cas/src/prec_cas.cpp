@@ -11873,7 +11873,7 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
         };
         bool exponential_trigonometric_certificate = false;
-        auto exponential_hyperbolic_polynomial_candidate = [&]() -> exact_expr{
+        auto exponential_trig_polynomial_candidate = [&]() -> exact_expr{
             std::vector<exact_expr> factors;
             integration_factor_list(expression, factors);
             exact_expr exponential_factor;
@@ -11883,8 +11883,12 @@ risch_result exact_context::integrate_elementary_impl(
                 (size_t)std::numeric_limits<int64_t>::max()
                 ? std::numeric_limits<int64_t>::max()
                 : (int64_t)options.maximum_degree;
-            std::vector<exact_expr> angles;
-            std::vector<int64_t> sine_powers, cosine_powers;
+            struct angle_power{
+                exact_expr angle;
+                bool circular;
+                int64_t sine, cosine, hyperbolic_sine, hyperbolic_cosine;
+            };
+            std::vector<angle_power> angles;
             for(const exact_expr &factor : factors){
                 if(factor.operation() == exact_opcode::exponential &&
                    !exponential_factor.valid()){
@@ -11900,23 +11904,30 @@ risch_result exact_context::integrate_elementary_impl(
                     base = factor.operand(0);
                 }
                 exact_opcode operation = base.operation();
-                if(operation == exact_opcode::hyperbolic_sine ||
+                if(operation == exact_opcode::sine ||
+                   operation == exact_opcode::cosine ||
+                   operation == exact_opcode::hyperbolic_sine ||
                    operation == exact_opcode::hyperbolic_cosine){
                     exact_expr current_angle = base.operand(0);
                     if(exponent > power_budget - total_power)
                         return exact_expr();
-                    auto found = std::find(angles.begin(), angles.end(),
-                                           current_angle);
-                    size_t index;
-                    if(found == angles.end()){
-                        index = angles.size();
-                        angles.push_back(current_angle);
-                        sine_powers.push_back(0);
-                        cosine_powers.push_back(0);
-                    }else index = (size_t)(found - angles.begin());
-                    int64_t &count = operation == exact_opcode::hyperbolic_sine
-                        ? sine_powers[index] : cosine_powers[index];
-                    count += exponent;
+                    bool circular = operation == exact_opcode::sine ||
+                                    operation == exact_opcode::cosine;
+                    size_t index = 0;
+                    while(index < angles.size() &&
+                          (angles[index].angle != current_angle ||
+                           angles[index].circular != circular)) ++index;
+                    if(index == angles.size())
+                        angles.push_back({current_angle, circular, 0, 0, 0, 0});
+                    int64_t *count = nullptr;
+                    if(operation == exact_opcode::sine)
+                        count = &angles[index].sine;
+                    else if(operation == exact_opcode::cosine)
+                        count = &angles[index].cosine;
+                    else if(operation == exact_opcode::hyperbolic_sine)
+                        count = &angles[index].hyperbolic_sine;
+                    else count = &angles[index].hyperbolic_cosine;
+                    *count += exponent;
                     total_power += exponent;
                     continue;
                 }
@@ -11928,7 +11939,7 @@ risch_result exact_context::integrate_elementary_impl(
                 return exact_expr();
             }
             if(!exponential_factor.valid() || angles.empty() ||
-               total_power == 0)
+               total_power <= 1)
                 return exact_expr();
 
             exact_expr exponential_argument = exponential_factor.operand(0);
@@ -11937,33 +11948,51 @@ risch_result exact_context::integrate_elementary_impl(
             if(integration_depends_on(exponential_rate, variable) ||
                !integration_exact_expression_tree(exponential_rate))
                 return exact_expr();
-            std::vector<exact_expr> angle_rates;
+            std::vector<exact_expr> angle_terms, angle_rates;
             angle_rates.reserve(angles.size());
-            for(const exact_expr &angle : angles){
-                exact_expr rate = simplify(differentiate(angle, variable));
+            angle_terms.reserve(angles.size());
+            for(const angle_power &entry : angles){
+                exact_expr term = entry.circular ? i() * entry.angle : entry.angle;
+                exact_expr rate = simplify(differentiate(term, variable));
                 if(integration_depends_on(rate, variable) ||
                    !integration_exact_expression_tree(rate))
                     return exact_expr();
+                angle_terms.push_back(std::move(term));
                 angle_rates.push_back(std::move(rate));
             }
 
             using frequency_vector = std::vector<int64_t>;
-            std::map<frequency_vector, numeric_value> coefficients;
-            coefficients.emplace(frequency_vector(angles.size(), 0),
-                                 numeric_value(1));
+            std::map<frequency_vector, exact_expr> coefficients;
+            coefficients.emplace(frequency_vector(angles.size(), 0), integer(1));
             size_t term_budget = std::min<size_t>(options.maximum_nodes,
                                                   100000);
             bool expansion_within_budget = true;
-            auto multiply_hyperbolic_factor = [&](size_t index, bool is_sine){
-                std::map<frequency_vector, numeric_value> next;
+            auto multiply_trig_factor = [&](size_t index, exact_opcode operation){
+                exact_expr half = rational(precq_t(precn_t(1), precn_t(2)));
+                exact_expr positive_scale = half;
+                exact_expr negative_scale = half;
+                if(operation == exact_opcode::hyperbolic_sine){
+                    negative_scale = -half;
+                }else if(operation == exact_opcode::sine){
+                    positive_scale = -i() * half;
+                    negative_scale = i() * half;
+                }
+                std::map<frequency_vector, exact_expr> next;
+                auto add_coefficient = [&](const frequency_vector &key,
+                                           const exact_expr &term){
+                    auto found = next.find(key);
+                    if(found == next.end()) next.emplace(key, term);
+                    else found->second = simplify(found->second + term);
+                };
                 for(const auto &term : coefficients){
                     frequency_vector positive = term.first;
                     frequency_vector negative = term.first;
                     ++positive[index];
                     --negative[index];
-                    next[positive] = next[positive] + term.second;
-                    next[negative] = next[negative] +
-                        (is_sine ? -term.second : term.second);
+                    add_coefficient(positive,
+                        term.second * positive_scale);
+                    add_coefficient(negative,
+                        term.second * negative_scale);
                     if(next.size() > term_budget){
                         expansion_within_budget = false;
                         return;
@@ -11972,24 +12001,27 @@ risch_result exact_context::integrate_elementary_impl(
                 coefficients = std::move(next);
             };
             for(size_t index = 0; index < angles.size(); ++index){
-                for(int64_t i = 0; i < sine_powers[index]; ++i)
-                    multiply_hyperbolic_factor(index, true);
-                for(int64_t i = 0; i < cosine_powers[index]; ++i)
-                    multiply_hyperbolic_factor(index, false);
+                const angle_power &entry = angles[index];
+                for(int64_t i = 0; i < entry.sine; ++i)
+                    multiply_trig_factor(index, exact_opcode::sine);
+                for(int64_t i = 0; i < entry.cosine; ++i)
+                    multiply_trig_factor(index, exact_opcode::cosine);
+                for(int64_t i = 0; i < entry.hyperbolic_sine; ++i)
+                    multiply_trig_factor(index, exact_opcode::hyperbolic_sine);
+                for(int64_t i = 0; i < entry.hyperbolic_cosine; ++i)
+                    multiply_trig_factor(index, exact_opcode::hyperbolic_cosine);
                 if(!expansion_within_budget) return exact_expr();
             }
 
-            exact_expr scale = power(integer(2),
-                integer(total_power));
             exact_expr candidate = integer(0);
             for(const auto &term : coefficients){
-                if(term.second.is_zero()) continue;
+                if(simplify(term.second) == integer(0)) continue;
                 exact_expr exponent = exponential_argument;
                 exact_expr rate = exponential_rate;
                 for(size_t i = 0; i < term.first.size(); ++i){
                     if(term.first[i] == 0) continue;
                     exact_expr multiple = integer(term.first[i]);
-                    exponent = exponent + multiple * angles[i];
+                    exponent = exponent + multiple * angle_terms[i];
                     rate = rate + multiple * angle_rates[i];
                 }
                 rate = simplify(rate);
@@ -11998,21 +12030,21 @@ risch_result exact_context::integrate_elementary_impl(
                     ? variable * exponential_term
                     : exponential_term / rate;
                 candidate = candidate + coefficient *
-                    value(term.second) * primitive / scale;
+                    term.second * primitive;
                 if(candidate.reachable_node_count() > options.maximum_nodes)
                     return exact_expr();
             }
             exponential_trigonometric_certificate = true;
             return candidate;
         };
-        exact_expr exponential_hyperbolic_polynomial =
-            exponential_hyperbolic_polynomial_candidate();
-        if(exponential_hyperbolic_polynomial.valid()){
-            if(verify_candidate(exponential_hyperbolic_polynomial)) return true;
+        exact_expr exponential_trig_polynomial =
+            exponential_trig_polynomial_candidate();
+        if(exponential_trig_polynomial.valid()){
+            if(verify_candidate(exponential_trig_polynomial)) return true;
             if(exponential_trigonometric_certificate){
                 result.status = risch_status::elementary;
                 result.elementary_part =
-                    std::move(exponential_hyperbolic_polynomial);
+                    std::move(exponential_trig_polynomial);
                 result.remainder = integer(0);
                 result.diagnostic.clear();
                 return true;
@@ -21887,9 +21919,51 @@ exact_expr exact_context::simplify(const exact_expr &expression,
             if(self(self, args[i])) return true;
         return false;
     };
-    // Keep an uncancelled rational expression compact. Explicit expand() is
-    // still available when distributing a denominator is actually desired.
-    if(has_denominator(has_denominator, factored.root_)) return factored;
+    // Keep general rational expressions compact. When radicals are present,
+    // try canonicalizing the exact univariate rational form: bounded expansion
+    // can reduce terms such as sqrt(3)^2 and allow logarithm/arctangent
+    // derivatives to cancel as one rational function.
+    if(has_denominator(has_denominator, factored.root_)){
+        std::vector<uint32_t> symbols;
+        std::unordered_set<uint32_t> seen;
+        std::vector<uint32_t> pending{factored.root_};
+        bool has_square_root = false;
+        while(!pending.empty()){
+            uint32_t id = pending.back();
+            pending.pop_back();
+            if(!seen.insert(id).second) continue;
+            const exact_node &node = storage_->node(id);
+            has_square_root |= node.op == exact_opcode::square_root;
+            if(node.op == exact_opcode::symbol){
+                if(std::find(symbols.begin(), symbols.end(), id) ==
+                   symbols.end()) symbols.push_back(id);
+                continue;
+            }
+            const uint32_t *args = storage_->children(node);
+            pending.insert(pending.end(), args,
+                           args + node.operand_count);
+        }
+        if(has_square_root && symbols.size() == 1){
+            try{
+                exact_expr expanded = expand(factored,
+                                               automatic_expansion_terms);
+                exact_expr variable(storage_, symbols.front());
+                integration_poly numerator, denominator;
+                if(integration_parse_rational(
+                       expanded, variable, numerator, denominator,
+                       automatic_expansion_terms,
+                       automatic_expansion_terms) &&
+                   integration_normalize_rational(numerator, denominator)){
+                    return integration_poly_expr(*this, numerator, variable) /
+                           integration_poly_expr(*this, denominator, variable);
+                }
+            }catch(const std::length_error &){
+                // Rational normalization is optional; retain the compact tree
+                // when the expansion work budget is exceeded.
+            }
+        }
+        return factored;
+    }
     try{
         return expand(factored, automatic_expansion_terms);
     }catch(const std::length_error &){

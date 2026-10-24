@@ -7,6 +7,26 @@ int main(){
     exact_context context;
     exact_expr x = context.symbol("x");
 
+    for(int degree : {4, 6, 8}){
+        exact_expr denominator = context.power(x, context.integer(degree)) +
+            context.integer(1);
+        if(degree == 4)
+            denominator = context.power(x, context.integer(4)) +
+                context.power(x, context.integer(2)) + context.integer(1);
+        exact_expr integrand = context.integer(1) / denominator;
+        risch_result rational_result = context.integrate_elementary(
+            integrand, x);
+        assert(rational_result.status == risch_status::elementary);
+        exact_expr expanded_primitive = context.expand(
+            rational_result.elementary_part);
+        exact_expr derivative_error = context.simplify(
+            context.differentiate(expanded_primitive, x) - integrand);
+        if(derivative_error != context.integer(0))
+            std::fprintf(stderr, "degree %d derivative error: %s\n", degree,
+                         derivative_error.to_string().c_str());
+        assert(derivative_error == context.integer(0));
+    }
+
     exact_expr sine_x = context.sine(x);
     risch_result sine_result = context.integrate_elementary(sine_x, x);
     assert(sine_result.status == risch_status::elementary);
@@ -119,6 +139,39 @@ int main(){
         (hyperbolic_plus + hyperbolic_minus) / context.integer(2)) ==
         context.integer(0));
 
+    exact_expr circular_angle = context.i() * x;
+    exact_expr exponential_circular_hyperbolic = context.exponential(x) *
+        context.sine(x) * context.hyperbolic_sine(context.integer(2) * x);
+    risch_result exponential_circular_hyperbolic_result =
+        context.integrate_elementary(exponential_circular_hyperbolic, x);
+    assert(exponential_circular_hyperbolic_result.status ==
+        risch_status::elementary);
+    exact_expr quarter_i = context.i() / context.integer(4);
+    exact_expr expanded_circular_hyperbolic =
+        -quarter_i * context.exponential(context.integer(3) * x + circular_angle) +
+         quarter_i * context.exponential(-x + circular_angle) +
+         quarter_i * context.exponential(context.integer(3) * x - circular_angle) -
+         quarter_i * context.exponential(-x - circular_angle);
+    assert(context.simplify(context.differentiate(
+        exponential_circular_hyperbolic_result.elementary_part, x) -
+        expanded_circular_hyperbolic) ==
+        context.integer(0));
+
+    exact_expr exponential_sine_square = context.exponential(x) *
+        context.power(context.sine(x), context.integer(2));
+    risch_result exponential_sine_square_result = context.integrate_elementary(
+        exponential_sine_square, x);
+    assert(exponential_sine_square_result.status == risch_status::elementary);
+    exact_expr expanded_exponential_sine_square =
+        -context.exponential(x + context.integer(2) * circular_angle) /
+            context.integer(4) +
+         context.exponential(x) / context.integer(2) -
+         context.exponential(x - context.integer(2) * circular_angle) /
+            context.integer(4);
+    assert(context.simplify(context.differentiate(
+        exponential_sine_square_result.elementary_part, x) -
+        expanded_exponential_sine_square) == context.integer(0));
+
     exact_expr resonant_hyperbolic = context.exponential(x) *
         context.hyperbolic_sine(x);
     risch_result resonant_hyperbolic_result = context.integrate_elementary(
@@ -153,6 +206,22 @@ int main(){
         context.integrate_elementary(symbolic_exponential_sinh, x);
     assert(symbolic_exponential_sinh_result.status == risch_status::elementary);
     assert(symbolic_exponential_sinh_result.conditions.size() == 2);
+
+    exact_expr c = context.symbol("c");
+    exact_expr symbolic_multiangle_hyperbolic = context.exponential(a * x) *
+        context.hyperbolic_sine(b * x) * context.hyperbolic_cosine(c * x);
+    risch_result symbolic_multiangle_result = context.integrate_elementary(
+        symbolic_multiangle_hyperbolic, x);
+    assert(symbolic_multiangle_result.status == risch_status::elementary);
+    assert(symbolic_multiangle_result.conditions.size() == 4);
+    exact_expr expanded_symbolic_multiangle =
+        (context.exponential((a + b + c) * x) +
+         context.exponential((a + b - c) * x) -
+         context.exponential((a - b + c) * x) -
+         context.exponential((a - b - c) * x)) / context.integer(4);
+    assert(context.simplify(context.differentiate(
+        symbolic_multiangle_result.elementary_part, x) -
+        expanded_symbolic_multiangle) == context.integer(0));
 
     exact_expr affine_hyperbolic_angle = context.integer(2) * x +
         context.integer(1);

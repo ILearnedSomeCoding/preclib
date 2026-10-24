@@ -9,7 +9,7 @@
 编译 CAS 时需要显式加入本目录：
 
 ```powershell
-clang++ -O3 -mavx2 -std=c++17 cas/calculator.cpp cas/src/*.cpp cas/ntheory/*.cpp src/*.cpp -o cas/calculator_ntheory.exe
+clang++ -O3 -mavx2 -std=c++17 cas/calculator.cpp cas/src/*.cpp cas/ntheory/*.cpp src/*.cpp -o cas/calculator.exe
 ```
 
 `cas/html/build.ps1` 已包含本目录的源文件。整数分解的预算、进度和基准命令见 [FACTOR_INTEGER.md](../FACTOR_INTEGER.md)。
