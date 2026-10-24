@@ -61,6 +61,37 @@ int main(){
     assert(rational_slope_result.status == risch_status::elementary);
     assert(rational_slope_result.remainder == context.integer(0));
 
+    exact_expr exponential_factor = context.exponential(context.integer(2) * x);
+    exact_expr affine_trig_angle = context.integer(3) * x + context.integer(1);
+    exact_expr exponential_sine = exponential_factor *
+        context.sine(affine_trig_angle);
+    risch_result exponential_sine_result = context.integrate_elementary(
+        exponential_sine, x);
+    assert(exponential_sine_result.status == risch_status::elementary);
+    assert(exponential_sine_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        exponential_sine_result.elementary_part, x) - exponential_sine) ==
+        context.integer(0));
+
+    exact_expr exponential_cosine = context.exponential(x) *
+        context.cosine(context.integer(2) * x);
+    risch_result exponential_cosine_result = context.integrate_elementary(
+        exponential_cosine, x);
+    assert(exponential_cosine_result.status == risch_status::elementary);
+    assert(exponential_cosine_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        exponential_cosine_result.elementary_part, x) -
+        exponential_cosine) == context.integer(0));
+
+    exact_expr a = context.symbol("a");
+    exact_expr b = context.symbol("b");
+    exact_expr symbolic_exponential_sine = context.exponential(a * x) *
+        context.sine(b * x);
+    risch_result symbolic_exponential_sine_result =
+        context.integrate_elementary(symbolic_exponential_sine, x);
+    assert(symbolic_exponential_sine_result.status == risch_status::elementary);
+    assert(!symbolic_exponential_sine_result.conditions.empty());
+
     exact_expr affine_hyperbolic_angle = context.integer(2) * x +
         context.integer(1);
     exact_expr affine_hyperbolic_integrand = context.integer(2) *

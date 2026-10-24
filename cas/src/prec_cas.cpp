@@ -3193,6 +3193,31 @@ static exact_expr integration_rational_antiderivative(
 
     exact_expr denominator_expression =
         integration_poly_expr(context, denominator, variable);
+    integration_poly denominator_derivative =
+        integration_derivative_poly(denominator);
+    if(!(denominator_derivative.size() == 1 &&
+         denominator_derivative[0].is_zero())){
+        numeric_value logarithmic_scale = remainder.back() /
+            denominator_derivative.back();
+        bool is_logarithmic_derivative = true;
+        size_t coefficient_count = std::max(
+            remainder.size(), denominator_derivative.size());
+        for(size_t i = 0; i < coefficient_count; ++i){
+            numeric_value numerator_coefficient = i < remainder.size()
+                ? remainder[i] : numeric_value(0);
+            numeric_value derivative_coefficient = i < denominator_derivative.size()
+                ? denominator_derivative[i] : numeric_value(0);
+            if(numerator_coefficient != logarithmic_scale *
+                    derivative_coefficient){
+                is_logarithmic_derivative = false;
+                break;
+            }
+        }
+        if(is_logarithmic_derivative)
+            return polynomial_part + context.value(logarithmic_scale) *
+                context.natural_logarithm(
+                    context.absolute_value(denominator_expression));
+    }
     exact_expr proper;
     if(denominator.size() - 1 > 4 &&
        integration_gcd_poly(denominator,
@@ -11847,6 +11872,77 @@ risch_result exact_context::integrate_elementary_impl(
         result.diagnostic.clear();
         return true;
         };
+        bool exponential_trigonometric_certificate = false;
+        auto exponential_trigonometric_candidate = [&]() -> exact_expr{
+            std::vector<exact_expr> factors;
+            integration_factor_list(expression, factors);
+            exact_expr exponential_factor, trigonometric_factor;
+            exact_expr coefficient = integer(1);
+            for(const exact_expr &factor : factors){
+                if(factor.operation() == exact_opcode::exponential &&
+                   !exponential_factor.valid()){
+                    exponential_factor = factor;
+                }else if((factor.operation() == exact_opcode::sine ||
+                          factor.operation() == exact_opcode::cosine) &&
+                         !trigonometric_factor.valid()){
+                    trigonometric_factor = factor;
+                }else if(!integration_depends_on(factor, variable) &&
+                         integration_exact_expression_tree(factor)){
+                    coefficient = coefficient * factor;
+                }else return exact_expr();
+            }
+            if(!exponential_factor.valid() || !trigonometric_factor.valid())
+                return exact_expr();
+
+            exact_expr exponential_slope = simplify(differentiate(
+                exponential_factor.operand(0), variable));
+            exact_expr angle_slope = simplify(differentiate(
+                trigonometric_factor.operand(0), variable));
+            if(integration_depends_on(exponential_slope, variable) ||
+               integration_depends_on(angle_slope, variable) ||
+               !integration_exact_expression_tree(exponential_slope) ||
+               !integration_exact_expression_tree(angle_slope))
+                return exact_expr();
+
+            if(exponential_slope == integer(0) &&
+               angle_slope == integer(0))
+                return expression * variable;
+
+            exact_expr denominator = simplify(
+                power(exponential_slope, integer(2)) +
+                power(angle_slope, integer(2)));
+            if(denominator.is_value() &&
+               !denominator.value().is_approximate() &&
+               denominator.value().is_zero())
+                return exact_expr();
+
+            exact_expr angle = trigonometric_factor.operand(0);
+            exact_expr numerator;
+            if(trigonometric_factor.operation() == exact_opcode::sine){
+                numerator = exponential_slope * sine(angle) -
+                            angle_slope * cosine(angle);
+            }else{
+                numerator = exponential_slope * cosine(angle) +
+                            angle_slope * sine(angle);
+            }
+            // The product rule reduces the derivative numerator exactly to
+            // (u'^2+v'^2)*sin(v) or *cos(v); the caller retains this factor
+            // as a nonzero condition when the slopes are symbolic.
+            exponential_trigonometric_certificate = true;
+            return coefficient * exponential_factor * numerator / denominator;
+        };
+        exact_expr exponential_trigonometric =
+            exponential_trigonometric_candidate();
+        if(exponential_trigonometric.valid()){
+            if(verify_candidate(exponential_trigonometric)) return true;
+            if(exponential_trigonometric_certificate){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(exponential_trigonometric);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+        }
         // A repeated pole whose numerator is a constant multiple of D(p)
         // has an exact primitive in any admitted differential tower.
         std::vector<exact_expr> factors;

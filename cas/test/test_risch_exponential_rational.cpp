@@ -115,6 +115,18 @@ int main(){
         expanded_sextic_primitive, x);
     assert(context.simplify(expanded_sextic_derivative -
         sextic_log_integrand) == context.integer(0));
+    exact_expr sextic_log_derivative = context.integer(6) *
+        context.power(x, context.integer(5)) /
+        (context.power(x, context.integer(6)) + context.integer(1));
+    risch_result sextic_log_derivative_result = context.integrate_elementary(
+        sextic_log_derivative, x);
+    assert(sextic_log_derivative_result.status == risch_status::elementary);
+    assert(sextic_log_derivative_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        sextic_log_derivative_result.elementary_part, x) -
+        sextic_log_derivative) == context.integer(0));
+    assert(sextic_log_derivative_result.elementary_part.to_string().find(
+        "LogRootSum(") == std::string::npos);
     for(int seed = 1; seed <= 4; ++seed){
         exact_expr shifted = x + context.integer(seed);
         exact_expr quadratic = context.power(x, context.integer(2)) +
