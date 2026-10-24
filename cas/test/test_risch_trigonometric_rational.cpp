@@ -163,6 +163,58 @@ int main(){
     assert(affine_hyperbolic_result.status == risch_status::elementary);
     assert(affine_hyperbolic_result.remainder == context.integer(0));
 
+    exact_expr exponential_sinh_square = context.exponential(x) *
+        context.power(context.hyperbolic_sine(x), context.integer(2));
+    risch_result exponential_sinh_square_result = context.integrate_elementary(
+        exponential_sinh_square, x);
+    assert(exponential_sinh_square_result.status == risch_status::elementary);
+    exact_expr expanded_sinh_square =
+        (context.exponential(context.integer(3) * x) -
+         context.integer(2) * context.exponential(x) +
+         context.exponential(-x)) / context.integer(4);
+    assert(context.simplify(context.differentiate(
+        exponential_sinh_square_result.elementary_part, x) -
+        expanded_sinh_square) == context.integer(0));
+
+    exact_expr exponential_sinh_cosh = context.exponential(x) *
+        context.hyperbolic_sine(x) * context.hyperbolic_cosine(x);
+    risch_result exponential_sinh_cosh_result = context.integrate_elementary(
+        exponential_sinh_cosh, x);
+    assert(exponential_sinh_cosh_result.status == risch_status::elementary);
+    exact_expr expanded_sinh_cosh =
+        (context.exponential(context.integer(3) * x) -
+         context.exponential(-x)) / context.integer(4);
+    assert(context.simplify(context.differentiate(
+        exponential_sinh_cosh_result.elementary_part, x) -
+        expanded_sinh_cosh) == context.integer(0));
+
+    exact_expr mixed_hyperbolic_angles = context.exponential(x) *
+        context.hyperbolic_sine(x) *
+        context.hyperbolic_cosine(context.integer(2) * x);
+    risch_result mixed_hyperbolic_angles_result = context.integrate_elementary(
+        mixed_hyperbolic_angles, x);
+    assert(mixed_hyperbolic_angles_result.status == risch_status::elementary);
+    exact_expr expanded_mixed_hyperbolic =
+        (context.exponential(context.integer(4) * x) + context.integer(1) -
+         context.exponential(context.integer(2) * x) -
+         context.exponential(-context.integer(2) * x)) / context.integer(4);
+    assert(context.simplify(context.differentiate(
+        mixed_hyperbolic_angles_result.elementary_part, x) -
+        expanded_mixed_hyperbolic) == context.integer(0));
+
+    exact_expr resonant_cosh_square = context.exponential(-context.integer(4) * x) *
+        context.power(context.hyperbolic_cosine(context.integer(2) * x),
+                      context.integer(2));
+    risch_result resonant_cosh_square_result = context.integrate_elementary(
+        resonant_cosh_square, x);
+    assert(resonant_cosh_square_result.status == risch_status::elementary);
+    exact_expr expanded_cosh_square = (context.integer(1) +
+        context.integer(2) * context.exponential(-context.integer(4) * x) +
+        context.exponential(-context.integer(8) * x)) / context.integer(4);
+    assert(context.simplify(context.differentiate(
+        resonant_cosh_square_result.elementary_part, x) -
+        expanded_cosh_square) == context.integer(0));
+
     std::puts("risch trigonometric rational ok");
     return 0;
 }

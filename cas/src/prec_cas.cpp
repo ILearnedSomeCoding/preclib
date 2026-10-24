@@ -11873,6 +11873,151 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
         };
         bool exponential_trigonometric_certificate = false;
+        auto exponential_hyperbolic_polynomial_candidate = [&]() -> exact_expr{
+            std::vector<exact_expr> factors;
+            integration_factor_list(expression, factors);
+            exact_expr exponential_factor;
+            exact_expr coefficient = integer(1);
+            int64_t total_power = 0;
+            int64_t power_budget = options.maximum_degree >
+                (size_t)std::numeric_limits<int64_t>::max()
+                ? std::numeric_limits<int64_t>::max()
+                : (int64_t)options.maximum_degree;
+            std::vector<exact_expr> angles;
+            std::vector<int64_t> sine_powers, cosine_powers;
+            for(const exact_expr &factor : factors){
+                if(factor.operation() == exact_opcode::exponential &&
+                   !exponential_factor.valid()){
+                    exponential_factor = factor;
+                    continue;
+                }
+
+                exact_expr base = factor;
+                int64_t exponent = 1;
+                if(factor.operation() == exact_opcode::power){
+                    if(!integration_signed_exponent(factor.operand(1), exponent) ||
+                       exponent < 0) return exact_expr();
+                    base = factor.operand(0);
+                }
+                exact_opcode operation = base.operation();
+                if(operation == exact_opcode::hyperbolic_sine ||
+                   operation == exact_opcode::hyperbolic_cosine){
+                    exact_expr current_angle = base.operand(0);
+                    if(exponent > power_budget - total_power)
+                        return exact_expr();
+                    auto found = std::find(angles.begin(), angles.end(),
+                                           current_angle);
+                    size_t index;
+                    if(found == angles.end()){
+                        index = angles.size();
+                        angles.push_back(current_angle);
+                        sine_powers.push_back(0);
+                        cosine_powers.push_back(0);
+                    }else index = (size_t)(found - angles.begin());
+                    int64_t &count = operation == exact_opcode::hyperbolic_sine
+                        ? sine_powers[index] : cosine_powers[index];
+                    count += exponent;
+                    total_power += exponent;
+                    continue;
+                }
+                if(!integration_depends_on(factor, variable) &&
+                   integration_exact_expression_tree(factor)){
+                    coefficient = coefficient * factor;
+                    continue;
+                }
+                return exact_expr();
+            }
+            if(!exponential_factor.valid() || angles.empty() ||
+               total_power == 0)
+                return exact_expr();
+
+            exact_expr exponential_argument = exponential_factor.operand(0);
+            exact_expr exponential_rate = simplify(differentiate(
+                exponential_argument, variable));
+            if(integration_depends_on(exponential_rate, variable) ||
+               !integration_exact_expression_tree(exponential_rate))
+                return exact_expr();
+            std::vector<exact_expr> angle_rates;
+            angle_rates.reserve(angles.size());
+            for(const exact_expr &angle : angles){
+                exact_expr rate = simplify(differentiate(angle, variable));
+                if(integration_depends_on(rate, variable) ||
+                   !integration_exact_expression_tree(rate))
+                    return exact_expr();
+                angle_rates.push_back(std::move(rate));
+            }
+
+            using frequency_vector = std::vector<int64_t>;
+            std::map<frequency_vector, numeric_value> coefficients;
+            coefficients.emplace(frequency_vector(angles.size(), 0),
+                                 numeric_value(1));
+            size_t term_budget = std::min<size_t>(options.maximum_nodes,
+                                                  100000);
+            bool expansion_within_budget = true;
+            auto multiply_hyperbolic_factor = [&](size_t index, bool is_sine){
+                std::map<frequency_vector, numeric_value> next;
+                for(const auto &term : coefficients){
+                    frequency_vector positive = term.first;
+                    frequency_vector negative = term.first;
+                    ++positive[index];
+                    --negative[index];
+                    next[positive] = next[positive] + term.second;
+                    next[negative] = next[negative] +
+                        (is_sine ? -term.second : term.second);
+                    if(next.size() > term_budget){
+                        expansion_within_budget = false;
+                        return;
+                    }
+                }
+                coefficients = std::move(next);
+            };
+            for(size_t index = 0; index < angles.size(); ++index){
+                for(int64_t i = 0; i < sine_powers[index]; ++i)
+                    multiply_hyperbolic_factor(index, true);
+                for(int64_t i = 0; i < cosine_powers[index]; ++i)
+                    multiply_hyperbolic_factor(index, false);
+                if(!expansion_within_budget) return exact_expr();
+            }
+
+            exact_expr scale = power(integer(2),
+                integer(total_power));
+            exact_expr candidate = integer(0);
+            for(const auto &term : coefficients){
+                if(term.second.is_zero()) continue;
+                exact_expr exponent = exponential_argument;
+                exact_expr rate = exponential_rate;
+                for(size_t i = 0; i < term.first.size(); ++i){
+                    if(term.first[i] == 0) continue;
+                    exact_expr multiple = integer(term.first[i]);
+                    exponent = exponent + multiple * angles[i];
+                    rate = rate + multiple * angle_rates[i];
+                }
+                rate = simplify(rate);
+                exact_expr exponential_term = exponential(exponent);
+                exact_expr primitive = rate == integer(0)
+                    ? variable * exponential_term
+                    : exponential_term / rate;
+                candidate = candidate + coefficient *
+                    value(term.second) * primitive / scale;
+                if(candidate.reachable_node_count() > options.maximum_nodes)
+                    return exact_expr();
+            }
+            exponential_trigonometric_certificate = true;
+            return candidate;
+        };
+        exact_expr exponential_hyperbolic_polynomial =
+            exponential_hyperbolic_polynomial_candidate();
+        if(exponential_hyperbolic_polynomial.valid()){
+            if(verify_candidate(exponential_hyperbolic_polynomial)) return true;
+            if(exponential_trigonometric_certificate){
+                result.status = risch_status::elementary;
+                result.elementary_part =
+                    std::move(exponential_hyperbolic_polynomial);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+        }
         auto exponential_trigonometric_candidate = [&]() -> exact_expr{
             std::vector<exact_expr> factors;
             integration_factor_list(expression, factors);
