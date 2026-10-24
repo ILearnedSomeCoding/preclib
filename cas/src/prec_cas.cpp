@@ -11883,7 +11883,9 @@ risch_result exact_context::integrate_elementary_impl(
                    !exponential_factor.valid()){
                     exponential_factor = factor;
                 }else if((factor.operation() == exact_opcode::sine ||
-                          factor.operation() == exact_opcode::cosine) &&
+                          factor.operation() == exact_opcode::cosine ||
+                          factor.operation() == exact_opcode::hyperbolic_sine ||
+                          factor.operation() == exact_opcode::hyperbolic_cosine) &&
                          !trigonometric_factor.valid()){
                     trigonometric_factor = factor;
                 }else if(!integration_depends_on(factor, variable) &&
@@ -11908,6 +11910,42 @@ risch_result exact_context::integrate_elementary_impl(
                angle_slope == integer(0))
                 return expression * variable;
 
+            exact_expr angle = trigonometric_factor.operand(0);
+            exact_opcode trig_operation = trigonometric_factor.operation();
+            bool hyperbolic = trig_operation == exact_opcode::hyperbolic_sine ||
+                              trig_operation == exact_opcode::hyperbolic_cosine;
+            if(hyperbolic){
+                exact_expr plus_argument =
+                    exponential_factor.operand(0) + angle;
+                exact_expr minus_argument =
+                    exponential_factor.operand(0) - angle;
+                exact_expr plus_rate = simplify(differentiate(
+                    plus_argument, variable));
+                exact_expr minus_rate = simplify(differentiate(
+                    minus_argument, variable));
+                if(integration_depends_on(plus_rate, variable) ||
+                   integration_depends_on(minus_rate, variable) ||
+                   !integration_exact_expression_tree(plus_rate) ||
+                   !integration_exact_expression_tree(minus_rate))
+                    return exact_expr();
+
+                auto exponential_primitive = [&](const exact_expr &argument,
+                                                  const exact_expr &rate){
+                    exact_expr term = exponential(argument);
+                    return rate == integer(0)
+                        ? variable * term : term / rate;
+                };
+                exact_expr plus_primitive = exponential_primitive(
+                    plus_argument, plus_rate);
+                exact_expr minus_primitive = exponential_primitive(
+                    minus_argument, minus_rate);
+                exact_expr sum = trig_operation == exact_opcode::hyperbolic_sine
+                    ? plus_primitive - minus_primitive
+                    : plus_primitive + minus_primitive;
+                exponential_trigonometric_certificate = true;
+                return coefficient * sum / integer(2);
+            }
+
             exact_expr denominator = simplify(
                 power(exponential_slope, integer(2)) +
                 power(angle_slope, integer(2)));
@@ -11916,7 +11954,6 @@ risch_result exact_context::integrate_elementary_impl(
                denominator.value().is_zero())
                 return exact_expr();
 
-            exact_expr angle = trigonometric_factor.operand(0);
             exact_expr numerator;
             if(trigonometric_factor.operation() == exact_opcode::sine){
                 numerator = exponential_slope * sine(angle) -

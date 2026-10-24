@@ -92,6 +92,68 @@ int main(){
     assert(symbolic_exponential_sine_result.status == risch_status::elementary);
     assert(!symbolic_exponential_sine_result.conditions.empty());
 
+    exact_expr exponential_hyperbolic_sine =
+        context.exponential(context.integer(2) * x) *
+        context.hyperbolic_sine(context.integer(3) * x + context.integer(1));
+    risch_result exponential_hyperbolic_sine_result =
+        context.integrate_elementary(exponential_hyperbolic_sine, x);
+    assert(exponential_hyperbolic_sine_result.status ==
+        risch_status::elementary);
+    exact_expr hyperbolic_plus = context.exponential(
+        context.integer(5) * x + context.integer(1));
+    exact_expr hyperbolic_minus = context.exponential(-x - context.integer(1));
+    assert(context.simplify(context.differentiate(
+        exponential_hyperbolic_sine_result.elementary_part, x) -
+        (hyperbolic_plus - hyperbolic_minus) / context.integer(2)) ==
+        context.integer(0));
+
+    exact_expr exponential_hyperbolic_cosine =
+        context.exponential(context.integer(2) * x) *
+        context.hyperbolic_cosine(context.integer(3) * x + context.integer(1));
+    risch_result exponential_hyperbolic_cosine_result =
+        context.integrate_elementary(exponential_hyperbolic_cosine, x);
+    assert(exponential_hyperbolic_cosine_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        exponential_hyperbolic_cosine_result.elementary_part, x) -
+        (hyperbolic_plus + hyperbolic_minus) / context.integer(2)) ==
+        context.integer(0));
+
+    exact_expr resonant_hyperbolic = context.exponential(x) *
+        context.hyperbolic_sine(x);
+    risch_result resonant_hyperbolic_result = context.integrate_elementary(
+        resonant_hyperbolic, x);
+    assert(resonant_hyperbolic_result.status == risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        resonant_hyperbolic_result.elementary_part, x) -
+        (context.exponential(context.integer(2) * x) - context.integer(1)) /
+            context.integer(2)) == context.integer(0));
+
+    exact_expr resonant_hyperbolic_cosine = context.exponential(x) *
+        context.hyperbolic_cosine(x);
+    risch_result resonant_hyperbolic_cosine_result =
+        context.integrate_elementary(resonant_hyperbolic_cosine, x);
+    assert(resonant_hyperbolic_cosine_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        resonant_hyperbolic_cosine_result.elementary_part, x) -
+        (context.exponential(context.integer(2) * x) + context.integer(1)) /
+            context.integer(2)) == context.integer(0));
+
+    exact_expr symbolic_exponential_cosh = context.exponential(a * x) *
+        context.hyperbolic_cosine(b * x);
+    risch_result symbolic_exponential_cosh_result =
+        context.integrate_elementary(symbolic_exponential_cosh, x);
+    assert(symbolic_exponential_cosh_result.status == risch_status::elementary);
+    assert(symbolic_exponential_cosh_result.conditions.size() == 2);
+
+    exact_expr symbolic_exponential_sinh = context.exponential(a * x) *
+        context.hyperbolic_sine(b * x);
+    risch_result symbolic_exponential_sinh_result =
+        context.integrate_elementary(symbolic_exponential_sinh, x);
+    assert(symbolic_exponential_sinh_result.status == risch_status::elementary);
+    assert(symbolic_exponential_sinh_result.conditions.size() == 2);
+
     exact_expr affine_hyperbolic_angle = context.integer(2) * x +
         context.integer(1);
     exact_expr affine_hyperbolic_integrand = context.integer(2) *
