@@ -27,6 +27,18 @@ int main(){
         assert(derivative_error == context.integer(0));
     }
 
+    exact_expr irreducible_quartic = context.power(x, context.integer(4)) +
+        context.power(x, context.integer(2)) + x + context.integer(1);
+    exact_expr quartic_integrand = context.integer(1) / irreducible_quartic;
+    risch_result quartic_result = context.integrate_elementary(
+        quartic_integrand, x);
+    assert(quartic_result.status == risch_status::elementary);
+    exact_expr expanded_quartic = context.expand(
+        quartic_result.elementary_part);
+    assert(expanded_quartic.operation() == exact_opcode::log_root_sum);
+    assert(context.simplify(context.differentiate(expanded_quartic, x) -
+        quartic_integrand) == context.integer(0));
+
     exact_expr sine_x = context.sine(x);
     risch_result sine_result = context.integrate_elementary(sine_x, x);
     assert(sine_result.status == risch_status::elementary);
