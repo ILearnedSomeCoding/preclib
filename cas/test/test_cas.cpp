@@ -2237,7 +2237,7 @@ int main(){
                                         binomial_denominator;
         exact_expr binomial_primitive = context.integrate(binomial_integrand, x);
         if(degree == 6){
-            assert(binomial_primitive.operation() != exact_opcode::log_root_sum);
+            assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
             assert(binomial_primitive.operation() != exact_opcode::integral);
         }else{
             assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
@@ -2258,10 +2258,9 @@ int main(){
         context.integer(1), sixth_binomial, x);
     exact_expr expanded_sixth_binomial = context.expand(
         sixth_binomial_root_sum);
-    assert(expanded_sixth_binomial.operation() != exact_opcode::log_root_sum);
-    std::string expanded_sixth_text = expanded_sixth_binomial.to_string();
-    assert(expanded_sixth_text.find("atan(") != std::string::npos);
-    assert(expanded_sixth_text.find("ln(") != std::string::npos);
+    assert(expanded_sixth_binomial.operation() == exact_opcode::log_root_sum);
+    assert(context.differentiate(expanded_sixth_binomial, x) ==
+           sixth_binomial_integrand);
     exact_expr abs_linear = context.absolute_value(x - context.integer(1));
     assert(context.differentiate(abs_linear, x) ==
            abs_linear / (x - context.integer(1)));

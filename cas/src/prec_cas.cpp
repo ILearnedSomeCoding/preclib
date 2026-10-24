@@ -3193,7 +3193,14 @@ static exact_expr integration_rational_antiderivative(
 
     exact_expr denominator_expression =
         integration_poly_expr(context, denominator, variable);
-    exact_expr proper = integration_squarefree_rational(
+    exact_expr proper;
+    if(denominator.size() - 1 > 4 &&
+       integration_gcd_poly(denominator,
+           integration_derivative_poly(denominator)).size() == 1)
+        proper = context.log_root_sum(
+            integration_poly_expr(context, remainder, variable),
+            denominator_expression, variable, maximum_degree);
+    if(!proper.valid()) proper = integration_squarefree_rational(
         context, remainder, denominator_expression, variable);
     if(!proper.valid()) proper = integration_algebraic_logarithmic_rational(
         context, remainder, denominator, variable);
@@ -20993,7 +21000,7 @@ static exact_expr integration_expand_log_root_sum(
                                maximum_terms, maximum_terms) ||
        !integration_parse_poly(denominator_expr, variable, denominator,
                                maximum_terms, maximum_terms) ||
-       denominator.size() < 2 || denominator.size() - 1 > 16 ||
+       denominator.size() < 2 || denominator.size() - 1 > 4 ||
        denominator.size() - 1 > maximum_terms)
         return exact_expr();
 

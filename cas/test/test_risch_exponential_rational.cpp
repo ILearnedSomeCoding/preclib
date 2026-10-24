@@ -87,6 +87,34 @@ int main(){
         assert(context.integrate(binomial_input, x).operation() !=
             exact_opcode::integral);
     }
+    exact_expr quartic_log_integrand = context.integer(1) /
+        (context.power(x, context.integer(4)) + context.integer(1));
+    risch_result quartic_log_primitive = context.integrate_elementary(
+        quartic_log_integrand, x);
+    assert(quartic_log_primitive.status == risch_status::elementary);
+    assert(quartic_log_primitive.remainder == context.integer(0));
+    exact_expr expanded_quartic_primitive = context.expand(
+        quartic_log_primitive.elementary_part);
+    exact_expr expanded_quartic_derivative = context.differentiate(
+        expanded_quartic_primitive, x);
+    auto contains_formal_derivative = [&](auto &&self,
+            const exact_expr &expression) -> bool{
+        if(expression.operation() == exact_opcode::derivative) return true;
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            if(self(self, expression.operand(i))) return true;
+        return false;
+    };
+    assert(!contains_formal_derivative(contains_formal_derivative,
+                                       expanded_quartic_derivative));
+    exact_expr sextic_log_integrand = context.integer(1) /
+        (context.power(x, context.integer(6)) + context.integer(1));
+    exact_expr sextic_log_primitive = context.integrate(sextic_log_integrand, x);
+    exact_expr expanded_sextic_primitive = context.expand(sextic_log_primitive);
+    assert(expanded_sextic_primitive.operation() == exact_opcode::log_root_sum);
+    exact_expr expanded_sextic_derivative = context.differentiate(
+        expanded_sextic_primitive, x);
+    assert(context.simplify(expanded_sextic_derivative -
+        sextic_log_integrand) == context.integer(0));
     for(int seed = 1; seed <= 4; ++seed){
         exact_expr shifted = x + context.integer(seed);
         exact_expr quadratic = context.power(x, context.integer(2)) +
