@@ -2570,6 +2570,10 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
                     exact_expr real_inner = inner.operand(0);
                     result = derivative(real_inner.id()) / real_inner;
                 }else result = di / inner;
+            }else if(node.op == exact_opcode::absolute_value){
+                // Away from zeros, D|g| = |g| * g'/g for real g.
+                exact_expr inner_value(storage_, args[0]);
+                result = source * derivative(args[0]) / inner_value;
             }
             else if(node.op == exact_opcode::logarithm_base_2)
                 result = di / (inner * natural_logarithm(integer(2)));
@@ -20971,6 +20975,118 @@ public:
     }
 };
 
+static exact_expr integration_expand_log_root_sum(
+    exact_context &context, const exact_expr &root_sum, size_t maximum_terms){
+    if(root_sum.operation() != exact_opcode::log_root_sum ||
+       root_sum.operand_count() != 3) return exact_expr();
+    exact_expr numerator_expr = root_sum.operand(0);
+    exact_expr denominator_expr = root_sum.operand(1);
+    exact_expr variable = root_sum.operand(2);
+    integration_poly numerator, denominator;
+    if(!integration_parse_poly(numerator_expr, variable, numerator,
+                               maximum_terms, maximum_terms) ||
+       !integration_parse_poly(denominator_expr, variable, denominator,
+                               maximum_terms, maximum_terms) ||
+       denominator.size() < 2 || denominator.size() - 1 > 16 ||
+       denominator.size() - 1 > maximum_terms)
+        return exact_expr();
+
+    std::vector<exact_expr> factor_expressions;
+    exact_expr factored_denominator = context.factor(denominator_expr);
+    integration_factor_list(factored_denominator, factor_expressions);
+    std::vector<integration_poly> factors;
+    size_t degree_sum = 0;
+    integration_poly factor_product{numeric_value(1)};
+    for(const exact_expr &factor_expression : factor_expressions){
+        exact_expr factor_base = factor_expression;
+        if(factor_expression.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            if(!integration_signed_exponent(factor_expression.operand(1), exponent) ||
+               exponent != 1) return exact_expr();
+            factor_base = factor_expression.operand(0);
+        }
+        integration_poly factor;
+        if(!integration_parse_poly(factor_base, variable, factor,
+                                   maximum_terms, maximum_terms) ||
+           factor.size() < 2 || factor.size() - 1 > 4)
+            return exact_expr();
+        degree_sum += factor.size() - 1;
+        factor_product = integration_mul(factor_product, factor);
+        factors.push_back(std::move(factor));
+    }
+    if(factors.size() < 2 || factors.size() > 8 ||
+       degree_sum + 1 != denominator.size() || factor_product != denominator)
+        return exact_expr();
+
+    std::vector<std::vector<numeric_value>> matrix(
+        degree_sum, std::vector<numeric_value>(degree_sum + 1,
+                                               numeric_value(0)));
+    size_t column = 0;
+    for(const integration_poly &factor : factors){
+        integration_poly cofactor;
+        if(!integration_divide_poly(denominator, factor, cofactor))
+            return exact_expr();
+        for(size_t power = 0; power + 1 < factor.size(); ++power, ++column)
+            for(size_t degree = 0; degree < cofactor.size(); ++degree)
+                matrix[degree + power][column] =
+                    matrix[degree + power][column] + cofactor[degree];
+    }
+    for(size_t degree = 0; degree < numerator.size(); ++degree)
+        matrix[degree][degree_sum] = numerator[degree];
+    for(size_t pivot = 0; pivot < degree_sum; ++pivot){
+        size_t row = pivot;
+        while(row < degree_sum && matrix[row][pivot].is_zero()) ++row;
+        if(row == degree_sum) return exact_expr();
+        if(row != pivot) std::swap(matrix[row], matrix[pivot]);
+        numeric_value scale = matrix[pivot][pivot];
+        for(size_t j = pivot; j <= degree_sum; ++j)
+            matrix[pivot][j] = matrix[pivot][j] / scale;
+        for(size_t i = 0; i < degree_sum; ++i){
+            if(i == pivot || matrix[i][pivot].is_zero()) continue;
+            scale = matrix[i][pivot];
+            for(size_t j = pivot; j <= degree_sum; ++j)
+                matrix[i][j] = matrix[i][j] - scale * matrix[pivot][j];
+        }
+    }
+
+    exact_expr candidate = context.integer(0);
+    column = 0;
+    for(size_t i = 0; i < factors.size(); ++i){
+        integration_poly part_numerator(factors[i].size() - 1,
+                                        numeric_value(0));
+        for(size_t j = 0; j < part_numerator.size(); ++j)
+            part_numerator[j] = matrix[column++][degree_sum];
+        exact_expr part = integration_poly_expr(context, part_numerator,
+                                                 variable) /
+            integration_poly_expr(context, factors[i], variable);
+        exact_expr primitive = integration_rational_antiderivative(
+            context, part, variable, maximum_terms);
+        if(!primitive.valid() || primitive.operation() ==
+                exact_opcode::log_root_sum ||
+           primitive.reachable_node_count() > maximum_terms)
+            return exact_expr();
+        candidate = candidate + primitive;
+        if(candidate.reachable_node_count() > maximum_terms)
+            return exact_expr();
+    }
+    integration_poly reconstructed(numerator.size(), numeric_value(0));
+    column = 0;
+    for(const integration_poly &factor : factors){
+        integration_poly cofactor;
+        if(!integration_divide_poly(denominator, factor, cofactor))
+            return exact_expr();
+        for(size_t power = 0; power + 1 < factor.size(); ++power, ++column)
+            for(size_t degree = 0; degree < cofactor.size() &&
+                degree + power < reconstructed.size(); ++degree)
+                reconstructed[degree + power] =
+                    reconstructed[degree + power] +
+                    matrix[column][degree_sum] * cofactor[degree];
+    }
+    integration_trim(reconstructed);
+    integration_trim(numerator);
+    return reconstructed == numerator ? candidate : exact_expr();
+}
+
 class exact_trig_rewriter{
     exact_storage &storage_;
     bool expand_;
@@ -21365,6 +21481,11 @@ exact_expr exact_context::expand(const exact_expr &expression,
                                  size_t maximum_terms){
     if(!expression.valid() || expression.storage_ != storage_)
         throw std::invalid_argument("exact expressions belong to different contexts");
+    if(expression.operation() == exact_opcode::log_root_sum){
+        exact_expr expanded = integration_expand_log_root_sum(
+            *this, expression, maximum_terms);
+        if(expanded.valid()) return expanded;
+    }
     exact_expander expander(*storage_, maximum_terms);
     return exact_expr(storage_, expander.expand(expression.root_));
 }

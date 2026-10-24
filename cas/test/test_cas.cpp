@@ -2236,10 +2236,50 @@ int main(){
         exact_expr binomial_integrand = context.integer(1) /
                                         binomial_denominator;
         exact_expr binomial_primitive = context.integrate(binomial_integrand, x);
-        assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
-        assert(context.differentiate(binomial_primitive, x) ==
-               binomial_integrand);
+        if(degree == 6){
+            assert(binomial_primitive.operation() != exact_opcode::log_root_sum);
+            assert(binomial_primitive.operation() != exact_opcode::integral);
+        }else{
+            assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
+            assert(context.differentiate(binomial_primitive, x) ==
+                   binomial_integrand);
+            if(degree == 12){
+                exact_expr unexpanded = context.log_root_sum(
+                    context.integer(1), binomial_denominator, x);
+                assert(context.expand(unexpanded).operation() ==
+                       exact_opcode::log_root_sum);
+            }
+        }
     }
+    exact_expr sixth_binomial = context.power(x, context.integer(6)) +
+                                context.integer(1);
+    exact_expr sixth_binomial_integrand = context.integer(1) / sixth_binomial;
+    exact_expr sixth_binomial_root_sum = context.log_root_sum(
+        context.integer(1), sixth_binomial, x);
+    exact_expr expanded_sixth_binomial = context.expand(
+        sixth_binomial_root_sum);
+    assert(expanded_sixth_binomial.operation() != exact_opcode::log_root_sum);
+    std::string expanded_sixth_text = expanded_sixth_binomial.to_string();
+    assert(expanded_sixth_text.find("atan(") != std::string::npos);
+    assert(expanded_sixth_text.find("ln(") != std::string::npos);
+    exact_expr abs_linear = context.absolute_value(x - context.integer(1));
+    assert(context.differentiate(abs_linear, x) ==
+           abs_linear / (x - context.integer(1)));
+    exact_expr sixth_minus_one = context.power(x, context.integer(6)) -
+                                 context.integer(1);
+    exact_expr expanded_sixth_minus_one = context.expand(context.integrate(
+        context.integer(1) / sixth_minus_one, x));
+    exact_expr expanded_sixth_minus_one_derivative = context.differentiate(
+        expanded_sixth_minus_one, x);
+    auto contains_formal_derivative = [&](auto &&self,
+                                         const exact_expr &expression) -> bool{
+        if(expression.operation() == exact_opcode::derivative) return true;
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            if(self(self, expression.operand(i))) return true;
+        return false;
+    };
+    assert(!contains_formal_derivative(contains_formal_derivative,
+                                       expanded_sixth_minus_one_derivative));
     exact_expr quartic_rational = context.integer(1) /
         (context.power(x, context.integer(4)) - context.integer(1));
     assert(context.integrate(quartic_rational, x).operation() !=
