@@ -9220,6 +9220,17 @@ static exact_expr integration_hyperexponential_rational(
         return width > options.maximum_matrix_entries ||
             rows > options.maximum_matrix_entries / width;
     };
+    auto checked_row_count = [](std::initializer_list<size_t> degree_terms,
+                                size_t &rows){
+        size_t degree = 0;
+        for(size_t term : degree_terms){
+            if(degree > SIZE_MAX - term) return false;
+            degree += term;
+        }
+        if(degree == SIZE_MAX) return false;
+        rows = degree + 1;
+        return true;
+    };
     {
     integration_poly numerator, denominator, inner_polynomial;
     if(!integration_parse_rational(cofactor, variable, numerator, denominator))
@@ -9259,8 +9270,31 @@ static exact_expr integration_hyperexponential_rational(
     const size_t denominator_degree = universal_denominator.size() - 1;
     const size_t polynomial_degree = degree_f > degree_h
         ? (size_t)(degree_f - degree_h) : 0;
+    if(denominator_degree > SIZE_MAX - polynomial_degree){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     const size_t degree_a = denominator_degree + polynomial_degree;
+    if(degree_a == SIZE_MAX){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     const size_t a_columns = degree_a + 1;
+    size_t complete_rows_bound = 0, complete_rhs_rows_bound = 0;
+    if(!checked_row_count({denominator.size() - 1, degree_a,
+                           (size_t)degree_h, denominator_degree},
+                          complete_rows_bound) ||
+       !checked_row_count({numerator.size() - 1, denominator_degree,
+                           denominator_degree}, complete_rhs_rows_bound)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+    complete_rows_bound = std::max(complete_rows_bound,
+                                   complete_rhs_rows_bound);
+    if(exceeds_matrix_budget(complete_rows_bound, a_columns)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
 
     // N(A)=A'*B-A*B'+g'*A*B is the numerator of
     // R'+g'R for R=A/B.
@@ -9325,7 +9359,30 @@ static exact_expr integration_hyperexponential_rational(
 
     // Hermite reduction permits a squarefree residual S/C:
     // P*B = C*N(A) + S*B^2, deg(S)<deg(C).
+    if(a_columns > SIZE_MAX - residual_columns){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     const size_t columns = a_columns + residual_columns;
+    size_t reduction_rows_bound = 0, denominator_square_rows_bound = 0,
+           reduction_rhs_rows_bound = 0;
+    if(!checked_row_count({squarefree_denominator.size() - 1, degree_a,
+                           (size_t)degree_h, denominator_degree},
+                          reduction_rows_bound) ||
+       !checked_row_count({denominator_degree, denominator_degree,
+                           residual_columns - 1},
+                          denominator_square_rows_bound) ||
+       !checked_row_count({numerator.size() - 1, denominator_degree},
+                          reduction_rhs_rows_bound)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+    reduction_rows_bound = std::max(reduction_rows_bound,
+        std::max(denominator_square_rows_bound, reduction_rhs_rows_bound));
+    if(exceeds_matrix_budget(reduction_rows_bound, columns)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     std::vector<integration_poly> reduction_columns;
     reduction_columns.reserve(columns);
     size_t rows = 1;
@@ -9429,9 +9486,34 @@ expression_coefficient_rde:
     size_t degree_f = p.size() >= q.size() ? p.size() - q.size() : 0;
     const size_t degree_rate = rate.size() - 1;
     size_t degree_a = repeated_denominator.size() - 1;
-    if(degree_f > degree_rate) degree_a += degree_f - degree_rate;
+    if(degree_f > degree_rate){
+        const size_t growth = degree_f - degree_rate;
+        if(degree_a > SIZE_MAX - growth){
+            if(resource_limited) *resource_limited = true;
+            return exact_expr();
+        }
+        degree_a += growth;
+    }
     if(degree_a > options.maximum_degree) return exact_expr();
+    if(degree_a == SIZE_MAX){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     const size_t columns = degree_a + 1;
+    const size_t repeated_degree = repeated_denominator.size() - 1;
+    size_t rhs_rows_bound = 0, rde_rows_bound = 0;
+    if(!checked_row_count({p.size() - 1, repeated_degree, repeated_degree},
+                          rhs_rows_bound) ||
+       !checked_row_count({q.size() - 1, degree_a, degree_rate,
+                           repeated_degree}, rde_rows_bound)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+    rhs_rows_bound = std::max(rhs_rows_bound, rde_rows_bound);
+    if(exceeds_matrix_budget(rhs_rows_bound, columns)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
 
     integration_expr_poly b = repeated_denominator;
     integration_expr_poly q_expr = q;
@@ -14905,14 +14987,15 @@ risch_result exact_context::integrate_elementary_impl(
                 return false;
         }
 
-        integration_poly angle_polynomial;
-        bool parsed_angle = integration_parse_poly(angle, variable,
-                                                   angle_polynomial, 1, 1);
-        if(!parsed_angle ||
+        integration_expr_poly angle_polynomial;
+        if(!integration_parse_expr_poly(*this, angle, variable,
+                                        angle_polynomial) ||
            angle_polynomial.size() != 2 ||
-           angle_polynomial[1].is_zero() ||
-           angle_polynomial[0].is_approximate() ||
-           angle_polynomial[1].is_approximate())
+           integration_depends_on(angle_polynomial[1], variable) ||
+           !integration_exact_expression_tree(angle_polynomial[0]) ||
+           !angle_polynomial[1].is_value() ||
+           angle_polynomial[1].value().is_approximate() ||
+           angle_polynomial[1].value().is_zero())
             return false;
 
         exact_expr parameter;
@@ -14951,7 +15034,7 @@ risch_result exact_context::integrate_elementary_impl(
             transformed = substitute(transformed, trigonometric, replacement);
         }
 
-        exact_expr slope = value(angle_polynomial[1]);
+        exact_expr slope = angle_polynomial[1];
         exact_expr dx_dt = integer(2) /
             (slope * (hyperbolic ? one_minus_t_squared : one_plus_t_squared));
         exact_expr transformed_integrand = simplify(transformed * dx_dt);

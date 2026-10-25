@@ -451,6 +451,18 @@ int main(){
     assert(context.integrate_elementary(rational_hyperexponential_budget_input,
         x, rational_hyperexponential_tiny_budget).status ==
         risch_status::resource_limit);
+    exact_expr x_to_64 = context.power(x, context.integer(64));
+    exact_expr high_order_hyperexponential_input =
+        context.exponential(x_to_64) / x_to_64;
+    assert(context.integrate_elementary(high_order_hyperexponential_input,
+        x, rational_hyperexponential_tiny_budget).status ==
+        risch_status::resource_limit);
+    exact_expr symbolic_hyperexponential_budget_input = a *
+        context.exponential(x_squared) /
+        context.power(x_squared_plus_one, context.integer(2));
+    assert(context.integrate_elementary(symbolic_hyperexponential_budget_input,
+        x, rational_hyperexponential_tiny_budget).status ==
+        risch_status::resource_limit);
     exact_expr quadratic_reciprocal_legacy = context.integrate(
         quadratic_reciprocal_input, x);
     assert(quadratic_reciprocal_legacy.operation() != exact_opcode::integral);

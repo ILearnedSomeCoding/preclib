@@ -93,6 +93,17 @@ int main(){
     assert(rational_slope_result.status == risch_status::elementary);
     assert(rational_slope_result.remainder == context.integer(0));
 
+    exact_expr phase = context.symbol("phase");
+    for(const exact_expr &offset : {phase, context.pi() / context.integer(3)}){
+        exact_expr shifted_angle = x + offset;
+        exact_expr shifted_rational_trig = context.integer(1) /
+            (context.integer(2) + context.cosine(shifted_angle));
+        risch_result shifted_rational_trig_result =
+            context.integrate_elementary(shifted_rational_trig, x);
+        assert(shifted_rational_trig_result.status == risch_status::elementary);
+        assert(shifted_rational_trig_result.remainder == context.integer(0));
+    }
+
     exact_expr exponential_factor = context.exponential(context.integer(2) * x);
     exact_expr affine_trig_angle = context.integer(3) * x + context.integer(1);
     exact_expr exponential_sine = exponential_factor *
