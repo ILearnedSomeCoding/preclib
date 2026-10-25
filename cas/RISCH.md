@@ -1351,6 +1351,13 @@ D(y_j) + (j+1)*a*y_(j+1) = b_j.
 仅在完整候选通过精确求导恒等式后将条件传播到结果；普通积分入口不丢弃条件后
 静默返回候选。回归 `test_risch_recursive_conditions.cpp` 用
 `log(x)*log(1+a*x)/a` 的导数验证此行为。
+通用积分入口还对 `exp(u)*log(u)` 使用分部归约
+`(exp(u)*log(u)-Ei(u))/u'`，当前只在 `u'` 是精确非零数值常数时启用，
+并验证完整导数恒等式。该结果含非初等的 `Ei`，不会被严格 elementary API
+误报为初等原函数。严格 Risch 入口同步剥出 `exp(u)*log(u)/u'`，将余项
+`-exp(u)/u` 归约到已证明非初等的 `exp(t)/t` 核；仿射换元搬运子问题的余项，
+并验证整条分解恒等式后才返回 `proven_nonelementary`。
+`test_risch_ei_log_product.cpp` 覆盖一般仿射 `u` 与常数倍输入。
 
 ### 8.3 exponential 层
 

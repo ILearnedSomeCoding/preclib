@@ -10579,6 +10579,31 @@ exact_expr exact_context::integrate(const exact_expr &expression,
             // second node for the logarithmic integral.
             result = exponential_integral(natural_logarithm(variable));
         }
+        if(!result.valid() && node.op == exact_opcode::multiply){
+            // Integration by parts reduces exp(u)*ln(u) to Ei(u). Restrict
+            // this identity to a certified nonzero constant u' and verify
+            // the full candidate, so symbolic-rate division cannot silently
+            // discard a parameter condition.
+            for(size_t i = 0; i < node.operand_count && !result.valid(); ++i){
+                exact_expr exponential_factor(storage_, args[i]);
+                if(exponential_factor.operation() != exact_opcode::exponential)
+                    continue;
+                exact_expr inner = exponential_factor.operand(0);
+                exact_expr logarithm = natural_logarithm(inner);
+                exact_expr ratio, rate = differentiate(inner, variable);
+                if(!rate.is_value() || rate.value().is_approximate() ||
+                   rate.value().is_zero() ||
+                   !constant_ratio(source,
+                       exponential_factor * logarithm, ratio))
+                    continue;
+                exact_expr candidate = ratio / rate *
+                    (exponential_factor * logarithm -
+                     exponential_integral(inner));
+                if(simplify(expand(differentiate(candidate, variable) -
+                        source, 100000)) == integer(0))
+                    result = std::move(candidate);
+            }
+        }
         if(!result.valid() && node.op == exact_opcode::exponential){
             // exp(c*x^2) is the first non-elementary hyperexponential
             // extension.  Detect it through f'/x = 2c, then verify f=c*x^2
@@ -12234,6 +12259,95 @@ risch_result exact_context::integrate_elementary_impl(
     const size_t verification_degree_budget =
         degree_budget <= options.maximum_nodes / 4
             ? degree_budget * 4 : options.maximum_nodes;
+    auto classify_ei_log_product = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            exact_expr exponential_factor = expression.operand(i);
+            if(exponential_factor.operation() != exact_opcode::exponential)
+                continue;
+            exact_expr inner = exponential_factor.operand(0);
+            exact_expr logarithm = natural_logarithm(inner);
+            bool has_matching_log = false;
+            for(size_t j = 0; j < expression.operand_count(); ++j){
+                exact_expr factor = expression.operand(j);
+                if(factor == logarithm){
+                    has_matching_log = true;
+                    break;
+                }
+            }
+            if(!has_matching_log) continue;
+            exact_expr rate = differentiate(inner, variable);
+            if(!rate.is_value() || rate.value().is_approximate() ||
+               rate.value().is_zero()) continue;
+            exact_expr ratio = simplify(expression /
+                (exponential_factor * logarithm));
+            if(integration_depends_on(ratio, variable) ||
+               !ratio.is_value() || ratio.value().is_approximate() ||
+               ratio.value().is_zero()) continue;
+
+            exact_expr elementary_part = ratio / rate *
+                exponential_factor * logarithm;
+            exact_expr residual = -ratio * exponential_factor / inner;
+            if(simplify(expand(expression -
+                    differentiate(elementary_part, variable) - residual,
+                    100000)) != integer(0))
+                continue;
+            risch_result lower = integrate_elementary(
+                exponential_factor / inner, variable, options);
+            exact_expr lower_part, lower_remainder;
+            if(lower.status == risch_status::proven_nonelementary){
+                lower_part = lower.elementary_part;
+                lower_remainder = lower.remainder;
+            }else{
+                // An affine change t=inner maps exp(inner)/inner to the
+                // certified Ei kernel exp(t)/t. The inverse Jacobian scales
+                // only the extracted primitive, not the residual integrand.
+                exact_expr dummy_kernel = exponential(variable) / variable;
+                lower = integrate_elementary(dummy_kernel, variable, options);
+                if(lower.status != risch_status::proven_nonelementary) continue;
+                lower_part = substitute(lower.elementary_part, variable,
+                                        inner) / rate;
+                lower_remainder = substitute(lower.remainder, variable,
+                                             inner);
+            }
+            exact_expr combined_part = simplify(elementary_part -
+                ratio * lower_part);
+            exact_expr combined_remainder = -ratio * lower_remainder;
+            exact_expr reconstruction_error = simplify(expand(
+                differentiate(combined_part, variable) + combined_remainder -
+                expression, 100000));
+            bool reconstruction_verified = reconstruction_error == integer(0);
+            if(!reconstruction_verified){
+                exact_expr normalized_error = simplify(
+                    reconstruction_error / exponential_factor);
+                integration_poly error_numerator, error_denominator;
+                reconstruction_verified =
+                    integration_parse_rational(normalized_error, variable,
+                        error_numerator, error_denominator, degree_budget,
+                        verification_degree_budget) &&
+                    integration_normalize_rational(error_numerator,
+                        error_denominator) &&
+                    integration_zero_poly(error_numerator);
+            }
+            if(!reconstruction_verified) continue;
+            if(combined_part.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "Ei logarithmic-product reduction node budget exceeded";
+                return true;
+            }
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = std::move(combined_part);
+            result.remainder = std::move(combined_remainder);
+            result.conditions = std::move(lower.conditions);
+            result.diagnostic =
+                "integration by parts reduces the non-elementary remainder "
+                "to a certified hyperexponential integral";
+            return true;
+        }
+        return false;
+    };
+    if(classify_ei_log_product()) return result;
     auto is_real_constant_expression = [&](auto &&self,
             const exact_expr &part) -> bool{
         if(part.is_value() || part.operation() == exact_opcode::constant_e ||

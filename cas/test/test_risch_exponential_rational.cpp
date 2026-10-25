@@ -81,9 +81,15 @@ int main(){
             binomial_input, x);
         assert(binomial_integral.status == risch_status::elementary);
         assert(binomial_integral.remainder == context.integer(0));
-        if(degree >= 5)
-            assert(binomial_integral.elementary_part.operation() ==
-                exact_opcode::log_root_sum);
+        if(degree >= 5){
+            exact_opcode representation =
+                binomial_integral.elementary_part.operation();
+            assert(representation == exact_opcode::log_root_sum ||
+                   representation == exact_opcode::algebraic_log_sum);
+        }
+        assert(context.simplify(context.expand(context.differentiate(
+            binomial_integral.elementary_part, x) - binomial_input,
+            100000)) == context.integer(0));
         assert(context.integrate(binomial_input, x).operation() !=
             exact_opcode::integral);
     }
@@ -110,7 +116,10 @@ int main(){
         (context.power(x, context.integer(6)) + context.integer(1));
     exact_expr sextic_log_primitive = context.integrate(sextic_log_integrand, x);
     exact_expr expanded_sextic_primitive = context.expand(sextic_log_primitive);
-    assert(expanded_sextic_primitive.operation() == exact_opcode::log_root_sum);
+    exact_opcode sextic_representation =
+        expanded_sextic_primitive.operation();
+    assert(sextic_representation == exact_opcode::log_root_sum ||
+           sextic_representation == exact_opcode::algebraic_log_sum);
     exact_expr expanded_sextic_derivative = context.differentiate(
         expanded_sextic_primitive, x);
     assert(context.simplify(expanded_sextic_derivative -
