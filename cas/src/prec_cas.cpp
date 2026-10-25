@@ -10699,6 +10699,17 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                     inner = factor.operand(0);
                     exponential_factor = factor;
                 }else if(factor.operation() == exact_opcode::power &&
+                         factor.operand(0).operation() ==
+                             exact_opcode::exponential){
+                    int64_t exponent = 0;
+                    if(!integration_signed_exponent(factor.operand(1),
+                            exponent)) continue;
+                    inner = integer(exponent) *
+                            factor.operand(0).operand(0);
+                    exponential_factor = exponential(inner);
+                    normalized_source = simplify(source / factor *
+                                                  exponential_factor);
+                }else if(factor.operation() == exact_opcode::power &&
                          factor.operand(0).operation() == exact_opcode::constant_e){
                     // The parser stores e^u as a power node, but it is the
                     // same exponential differential generator as exp(u).

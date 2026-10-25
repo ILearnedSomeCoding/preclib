@@ -616,6 +616,37 @@ int main(){
         context.exponential(nonzero_a*x), x);
     assert(parameter_exponential.status == risch_status::elementary);
     assert(has_condition(parameter_exponential, nonzero_a));
+    exact_expr inverse_parameter_exponential_integrand =
+        x / context.exponential(nonzero_a*x);
+    risch_result inverse_parameter_exponential = context.integrate_elementary(
+        inverse_parameter_exponential_integrand,x);
+    assert(inverse_parameter_exponential.status == risch_status::elementary);
+    assert(inverse_parameter_exponential.remainder == context.integer(0));
+    assert(has_condition(inverse_parameter_exponential,nonzero_a));
+    exact_expr normalized_inverse_parameter_exponential =
+        x*context.exponential(-nonzero_a*x);
+    exact_expr inverse_exponential_power=context.power(
+        context.exponential(nonzero_a*x),context.integer(-1));
+    auto normalize_inverse_exponential=[&](const exact_expr &value){
+        return context.substitute(value,inverse_exponential_power,
+            context.exponential(-nonzero_a*x));
+    };
+    exact_expr inverse_parameter_error=context.simplify(context.expand(
+        normalize_inverse_exponential(context.differentiate(
+            inverse_parameter_exponential.elementary_part,x)-
+            normalized_inverse_parameter_exponential)));
+    if(inverse_parameter_error!=context.integer(0))
+        std::fprintf(stderr,"inverse exp primitive=%s error=%s\n",
+            inverse_parameter_exponential.elementary_part.to_string().c_str(),
+            inverse_parameter_error.to_string().c_str());
+    assert(inverse_parameter_error==context.integer(0));
+    exact_expr public_inverse_parameter_exponential = context.integrate(
+        inverse_parameter_exponential_integrand,x);
+    assert(public_inverse_parameter_exponential.operation()!=
+           exact_opcode::integral);
+    assert(context.simplify(context.expand(normalize_inverse_exponential(
+        context.differentiate(public_inverse_parameter_exponential,x)-
+        normalized_inverse_parameter_exponential)))==context.integer(0));
     risch_result scaled_parameter_exponential = context.integrate_elementary(
         context.e() * context.exponential(nonzero_a*x), x);
     assert(scaled_parameter_exponential.status == risch_status::elementary);
