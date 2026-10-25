@@ -3169,6 +3169,11 @@ static exact_expr integration_algebraic_logarithmic_rational(
     return terms.empty() ? context.integer(0) : context.add(terms);
 }
 
+static exact_expr integration_rothstein_trager_rational(
+    exact_context &context, const integration_poly &numerator,
+    const integration_poly &denominator, const exact_expr &variable,
+    size_t maximum_degree);
+
 static bool integration_hermite_reduce(
     const integration_poly &numerator, const integration_poly &denominator,
     integration_poly &rational_numerator,
@@ -3406,7 +3411,11 @@ static exact_expr integration_rational_antiderivative(
                     context.absolute_value(denominator_expression));
     }
     exact_expr proper;
+    if(denominator.size() - 1 > 4)
+        proper = integration_rothstein_trager_rational(
+            context, remainder, denominator, variable, maximum_degree);
     if(denominator.size() - 1 > 4 &&
+       !proper.valid() &&
        integration_gcd_poly(denominator,
            integration_derivative_poly(denominator)).size() == 1)
         proper = context.log_root_sum(
@@ -6796,6 +6805,183 @@ static bool integration_algebraic_residue_factor(
        candidate.size() < 2) return false;
     factor = std::move(candidate);
     return true;
+}
+
+// Rothstein-Trager logarithmic part for Q(x): factor the residue polynomial,
+// then recover the product of poles belonging to each algebraic residue.
+static exact_expr integration_rothstein_trager_rational(
+    exact_context &context, const integration_poly &numerator,
+    const integration_poly &denominator, const exact_expr &variable,
+    size_t maximum_degree){
+    const size_t degree = denominator.size() - 1;
+    // The current exact factorizer is intentionally kept away from large
+    // resultant polynomials; higher degrees retain the compact LogRootSum.
+    if(degree <= 4 || degree > 6 || degree > maximum_degree ||
+       numerator.size() >= denominator.size())
+        return exact_expr();
+
+    integration_poly derivative = integration_derivative_poly(denominator);
+    if(integration_gcd_poly(denominator, derivative).size() != 1)
+        return exact_expr();
+
+    // Extended Euclid computes W'^(-1) mod W, with a multiplication-back check.
+    integration_poly old_r = denominator, r = derivative;
+    integration_poly old_s{numeric_value(0)}, s{numeric_value(1)};
+    while(!integration_zero_poly(r)){
+        integration_poly q, next_r;
+        if(!integration_divmod_poly(old_r, r, q, next_r)) return exact_expr();
+        integration_poly next_s = integration_sub(old_s, integration_mul(q, s));
+        old_r = std::move(r);
+        r = std::move(next_r);
+        old_s = std::move(s);
+        s = std::move(next_s);
+    }
+    if(old_r.size() != 1 || old_r[0].is_zero()) return exact_expr();
+    for(numeric_value &coefficient : old_s) coefficient = coefficient / old_r[0];
+    integration_poly quotient, inverse;
+    if(!integration_divmod_poly(old_s, denominator, quotient, inverse))
+        return exact_expr();
+    integration_poly inverse_product = integration_mul(derivative, inverse);
+    if(!integration_divmod_poly(inverse_product, denominator, quotient, inverse_product) ||
+       inverse_product != integration_poly{numeric_value(1)}) return exact_expr();
+
+    integration_poly residue_product = integration_mul(numerator, old_s);
+    integration_poly residue;
+    if(!integration_divmod_poly(residue_product, denominator, quotient, residue))
+        return exact_expr();
+
+    std::unordered_set<uint32_t> used_symbols;
+    auto collect_symbols = [&](auto &&self, const exact_expr &expression) -> void{
+        if(expression.operation() == exact_opcode::symbol)
+            used_symbols.insert(expression.id());
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            self(self, expression.operand(i));
+    };
+    collect_symbols(collect_symbols, variable);
+    size_t suffix = 0;
+    exact_expr z, generator;
+    do{ z = context.symbol("_risch_rt_z" + std::to_string(suffix++)); }
+    while(used_symbols.count(z.id()));
+    do{ generator = context.symbol("_risch_rt_t" + std::to_string(suffix++)); }
+    while(used_symbols.count(generator.id()) || generator == z);
+
+    integration_expr_poly residue_expression, denominator_expression;
+    residue_expression.reserve(residue.size());
+    denominator_expression.reserve(denominator.size());
+    for(const numeric_value &coefficient : residue)
+        residue_expression.push_back(context.value(coefficient));
+    for(const numeric_value &coefficient : denominator)
+        denominator_expression.push_back(context.value(coefficient));
+    integration_expr_poly characteristic;
+    risch_options options;
+    options.maximum_degree = maximum_degree;
+    if(!integration_residue_characteristic_polynomial(context,
+        residue_expression, denominator_expression, generator, options,
+        characteristic)) return exact_expr();
+    integration_poly residue_polynomial;
+    for(const exact_expr &coefficient : characteristic){
+        integration_poly n, d;
+        if(!integration_parse_rational(coefficient, generator, n, d,
+                maximum_degree, maximum_degree) ||
+           !integration_normalize_rational(n, d) || n.size() != 1 || d.size() != 1)
+            return exact_expr();
+        residue_polynomial.push_back(n[0] / d[0]);
+    }
+
+    std::vector<exact_expr> factors;
+    integration_factor_list(context.factor(
+        integration_poly_expr(context, residue_polynomial, z)), factors);
+    std::vector<integration_poly> minimal_polynomials;
+    for(exact_expr factor : factors){
+        if(factor.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            if(!integration_signed_exponent(factor.operand(1), exponent) || exponent < 1)
+                return exact_expr();
+            factor = factor.operand(0);
+        }
+        integration_poly minimal, repeated, squarefree;
+        if(!integration_parse_poly(factor, z, minimal, maximum_degree,
+                maximum_degree)) return exact_expr();
+        if(minimal.size() < 2) continue;
+        repeated = integration_gcd_poly(minimal,
+            integration_derivative_poly(minimal));
+        if(!integration_divide_poly(minimal, repeated, squarefree))
+            return exact_expr();
+        numeric_value leading = squarefree.back();
+        for(numeric_value &coefficient : squarefree)
+            coefficient = coefficient / leading;
+        if(std::find(minimal_polynomials.begin(), minimal_polynomials.end(), squarefree) ==
+           minimal_polynomials.end())
+            minimal_polynomials.push_back(std::move(squarefree));
+    }
+    if(minimal_polynomials.empty()) return exact_expr();
+
+    exact_expr result = context.integer(0);
+    for(const integration_poly &minimal : minimal_polynomials){
+        integration_residue_algebra algebra{minimal};
+        integration_algebraic_function_poly w, v_minus_z_derivative;
+        const integration_poly z_element{numeric_value(0), numeric_value(1)};
+        const size_t coefficient_count = std::max(denominator.size(),
+            std::max(numerator.size(), derivative.size()));
+        w.reserve(denominator.size());
+        v_minus_z_derivative.reserve(coefficient_count);
+        for(size_t i = 0; i < denominator.size(); ++i){
+            integration_algebraic_fraction coefficient;
+            coefficient.numerator = {algebra.reduce({denominator[i]})};
+            coefficient.denominator = {{numeric_value(1)}};
+            w.push_back(std::move(coefficient));
+        }
+        for(size_t i = 0; i < coefficient_count; ++i){
+            integration_poly value = i < numerator.size()
+                ? algebra.reduce({numerator[i]}) : integration_poly{numeric_value(0)};
+            if(i < derivative.size())
+                value = algebra.reduce(integration_sub(value,
+                    algebra.multiply(z_element, {derivative[i]})));
+            integration_algebraic_fraction coefficient;
+            coefficient.numerator = {std::move(value)};
+            coefficient.denominator = {{numeric_value(1)}};
+            v_minus_z_derivative.push_back(std::move(coefficient));
+        }
+        integration_algebraic_function_poly pole_factor;
+        if(!integration_algebraic_function_poly_gcd(algebra, std::move(w),
+                std::move(v_minus_z_derivative), maximum_degree, pole_factor) ||
+           pole_factor.size() < 2) return exact_expr();
+
+        integration_expr_poly argument_coefficients;
+        argument_coefficients.reserve(pole_factor.size());
+        for(const integration_algebraic_fraction &coefficient : pole_factor){
+            if(coefficient.numerator.size() != 1 ||
+               coefficient.denominator.size() != 1) return exact_expr();
+            integration_poly denominator_inverse;
+            if(!algebra.inverse(coefficient.denominator[0], denominator_inverse))
+                return exact_expr();
+            integration_poly value = algebra.multiply(coefficient.numerator[0],
+                denominator_inverse);
+            argument_coefficients.push_back(
+                integration_poly_expr(context, value, z));
+        }
+        exact_expr argument = integration_expr_poly_expr(context,
+            argument_coefficients, variable);
+        try{
+            result = result + context.algebraic_log_sum(
+                integration_poly_expr(context, minimal, z), z, argument,
+                generator, variable);
+        }catch(const std::invalid_argument &){
+            return exact_expr();
+        }
+    }
+
+    // The algebraic-log nodes validate their traces on construction; also
+    // check their sum against the original rational function before returning.
+    integration_poly check_numerator, check_denominator;
+    exact_expr target = integration_poly_expr(context, numerator, variable) /
+        integration_poly_expr(context, denominator, variable);
+    if(!integration_parse_rational(
+            context.differentiate(result, variable) - target, variable,
+            check_numerator, check_denominator, maximum_degree, maximum_degree) ||
+       !integration_normalize_rational(check_numerator, check_denominator) ||
+       !integration_zero_poly(check_numerator)) return exact_expr();
+    return result;
 }
 
 // Rational constant residues, recovered by gcd rather than by factoring d.

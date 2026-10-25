@@ -1455,14 +1455,14 @@ int main(){
         fifth_simple_fraction, x);
     assert(high_degree_squarefree.status == risch_status::elementary);
     assert(high_degree_squarefree.elementary_part.operation() ==
-           exact_opcode::log_root_sum);
+           exact_opcode::algebraic_log_sum);
     assert(context.differentiate(high_degree_squarefree.elementary_part, x) ==
            fifth_simple_fraction);
     assert(high_degree_squarefree.elementary_part.to_string().find(
-               "LogRootSum(") == 0);
+               "AlgebraicLogSum(") == 0);
     exact_expr substituted_root_sum = context.substitute(
         high_degree_squarefree.elementary_part, x, y);
-    assert(substituted_root_sum.operation() == exact_opcode::log_root_sum);
+    assert(substituted_root_sum.operation() == exact_opcode::algebraic_log_sum);
     exact_expr substituted_fifth = context.power(y, context.integer(5)) - y +
                                    context.integer(1);
     assert(context.differentiate(substituted_root_sum, y) ==
@@ -1539,7 +1539,7 @@ int main(){
     verify_rational_integral(mixed_pole_rational);
     verify_rational_integral(nonmonic_repeated_rational);
     assert(context.integrate(fifth_simple_fraction, x).operation() ==
-           exact_opcode::log_root_sum);
+           exact_opcode::algebraic_log_sum);
     {
         exact_context root_sum_context;
         exact_expr root_sum_x = root_sum_context.symbol("x");
@@ -2341,19 +2341,15 @@ int main(){
         exact_expr binomial_integrand = context.integer(1) /
                                         binomial_denominator;
         exact_expr binomial_primitive = context.integrate(binomial_integrand, x);
-        if(degree == 6){
-            assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
-            assert(binomial_primitive.operation() != exact_opcode::integral);
-        }else{
-            assert(binomial_primitive.operation() == exact_opcode::log_root_sum);
-            assert(context.differentiate(binomial_primitive, x) ==
-                   binomial_integrand);
-            if(degree == 12){
-                exact_expr unexpanded = context.log_root_sum(
-                    context.integer(1), binomial_denominator, x);
-                assert(context.expand(unexpanded).operation() ==
-                       exact_opcode::log_root_sum);
-            }
+        assert(binomial_primitive.operation() == exact_opcode::log_root_sum ||
+               binomial_primitive.operation() == exact_opcode::algebraic_log_sum);
+        assert(context.differentiate(binomial_primitive, x) ==
+               binomial_integrand);
+        if(degree == 12){
+            exact_expr unexpanded = context.log_root_sum(
+                context.integer(1), binomial_denominator, x);
+            assert(context.expand(unexpanded).operation() ==
+                   exact_opcode::log_root_sum);
         }
     }
     exact_expr sixth_binomial = context.power(x, context.integer(6)) +
