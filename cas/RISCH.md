@@ -44,6 +44,16 @@ Sturm 序列确认无实根，Ferrari resolvent 在可用的实根分支下构�
 例如 `x/sqrt(x^4+1)` 返回 `ln(x^2+sqrt(x^4+1))/2`；而
 `1/sqrt(x^4+1)` 仍由椭圆曲线全纯微分证书判为非初等。候选对数项在代数函数域
 中逐坐标精确验证；通用 `simplify(diff(F)-f)` 目前未必能化简所有根式恒等式。
+对平方自由降幂四次 `y^2=P(x)`，另有一个受限第二类微分证书：余项为
+`(a+c*x^2)dx/y` 且非零时，利用无穷远两点的极点阶数、零留数的对数项消去
+和 Riemann-Roch 给出的 `span{1,x}` 原函数界，证明其非初等。
+这不扩展到含 `x` 项的留数、非降幂四次或一般超椭圆微分。
+专用回归还覆盖 `x^3/sqrt(x^4+1)`、`x^5/sqrt(x^4+1)`、
+`x^7/sqrt(x^4+1)`、`x^9/sqrt(x^4+1)`；每个返回原函数都在
+`Q(x)[y]/(y^2-x^4-1)` 中对 `D(F)-f` 做精确约化并检查所有坐标为零。
+同时回归 `1/sqrt(x^4+1)`、`x^2/sqrt(x^4+1)` 及
+`(1+x^2)/sqrt(x^4+1)` 的非初等证明；另一条曲线
+`y^2=x^4+2*x^2+2` 则回归 `x^2/y` 的非初等证明与 `x/y` 的初等对数原函数。
 专用回归：`clang++ -O2 -mavx2 -std=c++17 cas/test/test_risch_hyperelliptic_quartic.cpp cas/src/prec_expr.cpp cas/ntheory/*.cpp src/*.cpp -o build/test_risch_hyperelliptic_quartic.exe`。
 高次重复极点通过精确 Hermite 线性系统归约；系统规模受严格入口的有理次数预算
 限制。测试已覆盖 13 次分母的平方。预算内若精确重构不成立会返回

@@ -8263,6 +8263,47 @@ static bool integration_hyperelliptic_holomorphic_certificate(
     return coefficient.size() <= genus;
 }
 
+// On a smooth depressed quartic curve y^2=P(x), the differentials
+// (a+c*x^2) dx/y have zero residues. A log-derivative combination with all
+// residues zero is itself zero (relations among principal divisors are
+// rational, hence come from products of powers of the same functions).
+// An exact primitive could only have simple poles at the two points at
+// infinity; Riemann-Roch gives their function space as span{1,x}, whose
+// derivatives cannot equal a nonzero (a+c*x^2)/y.
+static bool integration_depressed_quartic_second_kind_certificate(
+    exact_context &context, const integration_expr_poly &residual,
+    const integration_expr_poly &modulus, const exact_expr &variable,
+    const risch_options &options){
+    if(modulus.size()!=3 || residual.size()<2 ||
+       residual[0]!=context.integer(0)) return false;
+    for(size_t i=2;i<residual.size();++i)
+        if(residual[i]!=context.integer(0)) return false;
+
+    exact_expr middle=modulus[1],leading=modulus[2];
+    if(!integration_normalize_expr_coefficient(context,middle,variable,
+            options.maximum_degree) || middle!=context.integer(0) ||
+       !integration_normalize_expr_coefficient(context,leading,variable,
+            options.maximum_degree) || leading==context.integer(0)) return false;
+
+    integration_poly p,pd;
+    if(!integration_parse_rational(-modulus[0]/leading,variable,p,pd,
+            options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(p,pd) || pd.size()!=1 ||
+       p.size()!=5 || !p[3].is_zero() ||
+       integration_gcd_poly(p,integration_derivative_poly(p)).size()!=1)
+        return false;
+
+    integration_poly numerator,denominator,coefficient;
+    if(!integration_parse_rational(residual[1],variable,numerator,denominator,
+            options.maximum_degree,options.maximum_degree) ||
+       !integration_normalize_rational(numerator,denominator) ||
+       !integration_divide_poly(integration_mul(numerator,p),denominator,
+            coefficient) || coefficient.size()>3 ||
+       (coefficient.size()>1 && !coefficient[1].is_zero())) return false;
+    return std::any_of(coefficient.begin(),coefficient.end(),
+        [](const numeric_value &c){ return !c.is_zero(); });
+}
+
 // Pullbacks of holomorphic differentials stay holomorphic in the compositum.
 // Independence of the three square classes is certified by the caller.
 static bool integration_biquadratic_holomorphic_certificate(
@@ -15509,22 +15550,24 @@ risch_result exact_context::integrate_elementary_impl(
             }
         }
         exact_expr rest = integration_expr_poly_expr(*this, residual, root);
-        const bool proven_holomorphic = rest != integer(0) &&
+        const bool proven_nonelementary = rest != integer(0) &&
             (input_holomorphic ||
              integration_hyperelliptic_holomorphic_certificate(*this,residual,
                 modulus,variable,options) ||
+             integration_depressed_quartic_second_kind_certificate(*this,
+                residual,modulus,variable,options) ||
              (biquad_a && biquad_b &&
               integration_biquadratic_holomorphic_certificate(*this,residual,
                   *biquad_a,*biquad_b,variable,options)));
         if(input_holomorphic && rest == integer(0)) return false;
-        if(candidate == integer(0) && rest != integer(0) && !proven_holomorphic) return false;
+        if(candidate == integer(0) && rest != integer(0) && !proven_nonelementary) return false;
         if(candidate.reachable_node_count() > options.maximum_nodes ||
            rest.reachable_node_count() > options.maximum_nodes) return false;
         result.status = rest == integer(0) ? risch_status::elementary :
-            proven_holomorphic ? risch_status::proven_nonelementary : risch_status::unsupported;
+            proven_nonelementary ? risch_status::proven_nonelementary : risch_status::unsupported;
         result.elementary_part = std::move(candidate); result.remainder = std::move(rest);
         result.diagnostic = result.status == risch_status::elementary ? "" :
-            proven_holomorphic ? "nonzero holomorphic differential on a smooth hyperelliptic curve" :
+            proven_nonelementary ? "certified non-elementary differential on a smooth algebraic curve" :
             "algebraic remainder preserved after certified exact reduction";
         return true;
     };
