@@ -9947,10 +9947,14 @@ expression_coefficient_rde:
         return exact_expr();
     integration_expr_trim(context, p);
     integration_expr_trim(context, q);
-    if(q.empty() || !q.back().is_value() ||
-       q.back().value().is_approximate() || q.back().value().is_zero())
+    if(q.empty() || !integration_exact_expression_tree(q.back()) ||
+       integration_depends_on(q.back(), variable) ||
+       integration_expr_zero(context, q.back()))
         return exact_expr();
-    exact_expr q_scale = context.value(numeric_value(1) / q.back().value());
+    // Normalize in the generic constant field. If the leading coefficient is
+    // symbolic, the resulting candidate contains its reciprocal; the strict
+    // entry point records that as a nonzero condition.
+    exact_expr q_scale = context.simplify(context.integer(1) / q.back());
     for(auto &coefficient : p)
         coefficient = context.simplify(coefficient * q_scale);
     for(auto &coefficient : q)
