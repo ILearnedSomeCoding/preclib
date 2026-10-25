@@ -444,6 +444,13 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         quadratic_repeated_pole_rde_result.elementary_part, x) -
         quadratic_repeated_pole_rde_input, 100000)) == context.integer(0));
+    risch_options rational_hyperexponential_tiny_budget;
+    rational_hyperexponential_tiny_budget.maximum_matrix_entries = 1;
+    exact_expr rational_hyperexponential_budget_input =
+        context.exponential(x_squared) / x_squared_plus_one;
+    assert(context.integrate_elementary(rational_hyperexponential_budget_input,
+        x, rational_hyperexponential_tiny_budget).status ==
+        risch_status::resource_limit);
     exact_expr quadratic_reciprocal_legacy = context.integrate(
         quadratic_reciprocal_input, x);
     assert(quadratic_reciprocal_legacy.operation() != exact_opcode::integral);

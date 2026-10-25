@@ -9211,7 +9211,15 @@ static exact_expr integration_hyperexponential_rational(
     exact_context &context, const exact_expr &cofactor,
     const exact_expr &inner, const exact_expr &variable,
     bool allow_expression_coefficients = false,
-    const risch_options &options = risch_options()){
+    const risch_options &options = risch_options(),
+    bool *resource_limited = nullptr){
+    if(resource_limited) *resource_limited = false;
+    auto exceeds_matrix_budget = [&](size_t rows, size_t columns){
+        if(columns == SIZE_MAX) return true;
+        const size_t width = columns + 1;
+        return width > options.maximum_matrix_entries ||
+            rows > options.maximum_matrix_entries / width;
+    };
     {
     integration_poly numerator, denominator, inner_polynomial;
     if(!integration_parse_rational(cofactor, variable, numerator, denominator))
@@ -9284,6 +9292,10 @@ static exact_expr integration_hyperexponential_rational(
     integration_poly complete_rhs = integration_mul(numerator,
         integration_mul(universal_denominator, universal_denominator));
     complete_rows = std::max(complete_rows, complete_rhs.size());
+    if(exceeds_matrix_budget(complete_rows, a_columns)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     std::vector<std::vector<numeric_value>> complete_matrix(
         complete_rows,
         std::vector<numeric_value>(a_columns + 1, numeric_value(0)));
@@ -9335,6 +9347,10 @@ static exact_expr integration_hyperexponential_rational(
     }
     integration_poly rhs = integration_mul(numerator, universal_denominator);
     rows = std::max(rows, rhs.size());
+    if(exceeds_matrix_budget(rows, columns)){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
     std::vector<std::vector<numeric_value>> matrix(
         rows, std::vector<numeric_value>(columns + 1, numeric_value(0)));
     for(size_t column = 0; column < columns; ++column)
@@ -9446,8 +9462,10 @@ expression_coefficient_rde:
                                                        differential));
         rows = std::max(rows, matrix_columns.back().size());
     }
-    if(columns == 0 || rows > options.maximum_matrix_entries / (columns + 1))
+    if(columns == 0 || exceeds_matrix_budget(rows, columns)){
+        if(resource_limited) *resource_limited = true;
         return exact_expr();
+    }
     integration_expr_poly a(columns, context.integer(0));
     integration_expr_poly residual = rhs;
     for(size_t column = columns; column-- > 0;){
@@ -16482,11 +16500,20 @@ risch_result exact_context::integrate_elementary_impl(
                                 // This solver returns only after its rational
                                 // RDE numerator identity has been reconstructed
                                 // coefficient by coefficient.
+                                bool rde_resource_limited = false;
                                 exact_expr parameter_primitive =
                                     integration_hyperexponential_rational(
                                         *this, rational_right_hand_side,
                                         base_log_sum * parameter, parameter,
-                                        true, options);
+                                        true, options, &rde_resource_limited);
+                                if(rde_resource_limited){
+                                    result.status = risch_status::resource_limit;
+                                    result.elementary_part = integer(0);
+                                    result.remainder = expression;
+                                    result.diagnostic =
+                                        "constant-rate rational RDE matrix budget exceeded";
+                                    return true;
+                                }
                                 if(parameter_primitive.valid()){
                                     exact_expr candidate = substitute(
                                         parameter_primitive, formal_exponential,
@@ -16529,9 +16556,19 @@ risch_result exact_context::integrate_elementary_impl(
                     base.value() != numeric_value(1);
             }
             if(!primitive.valid()){
+                bool rde_resource_limited = false;
                 primitive = integration_hyperexponential_rational(
                     *this, coefficient, logarithmic_argument, variable,
-                    certified_expression_coefficients, options);
+                    certified_expression_coefficients, options,
+                    &rde_resource_limited);
+                if(rde_resource_limited){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "constant-rate rational RDE matrix budget exceeded";
+                    return true;
+                }
             }
             if(!primitive.valid()) return false;
 
@@ -17588,9 +17625,18 @@ risch_result exact_context::integrate_elementary_impl(
             // constant field generated by exact parameters. Restrict this
             // entry to affine exponential arguments; nonconstant symbolic
             // rates need parameter-specialization-aware pole bounds.
+            bool rde_resource_limited = false;
             exact_expr primitive = integration_hyperexponential_rational(
                 *this, cofactor, exponential_factor.operand(0), variable,
-                true, options);
+                true, options, &rde_resource_limited);
+            if(rde_resource_limited){
+                result.status = risch_status::resource_limit;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.diagnostic =
+                    "rational hyperexponential RDE matrix budget exceeded";
+                return true;
+            }
             if(!primitive.valid()) return false;
             if(primitive.reachable_node_count() > options.maximum_nodes){
                 result.status = risch_status::resource_limit;
@@ -17766,11 +17812,20 @@ risch_result exact_context::integrate_elementary_impl(
                                                   variable) /
                             integration_poly_expr(*this, reduced_denominator,
                                                   variable);
+                        bool rde_resource_limited = false;
                         exact_expr primitive =
                             integration_hyperexponential_rational(*this,
                                 reduced_cofactor,
                                 exponential_factor.operand(0), variable,
-                                false, options);
+                                false, options, &rde_resource_limited);
+                        if(rde_resource_limited){
+                            result.status = risch_status::resource_limit;
+                            result.elementary_part = integer(0);
+                            result.remainder = expression;
+                            result.diagnostic =
+                                "rational hyperexponential RDE matrix budget exceeded";
+                            return true;
+                        }
                         if(primitive.valid()){
                             exact_expr rational_part;
                             if(primitive == exponential_factor){

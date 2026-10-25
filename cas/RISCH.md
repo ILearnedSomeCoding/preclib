@@ -311,6 +311,9 @@ Faddeev-LeVerrier 算法求特征多项式，最后检查 Cayley-Hamilton
 任意对数或代数函数的参数。矩阵及共振搜索预算不足单独返回
 `resource_limit`，而不是“非初等”。测试涵盖 `exp(1/x)` 与
 `exp(1/(x^2+1))` 的非初等判定、相应对数导数倍数的可积性和小预算拒绝。
+多项式指数的有理系数 RDE 也在构造稠密线性系统前检查
+`maximum_matrix_entries`；超限会沿严格入口传播为 `resource_limit`，不再和
+“RDE 无有理解”共用空结果。低预算回归覆盖 `exp(x^2)/(x^2+1)`。
 
 指数 Laurent 分支也已扩展到非恒定有理参数 `g in Q(x)`。
 通过清分母比较精确识别 `exp(k*g)` 的整数倍关系，将正负次数统一到
