@@ -8201,6 +8201,33 @@ static bool integration_rational_square_status(
     return true;
 }
 
+// Compute the polynomial part of sqrt(P) from its Laurent expansion at infinity.
+static bool integration_polynomial_part_square_root(
+    const integration_poly &polynomial, integration_poly &root){
+    if(polynomial.size()<3 || (polynomial.size()&1)==0) return false;
+    const size_t degree=polynomial.size()-1;
+    const size_t root_degree=degree/2;
+    numeric_value leading_root;
+    if(!exact_nth_root(polynomial.back(),2,leading_root) ||
+       leading_root.is_zero()) return false;
+    root.assign(root_degree+1,numeric_value(0));
+    root[root_degree]=leading_root;
+    for(size_t k=root_degree;k-- > 0;){
+        const size_t target_degree=root_degree+k;
+        numeric_value known(0);
+        for(size_t i=k+1;i<=root_degree;++i){
+            if(target_degree<i) continue;
+            const size_t j=target_degree-i;
+            if(j<=k || j>root_degree) continue;
+            known=known+root[i]*root[j];
+        }
+        root[k]=(polynomial[target_degree]-known)/
+            (numeric_value(2)*leading_root);
+    }
+    integration_trim(root);
+    return !integration_zero_poly(root);
+}
+
 // A nonzero holomorphic differential on a smooth projective curve has no
 // elementary primitive. For y^2=P(x), x^i dx/y (i<genus) are holomorphic.
 // Only certify this exact shape; a failed algebraic search proves nothing.
@@ -15417,6 +15444,35 @@ risch_result exact_context::integrate_elementary_impl(
                     if(useful) arguments.push_back(std::move(normalized));
                 };
                 add_argument(denominator); add_argument(numerator);
+                if(rank==2){
+                    integration_poly radicand_numerator,radicand_denominator,
+                        polynomial_root;
+                    exact_expr radicand=-modulus[0]/modulus[2];
+                    if(integration_parse_rational(radicand,variable,
+                            radicand_numerator,radicand_denominator,
+                            degree_budget,degree_budget) &&
+                       integration_normalize_rational(radicand_numerator,
+                                                      radicand_denominator) &&
+                       radicand_denominator.size()==1 &&
+                       integration_polynomial_part_square_root(
+                           radicand_numerator,polynomial_root)){
+                        exact_expr polynomial_root_expr =
+                            integration_poly_expr(*this,polynomial_root,variable);
+                        for(int sign : {1,-1}){
+                            integration_expr_poly argument{
+                                polynomial_root_expr,integer(sign)};
+                            exact_expr scale;
+                            integration_expr_poly rest;
+                            if(!integration_algebraic_log_candidate(*this,
+                                    residual,argument,modulus,dz,variable,
+                                    options,scale,rest)) continue;
+                            candidate=candidate+scale*natural_logarithm(
+                                integration_expr_poly_expr(*this,argument,root));
+                            residual=std::move(rest);
+                            break;
+                        }
+                    }
+                }
                 std::unordered_set<uint32_t> argument_seen;
                 auto collect_arguments = [&](auto &&self, const exact_expr &part) -> void{
                     if(!argument_seen.insert(part.id()).second ||
