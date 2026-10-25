@@ -3172,7 +3172,7 @@ static exact_expr integration_algebraic_logarithmic_rational(
 static exact_expr integration_rothstein_trager_rational(
     exact_context &context, const integration_poly &numerator,
     const integration_poly &denominator, const exact_expr &variable,
-    size_t maximum_degree);
+    size_t maximum_degree, size_t maximum_rothstein_degree);
 
 static bool integration_hermite_reduce(
     const integration_poly &numerator, const integration_poly &denominator,
@@ -3363,7 +3363,8 @@ static exact_expr integration_real_depressed_quartic(
 static exact_expr integration_rational_antiderivative(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable,
-    size_t maximum_degree = integration_public_hermite_degree_limit){
+    size_t maximum_degree = integration_public_hermite_degree_limit,
+    size_t maximum_rothstein_degree = 6){
     integration_poly numerator, denominator;
     if(!integration_parse_rational(expression, variable, numerator, denominator,
                                    maximum_degree, maximum_degree))
@@ -3411,9 +3412,11 @@ static exact_expr integration_rational_antiderivative(
                     context.absolute_value(denominator_expression));
     }
     exact_expr proper;
-    if(denominator.size() - 1 > 4)
+    if(denominator.size() - 1 > 4 &&
+       denominator.size() - 1 <= maximum_rothstein_degree)
         proper = integration_rothstein_trager_rational(
-            context, remainder, denominator, variable, maximum_degree);
+            context, remainder, denominator, variable, maximum_degree,
+            maximum_rothstein_degree);
     if(denominator.size() - 1 > 4 &&
        !proper.valid() &&
        integration_gcd_poly(denominator,
@@ -6812,11 +6815,12 @@ static bool integration_algebraic_residue_factor(
 static exact_expr integration_rothstein_trager_rational(
     exact_context &context, const integration_poly &numerator,
     const integration_poly &denominator, const exact_expr &variable,
-    size_t maximum_degree){
+    size_t maximum_degree, size_t maximum_rothstein_degree){
     const size_t degree = denominator.size() - 1;
-    // The current exact factorizer is intentionally kept away from large
-    // resultant polynomials; higher degrees retain the compact LogRootSum.
-    if(degree <= 4 || degree > 6 || degree > maximum_degree ||
+    // Keep result-polynomial factorization within a predictable small-degree
+    // range; larger inputs retain the compact exact LogRootSum representation.
+    if(degree <= 4 || degree > 8 || degree > maximum_rothstein_degree ||
+       degree > maximum_degree ||
        numerator.size() >= denominator.size())
         return exact_expr();
 
@@ -7538,7 +7542,8 @@ static exact_expr integration_mixed_primitive_exponential(
 // lower differential field, then the full candidate is checked exactly.
 static exact_expr integration_recursive_primitive_polynomial(
     exact_context &context, const exact_expr &expression,
-    const exact_expr &variable, const risch_options &options){
+    const exact_expr &variable, const risch_options &options,
+    std::vector<exact_expr> *output_conditions = nullptr){
     std::vector<exact_expr> generators;
     std::unordered_set<uint32_t> seen;
     auto collect = [&](auto &&self, const exact_expr &part) -> void{
@@ -7569,6 +7574,7 @@ static exact_expr integration_recursive_primitive_polynomial(
             context, polynomial, generator, variable, options);
         if(joint.valid()) return joint;
         integration_expr_poly primitive(polynomial.size(), context.integer(0));
+        std::vector<exact_expr> candidate_conditions;
         bool solved = true;
         for(size_t degree = polynomial.size(); degree-- > 0;){
             exact_expr rhs = polynomial[degree];
@@ -7581,11 +7587,19 @@ static exact_expr integration_recursive_primitive_polynomial(
                 rhs, variable, options);
             if(coefficient.status != risch_status::elementary ||
                coefficient.remainder != context.integer(0) ||
-               !coefficient.conditions.empty() ||
                integration_depends_on(coefficient.elementary_part, generator)){
                 solved = false;
                 break;
             }
+            if(!coefficient.conditions.empty() && !output_conditions){
+                solved = false;
+                break;
+            }
+            for(const exact_expr &condition : coefficient.conditions)
+                if(std::find(candidate_conditions.begin(),
+                             candidate_conditions.end(), condition) ==
+                   candidate_conditions.end())
+                    candidate_conditions.push_back(condition);
             primitive[degree] = coefficient.elementary_part;
         }
         if(!solved) continue;
@@ -7593,7 +7607,15 @@ static exact_expr integration_recursive_primitive_polynomial(
                                                           generator);
         exact_expr error = context.simplify(context.expand(
             context.differentiate(candidate, variable) - expression, 100000));
-        if(error == context.integer(0)) return candidate;
+        if(error == context.integer(0)){
+            if(output_conditions)
+                for(const exact_expr &condition : candidate_conditions)
+                    if(std::find(output_conditions->begin(),
+                                 output_conditions->end(), condition) ==
+                       output_conditions->end())
+                        output_conditions->push_back(condition);
+            return candidate;
+        }
     }
     return exact_expr();
 }
@@ -12804,9 +12826,11 @@ risch_result exact_context::integrate_elementary_impl(
             integration_exact_primitive_polynomial(*this, expression, variable);
         if(exact_primitive_candidate.valid() &&
            verify_candidate(exact_primitive_candidate)) return true;
+        std::vector<exact_expr> recursive_primitive_conditions;
         exact_expr recursive_primitive_candidate =
             integration_recursive_primitive_polynomial(
-                *this, expression, variable, options);
+                *this, expression, variable, options,
+                &recursive_primitive_conditions);
         if(recursive_primitive_candidate.valid() &&
            recursive_primitive_candidate.reachable_node_count() <= options.maximum_nodes){
             // This solver verifies its coefficient equations in Q(x), or the
@@ -12815,6 +12839,10 @@ risch_result exact_context::integrate_elementary_impl(
             result.status = risch_status::elementary;
             result.elementary_part = std::move(recursive_primitive_candidate);
             result.remainder = integer(0);
+            for(const exact_expr &condition : recursive_primitive_conditions)
+                if(std::find(result.conditions.begin(), result.conditions.end(),
+                             condition) == result.conditions.end())
+                    result.conditions.push_back(condition);
             result.diagnostic.clear();
             return true;
         }
@@ -18944,7 +18972,7 @@ risch_result exact_context::integrate_elementary_impl(
                 ? value(log_coefficient) * natural_logarithm(
                     integration_poly_expr(*this, reduced_denominator, variable))
                 : integration_rational_antiderivative(*this, residual, variable,
-                    degree_budget);
+                    degree_budget, options.maximum_rothstein_degree);
             bool logarithmic_verified = logarithmic.valid() &&
                 verified(partial + logarithmic, integer(0));
             if(!logarithmic_verified &&
