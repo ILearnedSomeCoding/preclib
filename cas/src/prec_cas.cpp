@@ -8263,14 +8263,14 @@ static bool integration_hyperelliptic_holomorphic_certificate(
     return coefficient.size() <= genus;
 }
 
-// On a smooth depressed quartic curve y^2=P(x), the differentials
-// (a+c*x^2) dx/y have zero residues. A log-derivative combination with all
-// residues zero is itself zero (relations among principal divisors are
-// rational, hence come from products of powers of the same functions).
-// An exact primitive could only have simple poles at the two points at
-// infinity; Riemann-Roch gives their function space as span{1,x}, whose
-// derivatives cannot equal a nonzero (a+c*x^2)/y.
-static bool integration_depressed_quartic_second_kind_certificate(
+// Shift a smooth quartic to depressed form and certify its residue-free
+// constant/quadratic differential coordinates. A log-derivative combination
+// with all residues zero vanishes: relations among principal divisors are
+// rational and come from products of powers of the same functions. An exact
+// primitive could only have simple poles at the two infinities; Riemann-Roch
+// gives that function space as span{1,x}, whose derivatives cannot equal a
+// nonzero (a+c*x^2)/y.
+static bool integration_quartic_second_kind_certificate(
     exact_context &context, const integration_expr_poly &residual,
     const integration_expr_poly &modulus, const exact_expr &variable,
     const risch_options &options){
@@ -8289,7 +8289,7 @@ static bool integration_depressed_quartic_second_kind_certificate(
     if(!integration_parse_rational(-modulus[0]/leading,variable,p,pd,
             options.maximum_degree,options.maximum_degree) ||
        !integration_normalize_rational(p,pd) || pd.size()!=1 ||
-       p.size()!=5 || !p[3].is_zero() ||
+       p.size()!=5 || p[4].is_zero() ||
        integration_gcd_poly(p,integration_derivative_poly(p)).size()!=1)
         return false;
 
@@ -8298,9 +8298,26 @@ static bool integration_depressed_quartic_second_kind_certificate(
             options.maximum_degree,options.maximum_degree) ||
        !integration_normalize_rational(numerator,denominator) ||
        !integration_divide_poly(integration_mul(numerator,p),denominator,
-            coefficient) || coefficient.size()>3 ||
-       (coefficient.size()>1 && !coefficient[1].is_zero())) return false;
-    return std::any_of(coefficient.begin(),coefficient.end(),
+            coefficient)) return false;
+
+    const numeric_value shift=-p[3]/(numeric_value(4)*p[4]);
+    auto translate = [&](const integration_poly &source){
+        integration_poly result{source.back()};
+        const integration_poly linear{shift,numeric_value(1)};
+        for(size_t degree=source.size()-1;degree-- > 0;){
+            result=integration_mul(result,linear);
+            result[0]=result[0]+source[degree];
+            integration_trim(result);
+        }
+        return result;
+    };
+    integration_poly shifted_p=translate(p);
+    integration_poly shifted_coefficient=translate(coefficient);
+    if(shifted_p.size()!=5 || !shifted_p[3].is_zero() ||
+       shifted_coefficient.size()>3 ||
+       (shifted_coefficient.size()>1 && !shifted_coefficient[1].is_zero()))
+        return false;
+    return std::any_of(shifted_coefficient.begin(),shifted_coefficient.end(),
         [](const numeric_value &c){ return !c.is_zero(); });
 }
 
@@ -15486,6 +15503,72 @@ risch_result exact_context::integrate_elementary_impl(
                 };
                 add_argument(denominator); add_argument(numerator);
                 if(rank==2){
+                    auto partial_log_reduction = [&](const integration_expr_poly &input,
+                            const integration_expr_poly &logarithmic,
+                            exact_expr &scale, integration_expr_poly &remainder){
+                        const size_t count=std::max(input.size(),logarithmic.size());
+                        auto coefficient = [&](const integration_expr_poly &polynomial,
+                                               size_t i){
+                            return i<polynomial.size()?polynomial[i]:integer(0);
+                        };
+                        auto rational_parts = [&](const exact_expr &expression,
+                                integration_poly &n,integration_poly &d){
+                            return integration_parse_rational(expression,variable,n,d,
+                                       degree_budget,degree_budget) &&
+                                   integration_normalize_rational(n,d);
+                        };
+                        auto at_infinity_degree = [](const integration_poly &n,
+                                const integration_poly &d){
+                            if(integration_zero_poly(n)) return INT64_MIN;
+                            return (int64_t)n.size()-(int64_t)d.size();
+                        };
+                        bool have_scale=false;
+                        numeric_value scalar(0);
+                        for(size_t i=1;i<count;++i){
+                            integration_poly in_n,in_d,log_n,log_d;
+                            if(!rational_parts(coefficient(input,i),in_n,in_d) ||
+                               !rational_parts(coefficient(logarithmic,i),log_n,log_d))
+                                return false;
+                            if(integration_zero_poly(in_n) ||
+                               integration_zero_poly(log_n) ||
+                               at_infinity_degree(in_n,in_d)!=
+                                   at_infinity_degree(log_n,log_d)) continue;
+                            scalar=(in_n.back()/in_d.back())/
+                                   (log_n.back()/log_d.back());
+                            if(scalar.is_zero()) continue;
+                            have_scale=true;
+                            break;
+                        }
+                        if(!have_scale) return false;
+                        integration_expr_poly reduced(count,integer(0));
+                        reduced[0]=coefficient(input,0)-value(scalar)*
+                                   coefficient(logarithmic,0);
+                        if(!integration_normalize_expr_coefficient(*this,
+                                reduced[0],variable,degree_budget)) return false;
+                        bool made_progress=false;
+                        for(size_t i=1;i<count;++i){
+                            exact_expr in=coefficient(input,i);
+                            exact_expr log=coefficient(logarithmic,i);
+                            exact_expr rest=in-value(scalar)*log;
+                            if(!integration_normalize_expr_coefficient(*this,rest,
+                                    variable,degree_budget)) return false;
+                            integration_poly in_n,in_d,rest_n,rest_d;
+                            if(!rational_parts(in,in_n,in_d) ||
+                               !rational_parts(rest,rest_n,rest_d)) return false;
+                            if(integration_zero_poly(in_n)){
+                                if(!integration_zero_poly(rest_n)) return false;
+                            }else if(!integration_zero_poly(rest_n)){
+                                if(at_infinity_degree(rest_n,rest_d)>=
+                                   at_infinity_degree(in_n,in_d)) return false;
+                                made_progress=true;
+                            }else made_progress=true;
+                            reduced[i]=std::move(rest);
+                        }
+                        if(!made_progress) return false;
+                        scale=value(scalar);
+                        remainder=std::move(reduced);
+                        return true;
+                    };
                     integration_poly radicand_numerator,radicand_denominator,
                         polynomial_root;
                     exact_expr radicand=-modulus[0]/modulus[2];
@@ -15506,7 +15589,14 @@ risch_result exact_context::integrate_elementary_impl(
                             integration_expr_poly rest;
                             if(!integration_algebraic_log_candidate(*this,
                                     residual,argument,modulus,dz,variable,
-                                    options,scale,rest)) continue;
+                                    options,scale,rest)){
+                                integration_expr_poly logarithmic;
+                                if(!integration_algebraic_log_derivative(*this,
+                                        argument,modulus,dz,variable,options,
+                                        logarithmic) ||
+                                   !partial_log_reduction(residual,logarithmic,
+                                        scale,rest)) continue;
+                            }
                             candidate=candidate+scale*natural_logarithm(
                                 integration_expr_poly_expr(*this,argument,root));
                             residual=std::move(rest);
@@ -15554,7 +15644,7 @@ risch_result exact_context::integrate_elementary_impl(
             (input_holomorphic ||
              integration_hyperelliptic_holomorphic_certificate(*this,residual,
                 modulus,variable,options) ||
-             integration_depressed_quartic_second_kind_certificate(*this,
+             integration_quartic_second_kind_certificate(*this,
                 residual,modulus,variable,options) ||
              (biquad_a && biquad_b &&
               integration_biquadratic_holomorphic_certificate(*this,residual,
