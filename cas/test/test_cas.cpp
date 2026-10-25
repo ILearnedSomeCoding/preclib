@@ -1490,6 +1490,54 @@ int main(){
     assert(public_high_degree_repeated.operation() != exact_opcode::integral);
     assert(public_high_degree_repeated.to_string().find("LogRootSum(") !=
            std::string::npos);
+
+    auto verify_rational_integral = [&](const exact_expr &integrand){
+        risch_result integral = context.integrate_elementary(integrand,x,
+            extended_risch_budget);
+        if(integral.status != risch_status::elementary ||
+           integral.remainder != context.integer(0))
+            std::fprintf(stderr,"R0 rational case status=%d diagnostic=%s f=%s\n",
+                (int)integral.status,integral.diagnostic.c_str(),
+                integrand.to_string().c_str());
+        assert(integral.status == risch_status::elementary);
+        assert(integral.remainder == context.integer(0));
+    };
+    exact_expr x_squared = context.power(x,context.integer(2));
+    exact_expr x_cubed = context.power(x,context.integer(3));
+    exact_expr x_fourth = context.power(x,context.integer(4));
+    exact_expr x_fifth = context.power(x,context.integer(5));
+    exact_expr rational_cubic_numerator =
+        context.integer(3)*x_cubed-context.integer(2)*x+context.integer(5);
+    exact_expr rational_cubic_denominator=context.integer(7);
+    exact_expr rational_cubic=rational_cubic_numerator/
+        rational_cubic_denominator;
+    exact_expr squarefree_numerator=
+        context.integer(2)*context.power(x,context.integer(8))+
+        context.integer(3)*x_cubed-context.integer(4);
+    exact_expr squarefree_denominator=context.power(x,context.integer(7))+x+
+        context.integer(1);
+    exact_expr squarefree_rational=squarefree_numerator/
+        squarefree_denominator;
+    exact_expr repeated_mixed_denominator =
+        context.power(x_squared+context.integer(1),context.integer(3))*
+        context.power(x+context.integer(2),context.integer(2));
+    exact_expr mixed_pole_numerator=
+        context.integer(5)*context.power(x,context.integer(10))-
+        context.integer(3)*x_fifth+x_squared+context.integer(1);
+    exact_expr mixed_pole_rational=mixed_pole_numerator/
+        repeated_mixed_denominator;
+    exact_expr nonmonic_cubic_base =
+        context.integer(2)*x_cubed+context.integer(3)*x+context.integer(1);
+    exact_expr nonmonic_repeated_numerator=
+        context.integer(4)*x_fourth-context.integer(7)*x+context.integer(2);
+    exact_expr nonmonic_repeated_denominator=
+        context.power(nonmonic_cubic_base,context.integer(3));
+    exact_expr nonmonic_repeated_rational=nonmonic_repeated_numerator/
+        nonmonic_repeated_denominator;
+    verify_rational_integral(rational_cubic);
+    verify_rational_integral(squarefree_rational);
+    verify_rational_integral(mixed_pole_rational);
+    verify_rational_integral(nonmonic_repeated_rational);
     assert(context.integrate(fifth_simple_fraction, x).operation() ==
            exact_opcode::log_root_sum);
     {
@@ -2261,6 +2309,32 @@ int main(){
     exact_expr algebraic_quartic_antiderivative =
         context.integrate(algebraic_quartic_rational, x);
     assert(algebraic_quartic_antiderivative.operation() != exact_opcode::integral);
+    exact_expr real_quartic = context.power(x, context.integer(4)) +
+        context.power(x, context.integer(2)) + x + context.integer(1);
+    exact_expr real_quartic_integrand = context.integer(1) / real_quartic;
+    exact_expr real_quartic_expanded = context.expand(
+        context.integrate(real_quartic_integrand, x));
+    std::string real_quartic_text = real_quartic_expanded.to_string();
+    assert(real_quartic_text.find("LogRootSum(") == std::string::npos);
+    assert(real_quartic_text.find('i') == std::string::npos);
+    exact_expr real_quartic_derivative = context.differentiate(
+        real_quartic_expanded, x);
+    for(int point = -2; point <= 2; ++point){
+        exact_expr sampled = context.substitute(real_quartic_derivative, x,
+            context.integer(point));
+        Number seed(1.0);
+        seed.set_precision(192);
+        exact_expr approximate = context.simplify(
+            context.value(numeric_value(std::move(seed))) * sampled);
+        assert(approximate.is_value() &&
+               approximate.value().is_approximate());
+        Number actual = approximate.value().to_number(192);
+        Number expected = Number(1) /
+            Number(point * point * point * point + point * point + point + 1);
+        expected.set_precision(192);
+        Number tolerance = Number(1) >> 150;
+        assert(abs(actual - expected) < tolerance);
+    }
     for(size_t degree : {5u, 6u, 12u, 24u}){
         exact_expr binomial_denominator = context.power(
             x, context.integer((int64_t)degree)) + context.integer(1);
