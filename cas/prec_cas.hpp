@@ -247,6 +247,7 @@ public:
     exact_expr integer(T value){ return this->value(numeric_value(value)); }
     exact_expr rational(const precq_t &value);
     exact_expr symbol(const std::string &name);
+    exact_expr expression_list(const std::vector<exact_expr> &elements);
     // Exact local antiderivative for proper P(x)/W(x), with square-free W.
     // Numeric evaluation of the algebraic root sum is intentionally separate.
     exact_expr log_root_sum(const exact_expr &numerator,

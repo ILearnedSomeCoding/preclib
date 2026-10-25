@@ -1,5 +1,7 @@
 #include"prec_cas.hpp"
 #include"ntheory/factor_integer.hpp"
+#include"ntheory/integer_arithmetic.hpp"
+#include"ntheory/multiplicative_functions.hpp"
 
 #include<cctype>
 #include<chrono>
@@ -337,6 +339,111 @@ class parser{
 
     exact_expr function(const std::string &name,
                         const std::vector<exact_expr> &arguments){
+        auto require_integer = [&](const exact_expr &argument){
+            if(!argument.is_value() || !argument.value().is_integer())
+                throw std::runtime_error(name + " requires exact integer arguments");
+            return argument.value().integer();
+        };
+        auto require_integer_list = [&](const exact_expr &argument){
+            if(argument.operation() != exact_opcode::expression_list)
+                throw std::runtime_error(name + " requires lists of integers");
+            std::vector<precz_t> result;
+            result.reserve(argument.operand_count());
+            for(size_t i = 0; i < argument.operand_count(); ++i)
+                result.push_back(require_integer(argument.operand(i)));
+            return result;
+        };
+        auto integer_result = [&](precz_t value){
+            return state_.context.value(numeric_value(std::move(value)));
+        };
+        if(name == "euler_phi" || name == "mobius_mu" ||
+           name == "prime_nu" || name == "prime_omega" ||
+           name == "square_free_q" || name == "prime_power_q"){
+            if(arguments.size() != 1)
+                throw std::runtime_error(name + " requires one integer");
+            precz_t value = require_integer(arguments[0]);
+            if(name == "euler_phi")
+                return integer_result(cas_ntheory::euler_phi(value));
+            if(name == "mobius_mu")
+                return state_.context.integer(cas_ntheory::mobius_mu(value));
+            if(name == "prime_nu")
+                return state_.context.integer((int64_t)cas_ntheory::prime_nu(value));
+            if(name == "prime_omega")
+                return state_.context.integer((int64_t)cas_ntheory::prime_omega(value));
+            if(name == "square_free_q")
+                return state_.context.integer(cas_ntheory::square_free_q(value) ? 1 : 0);
+            return state_.context.integer(cas_ntheory::prime_power_q(value) ? 1 : 0);
+        }
+        if(name == "divisor_sigma"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("divisor_sigma requires k and n");
+            precz_t power = require_integer(arguments[0]);
+            if(power.is_negative() || power.magnitude().rsiz > 1 ||
+               (power.magnitude().rsiz == 1 && power.magnitude().a[0] > 1000000))
+                throw std::out_of_range("divisor_sigma currently requires 0 <= k <= 1000000");
+            uint64_t k = power.magnitude().rsiz ? power.magnitude().a[0] : 0;
+            return integer_result(cas_ntheory::divisor_sigma(
+                k, require_integer(arguments[1])));
+        }
+        if(name == "divisors"){
+            if(arguments.size() != 1)
+                throw std::runtime_error("divisors requires one integer");
+            std::vector<exact_expr> result;
+            for(precz_t &divisor : cas_ntheory::divisors(
+                    require_integer(arguments[0])))
+                result.push_back(integer_result(std::move(divisor)));
+            return state_.context.expression_list(result);
+        }
+        if(name == "extended_gcd"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("extended_gcd requires two integers");
+            auto result = cas_ntheory::extended_gcd(
+                require_integer(arguments[0]), require_integer(arguments[1]));
+            return state_.context.expression_list({
+                integer_result(std::move(result.gcd)),
+                state_.context.expression_list({
+                    integer_result(std::move(result.x)),
+                    integer_result(std::move(result.y))})});
+        }
+        if(name == "modular_inverse"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("modular_inverse requires two integers");
+            return integer_result(cas_ntheory::modular_inverse(
+                require_integer(arguments[0]), require_integer(arguments[1])));
+        }
+        if(name == "pow_mod"){
+            if(arguments.size() != 3)
+                throw std::runtime_error("pow_mod requires base, exponent, and modulus");
+            return integer_result(cas_ntheory::power_mod(
+                require_integer(arguments[0]), require_integer(arguments[1]),
+                require_integer(arguments[2])));
+        }
+        if(name == "chinese_remainder"){
+            if(arguments.size() != 2)
+                throw std::runtime_error(
+                    "chinese_remainder requires residue and modulus lists");
+            return integer_result(cas_ntheory::chinese_remainder(
+                require_integer_list(arguments[0]),
+                require_integer_list(arguments[1])));
+        }
+        if(name == "jacobi_symbol" || name == "kronecker_symbol"){
+            if(arguments.size() != 2)
+                throw std::runtime_error(name + " requires two integers");
+            int symbol = name == "jacobi_symbol"
+                ? cas_ntheory::jacobi_symbol(require_integer(arguments[0]),
+                                              require_integer(arguments[1]))
+                : cas_ntheory::kronecker_symbol(require_integer(arguments[0]),
+                                                 require_integer(arguments[1]));
+            return state_.context.integer(symbol);
+        }
+        if(name == "coprime_q"){
+            if(arguments.size() < 2)
+                throw std::runtime_error("coprime_q requires at least two integers");
+            precz_t common = require_integer(arguments[0]);
+            for(size_t i = 1; i < arguments.size(); ++i)
+                common = gcd(common, require_integer(arguments[i]));
+            return state_.context.integer(common == precz_t(1) ? 1 : 0);
+        }
         if(name == "LogRootSum"){
             if(arguments.size() != 3)
                 throw std::runtime_error(
@@ -428,6 +535,17 @@ class parser{
             exact_expr result = expression();
             require(')');
             return result;
+        }
+        if(take('{')){
+            std::vector<exact_expr> elements;
+            if(!take('}')){
+                for(;;){
+                    elements.push_back(expression());
+                    if(take('}')) break;
+                    require(',');
+                }
+            }
+            return state_.context.expression_list(elements);
         }
         if(position_ < text_.size() &&
            (std::isdigit((unsigned char)text_[position_]) ||
@@ -571,7 +689,10 @@ static const char *help_text(){
         "algebra: sqrt, abs, simplify, expand, factor, factorint, factorint_progress, gcd,\n"
         "         groebner({polynomials}, {variables}), trigexpand, trigreduce,\n"
         "         subs(expression, target, replacement), is_poly(expression[, vars])\n"
-        "number theory: aprcl, aprcl_progress, isprime (1=proved prime, 0=composite)\n"
+        "number theory: factorint, isprime, aprcl, extended_gcd, modular_inverse,\n"
+        "              pow_mod, chinese_remainder, jacobi_symbol, kronecker_symbol,\n"
+        "              coprime_q, euler_phi, mobius_mu, divisor_sigma, divisors,\n"
+        "              prime_nu, prime_omega, square_free_q, prime_power_q\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
         "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
         "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"

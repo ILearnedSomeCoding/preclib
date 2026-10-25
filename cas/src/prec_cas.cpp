@@ -2180,6 +2180,18 @@ exact_expr exact_context::symbol(const std::string &name){
     if(name.empty()) throw std::invalid_argument("symbol name cannot be empty");
     return exact_expr(storage_, storage_->intern_symbol(name));
 }
+exact_expr exact_context::expression_list(
+    const std::vector<exact_expr> &elements){
+    std::vector<uint32_t> roots;
+    roots.reserve(elements.size());
+    for(const exact_expr &element : elements){
+        if(!element.valid() || element.storage_ != storage_)
+            throw std::invalid_argument("list elements must belong to one context");
+        roots.push_back(element.root_);
+    }
+    return exact_expr(storage_, storage_->intern_compound(
+        exact_opcode::expression_list, roots));
+}
 exact_expr exact_context::pi(){
     return exact_expr(storage_, storage_->intern_compound(
         exact_opcode::constant_pi, {}));
