@@ -27,6 +27,15 @@
 当分母可分解为一次/二次有理因子时，部分分式积分会按精确相同留数合并
 `c*ln|f_i|` 为 `c*ln|product(f_i)|`。微分器支持实区间上 `D ln|g|=g'/g`
 （要求 `g!=0`）；更高次数代数留数的 Rothstein–Trager 分组仍未实现。
+平方自由、无实根的降幂四次分母 `x^4+p*x^2+q*x+r` 新增实二次分解路径：
+Sturm 序列确认无实根，Ferrari resolvent 在可用的实根分支下构造两个实不可约
+二次因子，再对常数分子使用精确部分分式，输出 `ln(abs(...))` 与 `atan(...)`，
+避免 `expand(int(1/(x^4+1),x))` 的复对数形式；普通 `int` 仍保留紧凑
+`LogRootSum`。三实根 resolvent 分支也覆盖 `x^4+x^2+x+1`。结果经严格入口
+确认是初等原函数且零余项。后者的 resolvent 使用
+`cos(acos(...)/3)`，输出会比紧凑 `LogRootSum` 长；非降幂四次、带实根的四次、
+非实二次因子及未覆盖的 resolvent 判别式仍回退到通用路径。
+专用回归：`clang++ -O2 -mavx2 -std=c++17 cas/test/test_risch_quartic_rational.cpp cas/src/prec_expr.cpp cas/ntheory/*.cpp src/*.cpp -o build/test_risch_quartic_rational.exe`。
 高次重复极点通过精确 Hermite 线性系统归约；系统规模受严格入口的有理次数预算
 限制。测试已覆盖 13 次分母的平方。预算内若精确重构不成立会返回
 `verification_failed`；超出输入次数/节点预算则返回 `resource_limit`。

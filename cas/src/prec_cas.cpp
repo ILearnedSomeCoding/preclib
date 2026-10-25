@@ -3110,8 +3110,8 @@ static bool integration_contains_imaginary_unit(const exact_expr &expression){
 // Finite-degree algebraic logarithmic part of rational integration. For a
 // squarefree Q, every root r contributes P(r)/Q'(r) * log(x-r). This is the
 // residue form underlying Rothstein-Trager. The current expression language
-// has explicit radicals through degree four, so use it only while every root
-// can be represented exactly; larger degrees will eventually need RootSum.
+// has explicit radicals through degree four, so only use the result when every
+// root can be reduced modulo Q exactly; larger degrees need RootSum.
 static exact_expr integration_algebraic_logarithmic_rational(
     exact_context &context, const integration_poly &numerator,
     const integration_poly &denominator, const exact_expr &variable){
@@ -3167,6 +3167,181 @@ static bool integration_hermite_reduce(
     bool *resource_limited = nullptr);
 static bool integration_normalize_rational(integration_poly &numerator,
                                            integration_poly &denominator);
+
+static int integration_sign_at_infinity(const integration_poly &polynomial,
+                                        bool positive_infinity){
+    if(polynomial.empty() || polynomial.back().is_zero()) return 0;
+    bool negative = polynomial.back().is_negative();
+    if(!positive_infinity && ((polynomial.size()-1)&1)) negative=!negative;
+    return negative ? -1 : 1;
+}
+
+static bool integration_has_no_real_roots(const integration_poly &polynomial){
+    std::vector<integration_poly> sturm{polynomial,
+        integration_derivative_poly(polynomial)};
+    while(!(sturm.back().size()==1 && sturm.back()[0].is_zero())){
+        if(sturm.size()>=2){
+            integration_poly quotient,remainder;
+            if(!integration_divmod_poly(sturm[sturm.size()-2],sturm.back(),
+                    quotient,remainder)) return false;
+            for(numeric_value &coefficient:remainder) coefficient=-coefficient;
+            integration_trim(remainder);
+            if(remainder.size()==1 && remainder[0].is_zero()) break;
+            sturm.push_back(std::move(remainder));
+        }
+    }
+    auto variations=[&](bool positive_infinity){
+        int count=0,previous=0;
+        for(const integration_poly &entry:sturm){
+            int sign=integration_sign_at_infinity(entry,positive_infinity);
+            if(sign && previous && sign!=previous) ++count;
+            if(sign) previous=sign;
+        }
+        return count;
+    };
+    return variations(false)==variations(true);
+}
+
+// Real partial fractions for squarefree depressed quartics whose resolvent
+// has a real positive root giving two irreducible real quadratic factors.
+static exact_expr integration_real_depressed_quartic(
+    exact_context &context, const integration_poly &numerator,
+    const integration_poly &denominator, const exact_expr &variable){
+    if(denominator.size() != 5 || numerator.size() > 4 ||
+       denominator[4].is_zero() ||
+       !denominator[3].is_zero()) return exact_expr();
+
+    const numeric_value leading = denominator[4];
+    const numeric_value p = denominator[2] / leading;
+    const numeric_value q = denominator[1] / leading;
+    const numeric_value r = denominator[0] / leading;
+    const numeric_value two(2), three(3), four(4), twenty_seven(27);
+    if(!integration_has_no_real_roots(denominator)) return exact_expr();
+
+    exact_expr z;
+    if(q.is_zero()){
+        if(r.is_negative() || r.is_zero()) return exact_expr();
+        if(!p.is_negative() &&
+           ((four*r-p*p).is_negative() || (four*r-p*p).is_zero()))
+            return exact_expr();
+        z = context.value(-p) + context.integer(2) *
+            context.square_root(context.value(r));
+    }else{
+        numeric_value cubic_a = two * p;
+        numeric_value cubic_b = p * p - four * r;
+        numeric_value cubic_c = -q * q;
+        numeric_value depressed_p = cubic_b -
+            cubic_a * cubic_a / three;
+        numeric_value depressed_q = two * cubic_a * cubic_a * cubic_a /
+            twenty_seven - cubic_a * cubic_b / three + cubic_c;
+        numeric_value discriminant = depressed_q * depressed_q / four +
+            depressed_p * depressed_p * depressed_p / twenty_seven;
+        if(!discriminant.is_negative() || !depressed_p.is_negative())
+            return exact_expr();
+        exact_expr rho = context.square_root(context.value(-depressed_p / three));
+        exact_expr angle = context.arc_cosine(
+            context.value(-depressed_q / two) /
+            context.power(rho, context.integer(3)));
+        z = context.integer(2) * rho * context.cosine(
+            angle / context.integer(3)) - context.value(cubic_a / three);
+    }
+
+    exact_expr a = context.square_root(z);
+    exact_expr sum = context.value(p) + z;
+    exact_expr first_constant = (sum - context.value(q) / a) /
+        context.integer(2);
+    exact_expr second_constant = (sum + context.value(q) / a) /
+        context.integer(2);
+    exact_expr first_discriminant = context.integer(4) * first_constant - z;
+    exact_expr second_discriminant = context.integer(4) * second_constant - z;
+    exact_expr first_linear = a;
+    exact_expr second_linear = -a;
+    exact_expr first_quadratic = context.power(variable,context.integer(2)) +
+        first_linear * variable + first_constant;
+    exact_expr second_quadratic = context.power(variable,context.integer(2)) +
+        second_linear * variable + second_constant;
+
+    auto integrate_quadratic_numerator = [&](const exact_expr &constant,
+            const exact_expr &linear, const exact_expr &slope,
+            const exact_expr &quadratic, const exact_expr &discriminant){
+        exact_expr logarithmic_scale=linear/context.integer(2);
+        exact_expr residual=constant-logarithmic_scale*slope;
+        exact_expr root=context.square_root(discriminant);
+        return logarithmic_scale*context.natural_logarithm(
+            context.absolute_value(quadratic))+
+            residual*context.integer(2)/root*context.arc_tangent(
+                (context.integer(2)*variable+slope)/root);
+    };
+
+    if(numerator.size()==1 && numerator[0]==leading){
+        exact_expr partial_linear=context.integer(1)/(
+            a*sum+context.value(q*q)/
+                (context.integer(2)*context.power(a,context.integer(3))));
+        exact_expr first_numerator_constant=partial_linear*(
+            a+context.value(q)/(context.integer(2)*z));
+        exact_expr second_numerator_constant=partial_linear*(
+            a-context.value(q)/(context.integer(2)*z));
+        return integrate_quadratic_numerator(first_numerator_constant,
+            partial_linear,first_linear,first_quadratic,first_discriminant)+
+            integrate_quadratic_numerator(second_numerator_constant,
+            -partial_linear,second_linear,second_quadratic,second_discriminant);
+    }
+
+    std::vector<exact_expr> first_factor{
+        first_constant, first_linear, context.integer(1)};
+    std::vector<exact_expr> second_factor{
+        second_constant, second_linear, context.integer(1)};
+    std::vector<exact_expr> columns[4];
+    columns[0] = second_factor;
+    columns[1] = {context.integer(0),second_factor[0],
+                  second_factor[1],second_factor[2]};
+    columns[2] = first_factor;
+    columns[3] = {context.integer(0),first_factor[0],
+                  first_factor[1],first_factor[2]};
+
+    exact_expr matrix[4][5];
+    for(size_t row=0;row<4;++row){
+        for(size_t column=0;column<4;++column)
+            matrix[row][column] = row < columns[column].size()
+                ? columns[column][row] : context.integer(0);
+        matrix[row][4] = row < numerator.size()
+            ? context.value(numerator[row] / leading) : context.integer(0);
+    }
+    for(size_t pivot=0;pivot<4;++pivot){
+        size_t row=pivot;
+        while(row<4 && context.simplify(matrix[row][pivot])==context.integer(0))
+            ++row;
+        if(row==4) return exact_expr();
+        if(row!=pivot)
+            for(size_t column=pivot;column<=4;++column)
+                std::swap(matrix[row][column],matrix[pivot][column]);
+        exact_expr scale=matrix[pivot][pivot];
+        for(size_t column=pivot;column<=4;++column)
+            matrix[pivot][column]=context.simplify(matrix[pivot][column]/scale);
+        for(size_t other=0;other<4;++other){
+            if(other==pivot) continue;
+            scale=matrix[other][pivot];
+            if(context.simplify(scale)==context.integer(0)) continue;
+            for(size_t column=pivot;column<=4;++column)
+                matrix[other][column]=context.simplify(
+                    matrix[other][column]-scale*matrix[pivot][column]);
+        }
+    }
+
+    exact_expr result=context.integer(0);
+    const exact_expr linears[2]={first_linear,second_linear};
+    const exact_expr quadratics[2]={first_quadratic,second_quadratic};
+    const exact_expr discriminants[2]={first_discriminant,second_discriminant};
+    for(size_t factor=0;factor<2;++factor){
+        size_t constant_column=factor==0?0:2;
+        size_t linear_column=constant_column+1;
+        exact_expr constant=matrix[constant_column][4];
+        exact_expr linear=matrix[linear_column][4];
+        result=result+integrate_quadratic_numerator(constant,linear,
+            linears[factor],quadratics[factor],discriminants[factor]);
+    }
+    return result;
+}
 
 static exact_expr integration_rational_antiderivative(
     exact_context &context, const exact_expr &expression,
@@ -3227,6 +3402,12 @@ static exact_expr integration_rational_antiderivative(
             denominator_expression, variable, maximum_degree);
     if(!proper.valid()) proper = integration_squarefree_rational(
         context, remainder, denominator_expression, variable);
+    if(!proper.valid() && denominator.size() == 5 &&
+       integration_gcd_poly(denominator,
+           integration_derivative_poly(denominator)).size() == 1)
+        proper = context.log_root_sum(
+            integration_poly_expr(context,remainder,variable),
+            denominator_expression,variable,maximum_degree);
     if(!proper.valid()) proper = integration_algebraic_logarithmic_rational(
         context, remainder, denominator, variable);
     if(!proper.valid() &&
@@ -21460,6 +21641,14 @@ static exact_expr integration_expand_log_root_sum(
        denominator.size() - 1 > maximum_terms)
         return exact_expr();
 
+    if(denominator.size()==5){
+        exact_expr real_quartic=integration_real_depressed_quartic(
+            context,numerator,denominator,variable);
+        if(real_quartic.valid() &&
+           real_quartic.reachable_node_count()<=maximum_terms)
+            return real_quartic;
+    }
+
     std::vector<exact_expr> factor_expressions;
     exact_expr factored_denominator = context.factor(denominator_expr);
     integration_factor_list(factored_denominator, factor_expressions);
@@ -22110,6 +22299,18 @@ exact_expr exact_context::simplify(const exact_expr &expression,
         }
         return factored;
     }
+    std::unordered_set<uint32_t> log_root_sum_scan;
+    auto contains_log_root_sum = [&](auto &&self, uint32_t id) -> bool{
+        if(!log_root_sum_scan.insert(id).second) return false;
+        const exact_node &node=storage_->node(id);
+        if(node.op==exact_opcode::log_root_sum) return true;
+        const uint32_t *children=storage_->children(node);
+        for(size_t i=0;i<node.operand_count;++i)
+            if(self(self,children[i])) return true;
+        return false;
+    };
+    if(contains_log_root_sum(contains_log_root_sum,factored.root_))
+        return factored;
     try{
         return expand(factored, automatic_expansion_terms);
     }catch(const std::length_error &){
