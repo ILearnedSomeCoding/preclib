@@ -19,6 +19,16 @@ int main(){
     assert(divisor_sigma(0, precz_t(12)) == precz_t(6));
     assert(divisor_sigma(1, precz_t(12)) == precz_t(28));
     assert(divisor_sigma(2, precz_t(12)) == precz_t(210));
+    assert(divisor_count(precz_t(360)) == precz_t(24));
+    assert(radical(precz_t(360)) == precz_t(30));
+    assert(radical(precz_t(-1)) == precz_t(1));
+    assert(aliquot_sum(precz_t(12)) == precz_t(16));
+    assert(liouville_lambda(precz_t(8)) == -1);
+    assert(liouville_lambda(precz_t(12)) == -1);
+    assert(carmichael_lambda(precz_t(1)) == precz_t(1));
+    assert(carmichael_lambda(precz_t(8)) == precz_t(2));
+    assert(carmichael_lambda(precz_t(15)) == precz_t(4));
+    assert(carmichael_lambda(precz_t(360)) == precz_t(12));
     bool sigma_limit_failed = false;
     try{ (void)divisor_sigma(1000001, precz_t(12)); }
     catch(const std::out_of_range &){ sigma_limit_failed = true; }

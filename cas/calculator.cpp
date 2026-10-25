@@ -357,6 +357,9 @@ class parser{
             return state_.context.value(numeric_value(std::move(value)));
         };
         if(name == "euler_phi" || name == "mobius_mu" ||
+           name == "divisor_count" || name == "radical" ||
+           name == "aliquot_sum" || name == "liouville_lambda" ||
+           name == "carmichael_lambda" ||
            name == "prime_nu" || name == "prime_omega" ||
            name == "square_free_q" || name == "prime_power_q"){
             if(arguments.size() != 1)
@@ -366,6 +369,16 @@ class parser{
                 return integer_result(cas_ntheory::euler_phi(value));
             if(name == "mobius_mu")
                 return state_.context.integer(cas_ntheory::mobius_mu(value));
+            if(name == "divisor_count")
+                return integer_result(cas_ntheory::divisor_count(value));
+            if(name == "radical")
+                return integer_result(cas_ntheory::radical(value));
+            if(name == "aliquot_sum")
+                return integer_result(cas_ntheory::aliquot_sum(value));
+            if(name == "liouville_lambda")
+                return state_.context.integer(cas_ntheory::liouville_lambda(value));
+            if(name == "carmichael_lambda")
+                return integer_result(cas_ntheory::carmichael_lambda(value));
             if(name == "prime_nu")
                 return state_.context.integer((int64_t)cas_ntheory::prime_nu(value));
             if(name == "prime_omega")
@@ -692,7 +705,9 @@ static const char *help_text(){
         "number theory: factorint, isprime, aprcl, extended_gcd, modular_inverse,\n"
         "              pow_mod, chinese_remainder, jacobi_symbol, kronecker_symbol,\n"
         "              coprime_q, euler_phi, mobius_mu, divisor_sigma, divisors,\n"
-        "              prime_nu, prime_omega, square_free_q, prime_power_q\n"
+        "              divisor_count, radical, aliquot_sum, liouville_lambda,\n"
+        "              carmichael_lambda, prime_nu, prime_omega, square_free_q,\n"
+        "              prime_power_q\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
         "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
         "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"

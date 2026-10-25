@@ -79,6 +79,47 @@ precz_t divisor_sigma(uint64_t power, const precz_t &value){
     return precz_t(std::move(result));
 }
 
+precz_t divisor_count(const precz_t &value){
+    precn_t result(1);
+    for(const prime_power &factor : factor_powers(value))
+        result = result * precn_t(factor.exponent + 1);
+    return precz_t(std::move(result));
+}
+
+precz_t radical(const precz_t &value){
+    precn_t result(1);
+    for(const prime_power &factor : factor_powers(value))
+        result = result * factor.prime;
+    return precz_t(std::move(result));
+}
+
+precz_t aliquot_sum(const precz_t &value){
+    return divisor_sigma(1, value) - precz_t(value.magnitude());
+}
+
+int liouville_lambda(const precz_t &value){
+    size_t count = prime_omega(value);
+    return (count & 1) ? -1 : 1;
+}
+
+precz_t carmichael_lambda(const precz_t &value){
+    std::vector<prime_power> factors = factor_powers(value);
+    precn_t result(1);
+    for(const prime_power &factor : factors){
+        precn_t component;
+        if(factor.prime == precn_t(2)){
+            if(factor.exponent == 1) component = precn_t(1);
+            else if(factor.exponent == 2) component = precn_t(2);
+            else component = precn_t(1) << (factor.exponent - 2);
+        }else{
+            component = integer_power(factor.prime, factor.exponent - 1) *
+                        (factor.prime - precn_t(1));
+        }
+        result = (result / ::gcd(result, component)) * component;
+    }
+    return precz_t(std::move(result));
+}
+
 size_t prime_nu(const precz_t &value){
     return factor_powers(value).size();
 }
