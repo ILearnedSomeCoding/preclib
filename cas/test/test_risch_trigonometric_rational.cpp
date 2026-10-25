@@ -1,5 +1,6 @@
 #include"../prec_cas.hpp"
 
+#include<algorithm>
 #include<cassert>
 #include<cstdio>
 
@@ -92,6 +93,51 @@ int main(){
         rational_slope_integrand, x);
     assert(rational_slope_result.status == risch_status::elementary);
     assert(rational_slope_result.remainder == context.integer(0));
+
+    exact_expr symbolic_slope = context.symbol("trig_rate");
+    exact_expr symbolic_slope_input = context.integer(1) /
+        (context.integer(2) + context.cosine(symbolic_slope*x));
+    risch_result symbolic_slope_result = context.integrate_elementary(
+        symbolic_slope_input,x);
+    assert(symbolic_slope_result.status == risch_status::elementary);
+    assert(symbolic_slope_result.remainder == context.integer(0));
+    assert(std::find(symbolic_slope_result.conditions.begin(),
+        symbolic_slope_result.conditions.end(),symbolic_slope) !=
+        symbolic_slope_result.conditions.end());
+    assert(symbolic_slope_result.conditions.size() == 1);
+    context.assume(symbolic_slope,"positive");
+    risch_result positive_slope_result = context.integrate_elementary(
+        symbolic_slope_input,x);
+    assert(positive_slope_result.status == risch_status::elementary);
+    assert(positive_slope_result.conditions.empty());
+
+    exact_expr hyperbolic_slope = context.symbol("hyperbolic_rate");
+    exact_expr hyperbolic_parameter = context.symbol("hyperbolic_parameter");
+    exact_expr rationalized_hyperbolic = context.integer(2) /
+        (context.integer(3)-context.power(hyperbolic_parameter,
+                                           context.integer(2)));
+    assert(context.integrate_elementary(rationalized_hyperbolic,
+        hyperbolic_parameter).status == risch_status::elementary);
+    exact_expr hyperbolic_baseline = context.integer(1) /
+        (context.integer(2) + context.hyperbolic_cosine(x));
+    risch_result hyperbolic_baseline_result = context.integrate_elementary(
+        hyperbolic_baseline,x);
+    assert(hyperbolic_baseline_result.status == risch_status::elementary);
+    exact_expr symbolic_hyperbolic_input = context.integer(1) /
+        (context.integer(2) +
+         context.hyperbolic_cosine(hyperbolic_slope*x));
+    risch_result symbolic_hyperbolic_result = context.integrate_elementary(
+        symbolic_hyperbolic_input,x);
+    if(symbolic_hyperbolic_result.status != risch_status::elementary)
+        std::fprintf(stderr,"symbolic hyperbolic status=%d: %s; remainder=%s\n",
+            (int)symbolic_hyperbolic_result.status,
+            symbolic_hyperbolic_result.diagnostic.c_str(),
+            symbolic_hyperbolic_result.remainder.to_string().c_str());
+    assert(symbolic_hyperbolic_result.status == risch_status::elementary);
+    assert(symbolic_hyperbolic_result.remainder == context.integer(0));
+    assert(std::find(symbolic_hyperbolic_result.conditions.begin(),
+        symbolic_hyperbolic_result.conditions.end(),hyperbolic_slope) !=
+        symbolic_hyperbolic_result.conditions.end());
 
     exact_expr phase = context.symbol("phase");
     for(const exact_expr &offset : {phase, context.pi() / context.integer(3)}){

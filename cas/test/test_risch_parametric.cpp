@@ -830,9 +830,33 @@ int main(){
         auto quartic = context.integrate_elementary(
             context.integer(1)/context.square_root(even_degree),x);
         assert(quartic.status == risch_status::proven_nonelementary);
-        auto elementary = context.integrate_elementary(
-            context.integer(1)/context.square_root(x*x+context.integer(1)),x);
-        assert(elementary.status != risch_status::proven_nonelementary);
+        for(const exact_expr &radicand : {
+                x*x+context.integer(1),
+                context.integer(4)*x*x+context.integer(4)*x+
+                    context.integer(5)}){
+            exact_expr input = context.integer(1)/context.square_root(radicand);
+            auto elementary = context.integrate_elementary(input,x);
+            assert(elementary.status == risch_status::elementary);
+            assert(elementary.remainder == context.integer(0));
+        }
+        exact_expr quadratic = x*x+context.integer(1);
+        exact_expr quadratic_root = context.square_root(quadratic);
+        exact_expr rational_curve_input = context.integer(1)/
+            (x*x*quadratic_root);
+        auto rational_curve_result = context.integrate_elementary(
+            rational_curve_input,x);
+        assert(rational_curve_result.status == risch_status::elementary);
+        assert(rational_curve_result.remainder == context.integer(0));
+        exact_expr curve_t = context.symbol("_risch_test_quadratic_curve_t");
+        exact_expr curve_error = context.differentiate(
+            rational_curve_result.elementary_part,x)-rational_curve_input;
+        curve_error = context.substitute(curve_error,quadratic_root,curve_t);
+        integration_expr_poly curve_error_poly;
+        assert(integration_parse_algebraic_quotient(context,curve_error,
+            curve_t,{-quadratic,context.integer(0),context.integer(1)},x,
+            risch_options(),curve_error_poly));
+        for(const auto &coefficient : curve_error_poly)
+            assert(coefficient == context.integer(0));
     }
     {
         integration_expr_poly modulus{-x,context.integer(1),context.integer(1)};

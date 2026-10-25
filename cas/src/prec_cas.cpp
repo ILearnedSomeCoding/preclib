@@ -3634,6 +3634,8 @@ static bool integration_strictly_positive_constant(const exact_expr &part){
     if(part.operation() == exact_opcode::exponential)
         return part.operand(0).is_value() &&
             !part.operand(0).value().is_approximate();
+    if(part.operation() == exact_opcode::square_root)
+        return integration_strictly_positive_constant(part.operand(0));
     if(part.operation() != exact_opcode::add &&
        part.operation() != exact_opcode::multiply) return false;
     for(size_t i = 0; i < part.operand_count(); ++i)
@@ -14993,9 +14995,9 @@ risch_result exact_context::integrate_elementary_impl(
            angle_polynomial.size() != 2 ||
            integration_depends_on(angle_polynomial[1], variable) ||
            !integration_exact_expression_tree(angle_polynomial[0]) ||
-           !angle_polynomial[1].is_value() ||
-           angle_polynomial[1].value().is_approximate() ||
-           angle_polynomial[1].value().is_zero())
+           !integration_exact_expression_tree(angle_polynomial[1]) ||
+           (angle_polynomial[1].is_value() &&
+            angle_polynomial[1].value().is_zero()))
             return false;
 
         exact_expr parameter;
@@ -15035,9 +15037,12 @@ risch_result exact_context::integrate_elementary_impl(
         }
 
         exact_expr slope = angle_polynomial[1];
-        exact_expr dx_dt = integer(2) /
-            (slope * (hyperbolic ? one_minus_t_squared : one_plus_t_squared));
-        exact_expr transformed_integrand = simplify(transformed * dx_dt);
+        exact_expr dx_dt_without_slope = integer(2) /
+            (hyperbolic ? one_minus_t_squared : one_plus_t_squared);
+        // Integrate the slope-free rational part, then apply the chain factor
+        // once. This keeps symbolic slopes out of the rational coefficient field.
+        exact_expr transformed_integrand = simplify(
+            transformed * dx_dt_without_slope);
         if(integration_depends_on(transformed_integrand, variable)) return false;
 
         integration_poly numerator, rational_denominator;
@@ -15049,11 +15054,14 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr rational_integrand = integration_poly_expr(
             *this, numerator, parameter) /
             integration_poly_expr(*this, rational_denominator, parameter);
-        exact_expr parameter_primitive = integration_rational_antiderivative(
-            *this, rational_integrand, parameter, options.maximum_degree);
-        if(!parameter_primitive.valid() ||
-           parameter_primitive.operation() == exact_opcode::integral)
+        risch_result parameter_result = integrate_elementary(
+            rational_integrand, parameter, options);
+        if(parameter_result.status != risch_status::elementary ||
+           parameter_result.remainder != integer(0) ||
+           !parameter_result.elementary_part.valid())
             return false;
+        exact_expr parameter_primitive =
+            std::move(parameter_result.elementary_part);
 
         exact_expr parameter_error = simplify(expand(
             differentiate(parameter_primitive, parameter) - rational_integrand,
@@ -15070,11 +15078,11 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr back_substitution = hyperbolic
             ? hyperbolic_tangent(half_angle) : tangent(half_angle);
         exact_expr candidate = substitute(parameter_primitive, parameter,
-                                          back_substitution);
+                                          back_substitution) / slope;
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);
-        result.conditions.clear();
+        result.conditions = std::move(parameter_result.conditions);
         result.diagnostic.clear();
         return true;
     };
