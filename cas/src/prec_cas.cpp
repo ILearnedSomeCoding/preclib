@@ -3907,8 +3907,11 @@ static integration_expr_poly integration_expr_mul(
 static bool integration_parse_expr_poly(exact_context &context,
                                         const exact_expr &expression,
                                         const exact_expr &variable,
-                                        integration_expr_poly &result){
+                                        integration_expr_poly &result,
+                                        size_t maximum_degree =
+                                            std::numeric_limits<size_t>::max()){
     if(expression == variable){
+        if(maximum_degree == 0) return false;
         result = {context.integer(0), context.integer(1)};
         return true;
     }
@@ -3921,7 +3924,7 @@ static bool integration_parse_expr_poly(exact_context &context,
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_expr_poly term;
             if(!integration_parse_expr_poly(context, expression.operand(i),
-                                            variable, term)) return false;
+                    variable, term, maximum_degree)) return false;
             result = integration_expr_add(context, result, term);
         }
         return true;
@@ -3931,7 +3934,12 @@ static bool integration_parse_expr_poly(exact_context &context,
         for(size_t i = 0; i < expression.operand_count(); ++i){
             integration_expr_poly factor;
             if(!integration_parse_expr_poly(context, expression.operand(i),
-                                            variable, factor)) return false;
+                    variable, factor, maximum_degree)) return false;
+            size_t result_degree = result.size() - 1;
+            size_t factor_degree = factor.size() - 1;
+            if(result_degree > maximum_degree ||
+               factor_degree > maximum_degree - result_degree)
+                return false;
             result = integration_expr_mul(context, result, factor);
         }
         return true;
@@ -3942,7 +3950,9 @@ static bool integration_parse_expr_poly(exact_context &context,
            exponent > 64) return false;
         integration_expr_poly base;
         if(!integration_parse_expr_poly(context, expression.operand(0),
-                                        variable, base)) return false;
+                variable, base, maximum_degree)) return false;
+        if(base.size() > 1 && exponent > maximum_degree / (base.size() - 1))
+            return false;
         result = {context.integer(1)};
         while(exponent){
             if(exponent & 1) result = integration_expr_mul(context, result, base);
@@ -12348,6 +12358,62 @@ risch_result exact_context::integrate_elementary_impl(
         return false;
     };
     if(classify_ei_log_product()) return result;
+    auto classify_logarithmic_hyperexponential = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        exact_expr logarithm = natural_logarithm(variable);
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            exact_expr exponential_factor = expression.operand(i);
+            if(exponential_factor.operation() != exact_opcode::exponential)
+                continue;
+            integration_poly inner;
+            if(!integration_parse_poly(exponential_factor.operand(0), variable,
+                    inner) || inner.size() != 2)
+                continue;
+            bool exact_inner = true;
+            for(const numeric_value &coefficient : inner)
+                if(!coefficient.is_integer() && !coefficient.is_rational())
+                    exact_inner = false;
+            if(!exact_inner) continue;
+            numeric_value rate = inner[1];
+            if(rate.is_zero() || rate.is_approximate()) continue;
+            exact_expr cofactor = simplify(expression / exponential_factor);
+            integration_expr_poly polynomial;
+            if(!integration_parse_expr_poly(*this, cofactor, logarithm,
+                    polynomial, options.maximum_degree) ||
+               polynomial.size() < 2 ||
+               polynomial.size() > options.maximum_degree + 1)
+                continue;
+            bool exact_rational_coefficients = true;
+            for(const exact_expr &coefficient : polynomial)
+                if(!coefficient.is_value() ||
+                   (!coefficient.value().is_integer() &&
+                    !coefficient.value().is_rational())){
+                    exact_rational_coefficients = false;
+                    break;
+                }
+            if(!exact_rational_coefficients) continue;
+
+            // Over K=Q(x,ln(x)), D(ln(x))=1/x. No irreducible polynomial in
+            // ln(x) is special: a special factor would give an algebraic
+            // element whose derivative is 1/x, hence an algebraic primitive
+            // of 1/x, which does not exist. Normal-pole orders then show a
+            // rational R solving R'+rate*R=P(ln(x)) has no finite poles,
+            // including x=0, so it is polynomial in x and ln(x). The highest
+            // x-degree forces independence of x; the 1/x coefficient then
+            // forces independence of ln(x), contradicting nonconstant P.
+            // For an exponential monomial this RDE obstruction is the
+            // Liouville non-elementarity criterion.
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "nonconstant logarithmic cofactor obstructs the "
+                "constant-rate hyperexponential RDE";
+            return true;
+        }
+        return false;
+    };
+    if(classify_logarithmic_hyperexponential()) return result;
     auto is_real_constant_expression = [&](auto &&self,
             const exact_expr &part) -> bool{
         if(part.is_value() || part.operation() == exact_opcode::constant_e ||
