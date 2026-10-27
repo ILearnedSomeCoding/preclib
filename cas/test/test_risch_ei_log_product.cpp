@@ -133,6 +133,20 @@ int main(){
     exact_expr rational_ei_integrand = rational_ei_rate *
         context.exponential(rational_ei_inner) *
         context.natural_logarithm(rational_ei_inner);
+    exact_expr rational_ei_primitive = context.integrate(
+        rational_ei_integrand, x);
+    assert(rational_ei_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(rational_ei_primitive, x) -
+        rational_ei_integrand, 100000)) == context.integer(0));
+    exact_expr scaled_rational_ei_integrand =
+        context.integer(7) / context.integer(3) * rational_ei_integrand;
+    exact_expr scaled_rational_ei_primitive = context.integrate(
+        scaled_rational_ei_integrand, x);
+    assert(scaled_rational_ei_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(scaled_rational_ei_primitive, x) -
+        scaled_rational_ei_integrand, 100000)) == context.integer(0));
     risch_result rational_ei_result = context.integrate_elementary(
         rational_ei_integrand, x);
     if(rational_ei_result.status != risch_status::proven_nonelementary)
@@ -144,6 +158,36 @@ int main(){
         context.differentiate(rational_ei_result.elementary_part, x) +
         rational_ei_result.remainder - rational_ei_integrand, 100000)) ==
         context.integer(0));
+    risch_result scaled_rational_ei_result = context.integrate_elementary(
+        scaled_rational_ei_integrand, x);
+    assert(scaled_rational_ei_result.status ==
+           risch_status::proven_nonelementary);
+    assert(scaled_rational_ei_result.conditions.empty());
+    assert(context.simplify(context.expand(
+        context.differentiate(scaled_rational_ei_result.elementary_part, x) +
+        scaled_rational_ei_result.remainder - scaled_rational_ei_integrand,
+        100000)) == context.integer(0));
+    exact_expr symbolic_ei_scale = context.symbol("risch_ei_chain_scale");
+    exact_expr symbolic_ei_integrand = symbolic_ei_scale *
+        rational_ei_integrand;
+    exact_expr symbolic_ei_primitive = context.integrate(
+        symbolic_ei_integrand, x);
+    assert(symbolic_ei_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(symbolic_ei_primitive, x) -
+        symbolic_ei_integrand, 100000)) == context.integer(0));
+    risch_result symbolic_ei_result = context.integrate_elementary(
+        symbolic_ei_integrand, x);
+    assert(symbolic_ei_result.status == risch_status::proven_nonelementary);
+    assert(std::find(symbolic_ei_result.conditions.begin(),
+        symbolic_ei_result.conditions.end(), symbolic_ei_scale) !=
+        symbolic_ei_result.conditions.end());
+    context.assume(symbolic_ei_scale, "positive");
+    risch_result positive_symbolic_ei_result = context.integrate_elementary(
+        symbolic_ei_integrand, x);
+    assert(positive_symbolic_ei_result.status ==
+           risch_status::proven_nonelementary);
+    assert(positive_symbolic_ei_result.conditions.empty());
     exact_expr log_x = context.natural_logarithm(x);
     check_logarithmic_rde_obstruction(context, x, x,
         context.power(log_x, context.integer(2)));

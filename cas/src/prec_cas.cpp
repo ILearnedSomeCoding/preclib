@@ -10590,6 +10590,87 @@ exact_expr exact_context::integrate(const exact_expr &expression,
             result = exponential_integral(natural_logarithm(variable));
         }
         if(!result.valid() && node.op == exact_opcode::multiply){
+            // For a chain-rule cofactor c*u', the Ei reduction is valid for
+            // any exact rational inner u, not only affine arguments.
+            for(size_t i = 0; i < node.operand_count && !result.valid(); ++i){
+                exact_expr exponential_factor(storage_, args[i]);
+                if(exponential_factor.operation() != exact_opcode::exponential)
+                    continue;
+                exact_expr inner = exponential_factor.operand(0);
+                exact_expr logarithm = natural_logarithm(inner);
+                size_t logarithm_index = node.operand_count;
+                for(size_t j = 0; j < node.operand_count; ++j){
+                    if(j != i && exact_expr(storage_, args[j]) == logarithm){
+                        logarithm_index = j;
+                        break;
+                    }
+                }
+                if(logarithm_index == node.operand_count) continue;
+
+                exact_expr rate = differentiate(inner, variable);
+                exact_expr scale;
+                for(size_t rate_index = 0;
+                    rate_index < node.operand_count && !scale.valid();
+                    ++rate_index){
+                    if(rate_index == i || rate_index == logarithm_index ||
+                       exact_expr(storage_, args[rate_index]) != rate) continue;
+                    exact_expr cofactor = integer(1);
+                    for(size_t j = 0; j < node.operand_count; ++j){
+                        if(j == i || j == logarithm_index || j == rate_index)
+                            continue;
+                        cofactor = cofactor * exact_expr(storage_, args[j]);
+                    }
+                    if(!integration_depends_on(cofactor, variable) &&
+                       integration_exact_expression_tree(cofactor))
+                        scale = cofactor;
+                }
+                if(!scale.valid()){
+                    exact_expr cofactor = integer(1);
+                    for(size_t j = 0; j < node.operand_count; ++j){
+                        if(j == i || j == logarithm_index) continue;
+                        cofactor = cofactor * exact_expr(storage_, args[j]);
+                    }
+                    integration_poly cofactor_numerator, cofactor_denominator;
+                    integration_poly rate_numerator, rate_denominator;
+                    if(!integration_parse_rational(cofactor, variable,
+                            cofactor_numerator, cofactor_denominator, 64, 64) ||
+                       !integration_normalize_rational(cofactor_numerator,
+                            cofactor_denominator) ||
+                       !integration_parse_rational(rate, variable,
+                            rate_numerator, rate_denominator, 64, 64) ||
+                       !integration_normalize_rational(rate_numerator,
+                            rate_denominator) ||
+                       integration_zero_poly(rate_numerator)) continue;
+                    integration_poly scale_numerator = integration_mul(
+                        cofactor_numerator, rate_denominator);
+                    integration_poly scale_denominator = integration_mul(
+                        cofactor_denominator, rate_numerator);
+                    if(!integration_normalize_rational(scale_numerator,
+                            scale_denominator) || scale_numerator.size() != 1 ||
+                       scale_denominator.size() != 1) continue;
+                    scale = value(scale_numerator[0] /
+                                  scale_denominator[0]);
+                }
+                exact_expr candidate = scale * (exponential_factor * logarithm -
+                    exponential_integral(inner));
+                exact_expr error = simplify(expand(
+                    differentiate(candidate, variable) - source, 100000));
+                bool verified = error == integer(0);
+                if(!verified){
+                    exact_expr normalized_error = simplify(
+                        error / (scale * exponential_factor));
+                    integration_poly error_numerator, error_denominator;
+                    verified = integration_parse_rational(normalized_error,
+                            variable, error_numerator, error_denominator,
+                            64, 64) &&
+                        integration_normalize_rational(error_numerator,
+                            error_denominator) &&
+                        integration_zero_poly(error_numerator);
+                }
+                if(verified) result = std::move(candidate);
+            }
+        }
+        if(!result.valid() && node.op == exact_opcode::multiply){
             // Integration by parts reduces exp(u)*ln(u) to Ei(u). Restrict
             // this identity to a certified nonzero constant u' and verify
             // the full candidate, so symbolic-rate division cannot silently
@@ -12302,29 +12383,46 @@ risch_result exact_context::integrate_elementary_impl(
                 integration_normalize_rational(rate_numerator,
                     rate_denominator) && !integration_zero_poly(rate_numerator);
             if(!parsed_inner || !parsed_rate) continue;
-            exact_expr ratio = integer(1);
-            for(size_t j = 0; j < expression.operand_count(); ++j){
-                if(j == i || j == logarithm_index) continue;
-                ratio = ratio * expression.operand(j);
+            exact_expr scale;
+            for(size_t rate_index = 0;
+                rate_index < expression.operand_count() && !scale.valid();
+                ++rate_index){
+                if(rate_index == i || rate_index == logarithm_index ||
+                   expression.operand(rate_index) != rate) continue;
+                exact_expr cofactor = integer(1);
+                for(size_t j = 0; j < expression.operand_count(); ++j){
+                    if(j == i || j == logarithm_index || j == rate_index)
+                        continue;
+                    cofactor = cofactor * expression.operand(j);
+                }
+                if(!integration_depends_on(cofactor, variable) &&
+                   integration_exact_expression_tree(cofactor))
+                    scale = cofactor;
             }
-            integration_poly ratio_numerator, ratio_denominator;
-            integration_poly scale_numerator, scale_denominator;
-            bool parsed_ratio = integration_parse_rational(ratio, variable,
-                    ratio_numerator, ratio_denominator, degree_budget,
-                    degree_budget) &&
-                integration_normalize_rational(ratio_numerator,
-                    ratio_denominator);
-            if(!parsed_ratio) continue;
-            scale_numerator = integration_mul(ratio_numerator,
-                                               rate_denominator);
-            scale_denominator = integration_mul(ratio_denominator,
-                                                 rate_numerator);
-            if(!integration_normalize_rational(scale_numerator,
-                    scale_denominator) || scale_numerator.size() != 1 ||
-               scale_denominator.size() != 1 ||
-               scale_numerator[0].is_zero()) continue;
-            exact_expr scale = value(scale_numerator[0] /
-                                     scale_denominator[0]);
+            if(!scale.valid()){
+                exact_expr ratio = integer(1);
+                for(size_t j = 0; j < expression.operand_count(); ++j){
+                    if(j == i || j == logarithm_index) continue;
+                    ratio = ratio * expression.operand(j);
+                }
+                integration_poly ratio_numerator, ratio_denominator;
+                integration_poly scale_numerator, scale_denominator;
+                bool parsed_ratio = integration_parse_rational(ratio, variable,
+                        ratio_numerator, ratio_denominator, degree_budget,
+                        degree_budget) &&
+                    integration_normalize_rational(ratio_numerator,
+                        ratio_denominator);
+                if(!parsed_ratio) continue;
+                scale_numerator = integration_mul(ratio_numerator,
+                                                   rate_denominator);
+                scale_denominator = integration_mul(ratio_denominator,
+                                                     rate_numerator);
+                if(!integration_normalize_rational(scale_numerator,
+                        scale_denominator) || scale_numerator.size() != 1 ||
+                   scale_denominator.size() != 1) continue;
+                scale = value(scale_numerator[0] / scale_denominator[0]);
+            }
+            if(simplify(scale) == integer(0)) continue;
 
             exact_expr elementary_part = scale * exponential_factor * logarithm;
             exact_expr residual = -scale * rate * exponential_factor / inner;
@@ -12334,7 +12432,7 @@ risch_result exact_context::integrate_elementary_impl(
             bool identity_verified = identity_error == integer(0);
             if(!identity_verified){
                 exact_expr normalized_error = simplify(
-                    identity_error / exponential_factor);
+                    identity_error / (scale * exponential_factor));
                 integration_poly error_numerator, error_denominator;
                 identity_verified =
                     integration_parse_rational(normalized_error, variable,
@@ -12364,7 +12462,7 @@ risch_result exact_context::integrate_elementary_impl(
             bool reconstruction_verified = reconstruction_error == integer(0);
             if(!reconstruction_verified){
                 exact_expr normalized_error = simplify(
-                    reconstruction_error / exponential_factor);
+                    reconstruction_error / (scale * exponential_factor));
                 integration_poly error_numerator, error_denominator;
                 reconstruction_verified =
                     integration_parse_rational(normalized_error, variable,
@@ -12385,6 +12483,9 @@ risch_result exact_context::integrate_elementary_impl(
             result.elementary_part = std::move(combined_part);
             result.remainder = std::move(combined_remainder);
             result.conditions = std::move(lower.conditions);
+            if(std::find(result.conditions.begin(), result.conditions.end(),
+                         scale) == result.conditions.end())
+                result.conditions.push_back(scale);
             result.diagnostic =
                 "rational pullback reduces the Ei logarithmic product to a "
                 "certified non-elementary kernel";
