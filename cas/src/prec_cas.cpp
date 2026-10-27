@@ -12379,9 +12379,9 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr cofactor = simplify(expression / exponential_factor);
             integration_expr_poly polynomial;
             if(!integration_parse_expr_poly(*this, cofactor, logarithm,
-                    polynomial, options.maximum_degree) ||
+                    polynomial, degree_budget) ||
                polynomial.size() < 2 ||
-               polynomial.size() > options.maximum_degree + 1)
+               polynomial.size() > degree_budget + 1)
                 continue;
             bool exact_rational_coefficients = true;
             for(const exact_expr &coefficient : polynomial)
@@ -12403,9 +12403,18 @@ risch_result exact_context::integrate_elementary_impl(
             // forces independence of ln(x), contradicting nonconstant P.
             // For an exponential monomial this RDE obstruction is the
             // Liouville non-elementarity criterion.
+            exact_expr elementary_part = integer(0);
+            if(!polynomial[0].value().is_zero())
+                elementary_part = value(polynomial[0].value() / rate) *
+                    exponential_factor;
+            exact_expr remainder = simplify(expression -
+                differentiate(elementary_part, variable));
+            if(simplify(expand(differentiate(elementary_part, variable) +
+                    remainder - expression, 100000)) != integer(0))
+                continue;
             result.status = risch_status::proven_nonelementary;
-            result.elementary_part = integer(0);
-            result.remainder = expression;
+            result.elementary_part = std::move(elementary_part);
+            result.remainder = std::move(remainder);
             result.diagnostic =
                 "nonconstant logarithmic cofactor obstructs the "
                 "constant-rate hyperexponential RDE";

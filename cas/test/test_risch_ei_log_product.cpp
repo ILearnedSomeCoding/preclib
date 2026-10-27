@@ -31,8 +31,10 @@ static void check_logarithmic_rde_obstruction(exact_context &context,
         std::fprintf(stderr, "logarithmic RDE status %d: %s\n",
             (int)strict.status, strict.diagnostic.c_str());
     assert(strict.status == risch_status::proven_nonelementary);
-    assert(strict.elementary_part == context.integer(0));
-    assert(strict.remainder == integrand);
+    assert(strict.remainder != context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(strict.elementary_part, variable) +
+        strict.remainder - integrand, 100000)) == context.integer(0));
 }
 
 int main(){
@@ -50,5 +52,12 @@ int main(){
         context.integer(2) * x + context.integer(1),
         context.power(log_x, context.integer(3)) +
             context.integer(3) * log_x + context.integer(2));
+    exact_expr affine_inner = context.integer(2) * x + context.integer(1);
+    exact_expr affine_log_polynomial = context.power(log_x, context.integer(3)) +
+        context.integer(3) * log_x + context.integer(2);
+    risch_result split_constant = context.integrate_elementary(
+        context.exponential(affine_inner) * affine_log_polynomial, x);
+    assert(split_constant.status == risch_status::proven_nonelementary);
+    assert(split_constant.elementary_part == context.exponential(affine_inner));
     std::puts("logarithmic hyperexponential Risch reductions ok");
 }
