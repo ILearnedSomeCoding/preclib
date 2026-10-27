@@ -1,6 +1,7 @@
 #include"prec_cas.hpp"
 #include"ntheory/factor_integer.hpp"
 #include"ntheory/integer_arithmetic.hpp"
+#include"ntheory/integer_sequences.hpp"
 #include"ntheory/multiplicative_functions.hpp"
 
 #include<cctype>
@@ -360,6 +361,7 @@ class parser{
            name == "divisor_count" || name == "radical" ||
            name == "aliquot_sum" || name == "liouville_lambda" ||
            name == "carmichael_lambda" ||
+           name == "fibonacci" || name == "lucas_number" ||
            name == "prime_nu" || name == "prime_omega" ||
            name == "square_free_q" || name == "prime_power_q"){
             if(arguments.size() != 1)
@@ -379,6 +381,10 @@ class parser{
                 return state_.context.integer(cas_ntheory::liouville_lambda(value));
             if(name == "carmichael_lambda")
                 return integer_result(cas_ntheory::carmichael_lambda(value));
+            if(name == "fibonacci")
+                return integer_result(cas_ntheory::fibonacci(value));
+            if(name == "lucas_number")
+                return integer_result(cas_ntheory::lucas_number(value));
             if(name == "prime_nu")
                 return state_.context.integer((int64_t)cas_ntheory::prime_nu(value));
             if(name == "prime_omega")
@@ -448,6 +454,18 @@ class parser{
                 : cas_ntheory::kronecker_symbol(require_integer(arguments[0]),
                                                  require_integer(arguments[1]));
             return state_.context.integer(symbol);
+        }
+        if(name == "legendre_symbol"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("legendre_symbol requires two integers");
+            return state_.context.integer(cas_ntheory::legendre_symbol(
+                require_integer(arguments[0]), require_integer(arguments[1])));
+        }
+        if(name == "multiplicative_order"){
+            if(arguments.size() != 2)
+                throw std::runtime_error("multiplicative_order requires base and modulus");
+            return integer_result(cas_ntheory::multiplicative_order(
+                require_integer(arguments[0]), require_integer(arguments[1])));
         }
         if(name == "coprime_q"){
             if(arguments.size() < 2)

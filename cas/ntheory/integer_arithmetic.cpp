@@ -1,5 +1,9 @@
 #include "integer_arithmetic.hpp"
 
+#include "aprcl.hpp"
+#include "factor_integer.hpp"
+#include "multiplicative_functions.hpp"
+
 #include <stdexcept>
 
 namespace cas_ntheory{
@@ -131,5 +135,49 @@ int kronecker_symbol(precz_t numerator, precz_t denominator){
     if(denominator != precz_t(1))
         sign *= jacobi_symbol(std::move(numerator), std::move(denominator));
     return sign;
+}
+
+int legendre_symbol(const precz_t &numerator, const precz_t &odd_prime){
+    if(odd_prime <= precz_t(2) ||
+       !(odd_prime.magnitude().a[0] & 1))
+        throw std::domain_error("legendre_symbol requires an odd prime modulus");
+    cas_aprcl_result primality = cas_aprcl(odd_prime.magnitude());
+    if(primality.status == cas_primality_status::composite)
+        throw std::domain_error("legendre_symbol modulus is composite");
+    if(primality.status != cas_primality_status::prime)
+        throw std::runtime_error("legendre_symbol primality proof incomplete: " +
+                                 primality.reason);
+
+    precz_t reduced = positive_mod(numerator, odd_prime);
+    if(reduced.is_zero()) return 0;
+    precz_t value = power_mod(reduced, (odd_prime - precz_t(1)) / precz_t(2),
+                              odd_prime);
+    if(value == precz_t(1)) return 1;
+    if(value == odd_prime - precz_t(1)) return -1;
+    throw std::logic_error("Euler criterion failed after primality proof");
+}
+
+precz_t multiplicative_order(const precz_t &base, const precz_t &modulus){
+    if(modulus <= precz_t(1))
+        throw std::domain_error("multiplicative_order requires modulus > 1");
+    if(gcd(base, modulus) != precz_t(1))
+        throw std::domain_error("multiplicative_order requires coprime arguments");
+
+    precz_t order = euler_phi(modulus);
+    std::vector<precn_t> prime_factors;
+    if(order != precz_t(1) && !cas_factor_big(order.magnitude(), prime_factors))
+        throw std::runtime_error("multiplicative_order factorization budget exhausted");
+    std::sort(prime_factors.begin(), prime_factors.end());
+    precz_t normalized_base = positive_mod(base, modulus);
+    for(const precn_t &prime : prime_factors){
+        precz_t p(prime);
+        while((order % p).is_zero()){
+            precz_t candidate = order / p;
+            if(power_mod(normalized_base, candidate, modulus) != precz_t(1))
+                break;
+            order = std::move(candidate);
+        }
+    }
+    return order;
 }
 }

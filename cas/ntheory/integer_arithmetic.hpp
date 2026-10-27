@@ -19,6 +19,8 @@ precz_t chinese_remainder(const std::vector<precz_t> &residues,
                           const std::vector<precz_t> &moduli);
 int jacobi_symbol(precz_t numerator, precz_t odd_denominator);
 int kronecker_symbol(precz_t numerator, precz_t denominator);
+int legendre_symbol(const precz_t &numerator, const precz_t &odd_prime);
+precz_t multiplicative_order(const precz_t &base, const precz_t &modulus);
 }
 
 #endif
