@@ -38,13 +38,19 @@ static void check_logarithmic_rde_obstruction(exact_context &context,
 }
 
 static void check_elementary_primitive(exact_context &context,
-        const exact_expr &variable, const exact_expr &integrand){
+        const exact_expr &variable, const exact_expr &integrand,
+        const exact_expr &normalized_integrand){
     exact_expr ordinary = context.integrate(integrand, variable);
     assert(ordinary.valid());
     assert(ordinary.operation() != exact_opcode::integral);
-    assert(context.simplify(context.expand(
-        context.differentiate(ordinary, variable) - integrand,
-        100000)) == context.integer(0));
+    exact_expr ordinary_error = context.simplify(context.expand(
+        context.differentiate(ordinary, variable) - normalized_integrand,
+        100000));
+    if(ordinary_error != context.integer(0))
+        std::fprintf(stderr, "ordinary primitive failed: %s -> %s; error %s\n",
+            integrand.to_string().c_str(), ordinary.to_string().c_str(),
+            ordinary_error.to_string().c_str());
+    assert(ordinary_error == context.integer(0));
     risch_result strict = context.integrate_elementary(integrand, variable);
     if(strict.status != risch_status::elementary)
         std::fprintf(stderr, "elementary status %d: %s\n", (int)strict.status,
@@ -52,22 +58,92 @@ static void check_elementary_primitive(exact_context &context,
     assert(strict.status == risch_status::elementary);
     assert(strict.remainder == context.integer(0));
     assert(context.simplify(context.expand(
-        context.differentiate(strict.elementary_part, variable) - integrand,
-        100000)) == context.integer(0));
+        context.differentiate(strict.elementary_part, variable) -
+            normalized_integrand, 100000)) == context.integer(0));
 }
 
 int main(){
     exact_context context;
     exact_expr x = context.symbol("x");
     check_elementary_primitive(context, x,
-        x * context.exponential(-x));
+        x * context.exponential(-x), x * context.exponential(-x));
+    exact_expr e_to_x = context.power(context.e(), x);
+    check_elementary_primitive(context, x, x / e_to_x,
+        x / context.exponential(x));
     check_elementary_primitive(context, x,
+        x / context.power(context.e(), context.integer(2) * x),
+        x / context.exponential(context.integer(2) * x));
+    check_elementary_primitive(context, x,
+        x * context.power(context.integer(2), -x),
         x * context.power(context.integer(2), -x));
+    exact_expr exp_x = context.exponential(x);
+    exact_expr mixed_exp_log = exp_x *
+        (context.natural_logarithm(x) + context.integer(1) / x);
+    check_elementary_primitive(context, x, mixed_exp_log, mixed_exp_log);
+    exact_expr mixed_rational_exp_log = exp_x *
+        (context.natural_logarithm(x) + context.integer(1) /
+            context.power(x, context.integer(2)));
+    check_elementary_primitive(context, x, mixed_rational_exp_log,
+                                mixed_rational_exp_log);
+    exact_expr log_x_plus_one = context.natural_logarithm(
+        x + context.integer(1));
+    exact_expr mixed_two_log_exp = exp_x *
+        (context.natural_logarithm(x) * log_x_plus_one +
+         log_x_plus_one / x + context.natural_logarithm(x) /
+             (x + context.integer(1)));
+    check_elementary_primitive(context, x, mixed_two_log_exp,
+        mixed_two_log_exp);
+    exact_expr rational_two_log_primitive = exp_x *
+        context.natural_logarithm(x) * log_x_plus_one /
+        (x + context.integer(2));
+    exact_expr rational_two_log_integrand = context.differentiate(
+        rational_two_log_primitive, x);
+    check_elementary_primitive(context, x, rational_two_log_integrand,
+                               rational_two_log_integrand);
     check_ei_reduction(context, x, x, context.integer(1));
     check_ei_reduction(context, x,
         context.integer(2) * x + context.integer(1), context.integer(1));
     check_ei_reduction(context, x,
         context.integer(3) * x - context.integer(2), context.integer(7));
+    exact_expr nonlinear_ei_inner = context.power(x, context.integer(2)) +
+                                    context.integer(1);
+    exact_expr nonlinear_ei_rate = context.differentiate(
+        nonlinear_ei_inner, x);
+    exact_expr nonlinear_ei_integrand = nonlinear_ei_rate *
+        context.exponential(nonlinear_ei_inner) *
+        context.natural_logarithm(nonlinear_ei_inner);
+    risch_result nonlinear_ei_result = context.integrate_elementary(
+        nonlinear_ei_integrand, x);
+    if(nonlinear_ei_result.status != risch_status::proven_nonelementary)
+        std::fprintf(stderr, "nonlinear Ei status %d: %s\n",
+            (int)nonlinear_ei_result.status,
+            nonlinear_ei_result.diagnostic.c_str());
+    assert(nonlinear_ei_result.status == risch_status::proven_nonelementary);
+    assert(context.simplify(nonlinear_ei_result.elementary_part -
+        context.exponential(nonlinear_ei_inner) *
+            context.natural_logarithm(nonlinear_ei_inner)) == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(nonlinear_ei_result.elementary_part, x) +
+        nonlinear_ei_result.remainder - nonlinear_ei_integrand, 100000)) ==
+        context.integer(0));
+    exact_expr rational_ei_inner =
+        (context.power(x, context.integer(2)) + context.integer(1)) /
+        (x + context.integer(1));
+    exact_expr rational_ei_rate = context.differentiate(rational_ei_inner, x);
+    exact_expr rational_ei_integrand = rational_ei_rate *
+        context.exponential(rational_ei_inner) *
+        context.natural_logarithm(rational_ei_inner);
+    risch_result rational_ei_result = context.integrate_elementary(
+        rational_ei_integrand, x);
+    if(rational_ei_result.status != risch_status::proven_nonelementary)
+        std::fprintf(stderr, "rational Ei status %d: %s\n",
+            (int)rational_ei_result.status,
+            rational_ei_result.diagnostic.c_str());
+    assert(rational_ei_result.status == risch_status::proven_nonelementary);
+    assert(context.simplify(context.expand(
+        context.differentiate(rational_ei_result.elementary_part, x) +
+        rational_ei_result.remainder - rational_ei_integrand, 100000)) ==
+        context.integer(0));
     exact_expr log_x = context.natural_logarithm(x);
     check_logarithmic_rde_obstruction(context, x, x,
         context.power(log_x, context.integer(2)));

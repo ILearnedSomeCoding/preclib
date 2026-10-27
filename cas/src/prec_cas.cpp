@@ -12278,51 +12278,86 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr inner = exponential_factor.operand(0);
             exact_expr logarithm = natural_logarithm(inner);
             bool has_matching_log = false;
+            size_t logarithm_index = expression.operand_count();
             for(size_t j = 0; j < expression.operand_count(); ++j){
                 exact_expr factor = expression.operand(j);
                 if(factor == logarithm){
                     has_matching_log = true;
+                    logarithm_index = j;
                     break;
                 }
             }
             if(!has_matching_log) continue;
             exact_expr rate = differentiate(inner, variable);
-            if(!rate.is_value() || rate.value().is_approximate() ||
-               rate.value().is_zero()) continue;
-            exact_expr ratio = simplify(expression /
-                (exponential_factor * logarithm));
-            if(integration_depends_on(ratio, variable) ||
-               !ratio.is_value() || ratio.value().is_approximate() ||
-               ratio.value().is_zero()) continue;
-
-            exact_expr elementary_part = ratio / rate *
-                exponential_factor * logarithm;
-            exact_expr residual = -ratio * exponential_factor / inner;
-            if(simplify(expand(expression -
-                    differentiate(elementary_part, variable) - residual,
-                    100000)) != integer(0))
-                continue;
-            risch_result lower = integrate_elementary(
-                exponential_factor / inner, variable, options);
-            exact_expr lower_part, lower_remainder;
-            if(lower.status == risch_status::proven_nonelementary){
-                lower_part = lower.elementary_part;
-                lower_remainder = lower.remainder;
-            }else{
-                // An affine change t=inner maps exp(inner)/inner to the
-                // certified Ei kernel exp(t)/t. The inverse Jacobian scales
-                // only the extracted primitive, not the residual integrand.
-                exact_expr dummy_kernel = exponential(variable) / variable;
-                lower = integrate_elementary(dummy_kernel, variable, options);
-                if(lower.status != risch_status::proven_nonelementary) continue;
-                lower_part = substitute(lower.elementary_part, variable,
-                                        inner) / rate;
-                lower_remainder = substitute(lower.remainder, variable,
-                                             inner);
+            integration_poly inner_numerator, inner_denominator;
+            integration_poly rate_numerator, rate_denominator;
+            bool parsed_inner = integration_parse_rational(inner, variable,
+                    inner_numerator, inner_denominator, degree_budget,
+                    degree_budget) &&
+                integration_normalize_rational(inner_numerator,
+                    inner_denominator);
+            bool parsed_rate = integration_parse_rational(rate, variable,
+                    rate_numerator, rate_denominator, degree_budget,
+                    degree_budget) &&
+                integration_normalize_rational(rate_numerator,
+                    rate_denominator) && !integration_zero_poly(rate_numerator);
+            if(!parsed_inner || !parsed_rate) continue;
+            exact_expr ratio = integer(1);
+            for(size_t j = 0; j < expression.operand_count(); ++j){
+                if(j == i || j == logarithm_index) continue;
+                ratio = ratio * expression.operand(j);
             }
-            exact_expr combined_part = simplify(elementary_part -
-                ratio * lower_part);
-            exact_expr combined_remainder = -ratio * lower_remainder;
+            integration_poly ratio_numerator, ratio_denominator;
+            integration_poly scale_numerator, scale_denominator;
+            bool parsed_ratio = integration_parse_rational(ratio, variable,
+                    ratio_numerator, ratio_denominator, degree_budget,
+                    degree_budget) &&
+                integration_normalize_rational(ratio_numerator,
+                    ratio_denominator);
+            if(!parsed_ratio) continue;
+            scale_numerator = integration_mul(ratio_numerator,
+                                               rate_denominator);
+            scale_denominator = integration_mul(ratio_denominator,
+                                                 rate_numerator);
+            if(!integration_normalize_rational(scale_numerator,
+                    scale_denominator) || scale_numerator.size() != 1 ||
+               scale_denominator.size() != 1 ||
+               scale_numerator[0].is_zero()) continue;
+            exact_expr scale = value(scale_numerator[0] /
+                                     scale_denominator[0]);
+
+            exact_expr elementary_part = scale * exponential_factor * logarithm;
+            exact_expr residual = -scale * rate * exponential_factor / inner;
+            exact_expr identity_error = simplify(expand(expression -
+                differentiate(elementary_part, variable) - residual,
+                100000));
+            bool identity_verified = identity_error == integer(0);
+            if(!identity_verified){
+                exact_expr normalized_error = simplify(
+                    identity_error / exponential_factor);
+                integration_poly error_numerator, error_denominator;
+                identity_verified =
+                    integration_parse_rational(normalized_error, variable,
+                        error_numerator, error_denominator, degree_budget,
+                        verification_degree_budget) &&
+                    integration_normalize_rational(error_numerator,
+                        error_denominator) &&
+                    integration_zero_poly(error_numerator);
+            }
+            if(!identity_verified) continue;
+            // The inverse of a nonconstant rational inner function is
+            // algebraic. An elementary primitive after this pullback would
+            // therefore give an elementary primitive of exp(t)*log(t).
+            exact_expr dummy_kernel = exponential(variable) / variable;
+            risch_result lower = integrate_elementary(
+                dummy_kernel, variable, options);
+            if(lower.status != risch_status::proven_nonelementary ||
+               lower.elementary_part != integer(0) ||
+               simplify(expand(lower.remainder - dummy_kernel, 100000)) !=
+                   integer(0)) continue;
+            exact_expr combined_part = elementary_part;
+            exact_expr combined_remainder = -scale * rate *
+                exponential_factor / inner;
             exact_expr reconstruction_error = simplify(expand(
                 differentiate(combined_part, variable) + combined_remainder -
                 expression, 100000));
@@ -12351,8 +12386,8 @@ risch_result exact_context::integrate_elementary_impl(
             result.remainder = std::move(combined_remainder);
             result.conditions = std::move(lower.conditions);
             result.diagnostic =
-                "integration by parts reduces the non-elementary remainder "
-                "to a certified hyperexponential integral";
+                "rational pullback reduces the Ei logarithmic product to a "
+                "certified non-elementary kernel";
             return true;
         }
         return false;
