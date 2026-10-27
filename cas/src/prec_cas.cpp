@@ -12360,65 +12360,131 @@ risch_result exact_context::integrate_elementary_impl(
     if(classify_ei_log_product()) return result;
     auto classify_logarithmic_hyperexponential = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
-        exact_expr logarithm = natural_logarithm(variable);
-        for(size_t i = 0; i < expression.operand_count(); ++i){
-            exact_expr exponential_factor = expression.operand(i);
-            if(exponential_factor.operation() != exact_opcode::exponential)
-                continue;
-            integration_poly inner;
-            if(!integration_parse_poly(exponential_factor.operand(0), variable,
-                    inner) || inner.size() != 2)
-                continue;
-            bool exact_inner = true;
-            for(const numeric_value &coefficient : inner)
-                if(!coefficient.is_integer() && !coefficient.is_rational())
-                    exact_inner = false;
-            if(!exact_inner) continue;
-            numeric_value rate = inner[1];
-            if(rate.is_zero() || rate.is_approximate()) continue;
-            exact_expr cofactor = simplify(expression / exponential_factor);
-            integration_expr_poly polynomial;
-            if(!integration_parse_expr_poly(*this, cofactor, logarithm,
-                    polynomial, degree_budget) ||
-               polynomial.size() < 2 ||
-               polynomial.size() > degree_budget + 1)
-                continue;
-            bool exact_rational_coefficients = true;
-            for(const exact_expr &coefficient : polynomial)
-                if(!coefficient.is_value() ||
-                   (!coefficient.value().is_integer() &&
-                    !coefficient.value().is_rational())){
-                    exact_rational_coefficients = false;
-                    break;
-                }
-            if(!exact_rational_coefficients) continue;
+        std::vector<exact_expr> logarithms;
+        std::unordered_set<uint32_t> seen_nodes;
+        auto collect_logarithms = [&](auto &&self,
+                const exact_expr &part) -> void{
+            if(!seen_nodes.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm)
+                logarithms.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect_logarithms(collect_logarithms, expression);
+        if(logarithms.empty()) return false;
+        auto exact_constant = [&](const exact_expr &part){
+            return integration_exact_expression_tree(part) &&
+                !integration_depends_on(part, variable);
+        };
+        auto provably_nonzero_constant = [&](auto &&self,
+                const exact_expr &part) -> bool{
+            if(!exact_constant(part)) return false;
+            if(part.is_value())
+                return !part.value().is_approximate() &&
+                    !part.value().is_zero();
+            if(part.operation() == exact_opcode::symbol)
+                return storage_->has_assumption(part.root_,
+                    exact_storage::assumed_positive);
+            if(part.operation() == exact_opcode::constant_e ||
+               part.operation() == exact_opcode::constant_pi ||
+               part.operation() == exact_opcode::constant_i ||
+               part.operation() == exact_opcode::exponential)
+                return true;
+            if(part.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    if(!self(self, part.operand(i))) return false;
+                return part.operand_count() != 0;
+            }
+            if(part.operation() == exact_opcode::power){
+                int64_t exponent = 0;
+                return integration_signed_exponent(part.operand(1), exponent) &&
+                    (exponent == 0 || self(self, part.operand(0)));
+            }
+            return false;
+        };
+        for(const exact_expr &logarithm : logarithms){
+            integration_poly log_numerator, log_denominator;
+            if(!integration_parse_rational(logarithm.operand(0), variable,
+                    log_numerator, log_denominator, degree_budget,
+                    degree_budget) ||
+               !integration_normalize_rational(log_numerator,
+                    log_denominator)) continue;
+            integration_poly log_derivative_numerator = integration_sub(
+                integration_mul(integration_derivative_poly(log_numerator),
+                    log_denominator),
+                integration_mul(log_numerator,
+                    integration_derivative_poly(log_denominator)));
+            if(integration_zero_poly(log_derivative_numerator)) continue;
 
-            // Over K=Q(x,ln(x)), D(ln(x))=1/x. No irreducible polynomial in
-            // ln(x) is special: a special factor would give an algebraic
-            // element whose derivative is 1/x, hence an algebraic primitive
-            // of 1/x, which does not exist. Normal-pole orders then show a
-            // rational R solving R'+rate*R=P(ln(x)) has no finite poles,
-            // including x=0, so it is polynomial in x and ln(x). The highest
-            // x-degree forces independence of x; the 1/x coefficient then
-            // forces independence of ln(x), contradicting nonconstant P.
-            // For an exponential monomial this RDE obstruction is the
-            // Liouville non-elementarity criterion.
-            exact_expr elementary_part = integer(0);
-            if(!polynomial[0].value().is_zero())
-                elementary_part = value(polynomial[0].value() / rate) *
-                    exponential_factor;
-            exact_expr remainder = simplify(expression -
-                differentiate(elementary_part, variable));
-            if(simplify(expand(differentiate(elementary_part, variable) +
-                    remainder - expression, 100000)) != integer(0))
-                continue;
-            result.status = risch_status::proven_nonelementary;
-            result.elementary_part = std::move(elementary_part);
-            result.remainder = std::move(remainder);
-            result.diagnostic =
-                "nonconstant logarithmic cofactor obstructs the "
-                "constant-rate hyperexponential RDE";
-            return true;
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr exponential_factor = expression.operand(i);
+                if(exponential_factor.operation() != exact_opcode::exponential)
+                    continue;
+                integration_expr_poly inner;
+                if(!integration_parse_expr_poly(*this,
+                        exponential_factor.operand(0), variable, inner,
+                        degree_budget) || inner.size() != 2)
+                    continue;
+                if(!exact_constant(inner[0]) || !exact_constant(inner[1]) ||
+                   integration_expr_zero(*this, inner[1])) continue;
+                exact_expr rate = inner[1];
+                exact_expr cofactor = simplify(expression / exponential_factor);
+                integration_expr_poly polynomial;
+                if(!integration_parse_expr_poly(*this, cofactor, logarithm,
+                        polynomial, degree_budget) ||
+                   polynomial.size() < 2 ||
+                   polynomial.size() - 1 > degree_budget)
+                    continue;
+                bool exact_constant_coefficients = true;
+                for(const exact_expr &coefficient : polynomial)
+                    if(!exact_constant(coefficient)){
+                        exact_constant_coefficients = false;
+                        break;
+                    }
+                if(!exact_constant_coefficients) continue;
+
+                // Set L=ln(g(x)), where g is a nonconstant rational function.
+                // D(L)=g'/g has a finite simple pole over the algebraic closure.
+                // For a monic irreducible p(L), D(p) has smaller L-degree;
+                // the nonzero residues of g'/g also rule out D(p)=0, so no
+                // denominator factor in L is special. Thus a rational R in
+                // R'+rate*R=P(L) must be polynomial in L. Its leading
+                // coefficient solves r'+rate*r=c, hence is constant; the next
+                // coefficient then has a nonzero multiple of g'/g as its
+                // forcing term. A rational solution cannot have a finite pole
+                // (its derivative would create a higher-order pole), while a
+                // polynomial cannot match the simple pole of g'/g. This
+                // contradicts deg(P)>0 and certifies non-elementarity.
+                std::vector<exact_expr> conditions;
+                auto require_nonzero = [&](const exact_expr &constant){
+                    if(provably_nonzero_constant(provably_nonzero_constant,
+                            constant)) return;
+                    if(std::find(conditions.begin(), conditions.end(), constant) ==
+                       conditions.end()) conditions.push_back(constant);
+                };
+                require_nonzero(rate);
+                require_nonzero(polynomial.back());
+
+                exact_expr elementary_part = integer(0);
+                if(!integration_expr_zero(*this, polynomial[0]))
+                    elementary_part = polynomial[0] / rate * exponential_factor;
+                integration_expr_poly nonconstant = polynomial;
+                nonconstant[0] = integer(0);
+                integration_expr_trim(*this, nonconstant);
+                exact_expr remainder = exponential_factor *
+                    integration_expr_poly_expr(*this, nonconstant, logarithm);
+                if(simplify(expand(differentiate(elementary_part, variable) +
+                        remainder - expression, 100000)) != integer(0))
+                    continue;
+                result.status = risch_status::proven_nonelementary;
+                result.elementary_part = std::move(elementary_part);
+                result.remainder = std::move(remainder);
+                result.conditions = std::move(conditions);
+                result.diagnostic =
+                    "nonconstant logarithmic cofactor obstructs the "
+                    "constant-rate hyperexponential RDE";
+                return true;
+            }
         }
         return false;
     };
