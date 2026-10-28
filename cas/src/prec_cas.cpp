@@ -14186,6 +14186,12 @@ risch_result exact_context::integrate_elementary_impl(
             std::vector<std::pair<exact_expr, size_t>> factors;
             exact_expr polynomial_factor = integer(1);
             size_t total_order = 0;
+            const size_t pole_order_budget = std::min(
+                degree_budget, options.maximum_nodes);
+            const int64_t signed_pole_order_budget = pole_order_budget >
+                (size_t)std::numeric_limits<int64_t>::max()
+                ? std::numeric_limits<int64_t>::max()
+                : (int64_t)pole_order_budget;
             auto add_pole = [&](auto &&self, exact_expr base,
                                 size_t multiplicity) -> bool{
                 if(base.operation() == exact_opcode::multiply){
@@ -14196,7 +14202,8 @@ risch_result exact_context::integrate_elementary_impl(
                 if(base.operation() == exact_opcode::power){
                     int64_t exponent = 0;
                     if(!integration_signed_exponent(base.operand(1), exponent) ||
-                       exponent <= 0 || (size_t)exponent > 8 / multiplicity)
+                       exponent <= 0 || multiplicity == 0 ||
+                       (size_t)exponent > pole_order_budget / multiplicity)
                         return false;
                     return self(self, base.operand(0),
                         multiplicity * (size_t)exponent);
@@ -14206,8 +14213,8 @@ risch_result exact_context::integrate_elementary_impl(
                         power(base, integer(multiplicity));
                     return true;
                 }
-                if(multiplicity > 8 - total_order ||
-                   total_order + multiplicity > options.maximum_degree)
+                if(total_order > pole_order_budget ||
+                   multiplicity > pole_order_budget - total_order)
                     return false;
                 for(auto &factor : factors)
                     if(factor.first == base){
@@ -14223,12 +14230,12 @@ risch_result exact_context::integrate_elementary_impl(
                 int64_t exponent = 0;
                 if(factor.operation() == exact_opcode::power &&
                    integration_signed_exponent(factor.operand(1), exponent) &&
-                   exponent < 0 && exponent >= -8 &&
+                   exponent < 0 && exponent >= -signed_pole_order_budget &&
                    integration_depends_on(factor.operand(0), generator)){
                     if(!add_pole(add_pole, factor.operand(0),
                             (size_t)-exponent)) return false;
                 }else polynomial_factor = polynomial_factor * factor;
-                return total_order <= 8;
+                return total_order <= pole_order_budget;
             };
             bool shape = true;
             if(expression.operation() == exact_opcode::multiply){
