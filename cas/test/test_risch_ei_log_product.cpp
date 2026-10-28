@@ -188,6 +188,16 @@ int main(){
     assert(positive_symbolic_ei_result.status ==
            risch_status::proven_nonelementary);
     assert(positive_symbolic_ei_result.conditions.empty());
+    exact_expr trigonometric_ei_inner = context.sine(x);
+    exact_expr trigonometric_ei_integrand = context.cosine(x) *
+        context.exponential(trigonometric_ei_inner) *
+        context.natural_logarithm(trigonometric_ei_inner);
+    exact_expr trigonometric_ei_primitive = context.integrate(
+        trigonometric_ei_integrand, x);
+    assert(trigonometric_ei_primitive.operation() != exact_opcode::integral);
+    assert(context.simplify(context.expand(
+        context.differentiate(trigonometric_ei_primitive, x) -
+        trigonometric_ei_integrand, 100000)) == context.integer(0));
     exact_expr log_x = context.natural_logarithm(x);
     check_logarithmic_rde_obstruction(context, x, x,
         context.power(log_x, context.integer(2)));

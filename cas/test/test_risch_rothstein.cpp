@@ -26,10 +26,11 @@ int main(){
         return 1;
     }
     risch_options high_degree_options;
-    high_degree_options.maximum_rothstein_degree = 8;
-    for(size_t degree : {7u, 8u}){
+    high_degree_options.maximum_rothstein_degree = 10;
+    for(size_t degree : {7u, 8u, 9u, 10u}){
         exact_expr high_denominator = context.power(x,
-            context.integer((int64_t)degree)) + x + context.integer(1);
+            context.integer((int64_t)degree)) + context.integer(1);
+        if(degree < 9) high_denominator = high_denominator + x;
         exact_expr high_integrand = context.integer(1) / high_denominator;
         exact_expr default_primitive = context.integrate(high_integrand, x);
         if(default_primitive.operation() != exact_opcode::log_root_sum ||

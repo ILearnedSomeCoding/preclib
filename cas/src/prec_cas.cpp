@@ -6503,6 +6503,63 @@ static bool integration_residue_characteristic_polynomial(
     return true;
 }
 
+// Rational-function RT has rational residue data, so keep this calculation in
+// numeric_value instead of building and reparsing an exact_expr matrix.
+static bool integration_residue_characteristic_polynomial_rational(
+    const integration_poly &r, const integration_poly &d,
+    size_t maximum_degree, size_t maximum_matrix_entries,
+    integration_poly &characteristic){
+    if(d.size() < 2 || d.size() - 1 > maximum_degree || r.empty()) return false;
+    const size_t n = d.size() - 1;
+    if(n > maximum_matrix_entries / n ||
+       n * n > maximum_matrix_entries / 3) return false;
+
+    using matrix = std::vector<std::vector<numeric_value>>;
+    matrix a(n, std::vector<numeric_value>(n, numeric_value(0)));
+    for(size_t j = 0; j < n; ++j){
+        integration_poly shifted(j, numeric_value(0)), quotient, reduced;
+        shifted.insert(shifted.end(), r.begin(), r.end());
+        if(!integration_divmod_poly(shifted, d, quotient, reduced)) return false;
+        for(size_t i = 0; i < reduced.size(); ++i) a[i][j] = reduced[i];
+    }
+
+    matrix b(n, std::vector<numeric_value>(n, numeric_value(0)));
+    for(size_t i = 0; i < n; ++i) b[i][i] = numeric_value(1);
+    integration_poly coefficients(n + 1, numeric_value(0));
+    coefficients[n] = numeric_value(1);
+    for(size_t k = 1; k <= n; ++k){
+        matrix next(n, std::vector<numeric_value>(n, numeric_value(0)));
+        for(size_t i = 0; i < n; ++i){
+            for(size_t h = 0; h < n; ++h){
+                if(a[i][h].is_zero()) continue;
+                for(size_t j = 0; j < n; ++j){
+                    if(!b[h][j].is_zero())
+                        next[i][j] = next[i][j] + a[i][h] * b[h][j];
+                }
+            }
+        }
+        numeric_value trace(0);
+        for(size_t i = 0; i < n; ++i) trace = trace + next[i][i];
+        numeric_value coefficient = -trace / numeric_value((uint64_t)k);
+        coefficients[n - k] = coefficient;
+        for(size_t i = 0; i < n; ++i)
+            next[i][i] = next[i][i] + coefficient;
+        b = std::move(next);
+    }
+
+    // Recheck Cayley-Hamilton in Q[t]/(d), independently of the matrix trace.
+    integration_poly value{numeric_value(1)};
+    for(size_t i = n; i > 0; --i){
+        integration_poly product = integration_mul(value, r), quotient;
+        if(product.empty()) product.push_back(numeric_value(0));
+        product[0] = product[0] + coefficients[i - 1];
+        if(!integration_divmod_poly(product, d, quotient, value)) return false;
+    }
+    if(!integration_zero_poly(value)) return false;
+    characteristic = std::move(coefficients);
+    return true;
+}
+
 static bool integration_algebraic_quotient_trace(
     exact_context &context, const integration_expr_poly &input,
     const integration_expr_poly &modulus, const exact_expr &variable,
@@ -6827,9 +6884,9 @@ static exact_expr integration_rothstein_trager_rational(
     const integration_poly &denominator, const exact_expr &variable,
     size_t maximum_degree, size_t maximum_rothstein_degree){
     const size_t degree = denominator.size() - 1;
-    // Keep result-polynomial factorization within a predictable small-degree
-    // range; larger inputs retain the compact exact LogRootSum representation.
-    if(degree <= 4 || degree > 8 || degree > maximum_rothstein_degree ||
+    // The caller controls how much residue factorization to attempt; the
+    // characteristic-polynomial and matrix budgets bound opt-in higher degrees.
+    if(degree <= 4 || degree > maximum_rothstein_degree ||
        degree > maximum_degree ||
        numerator.size() >= denominator.size())
         return exact_expr();
@@ -6879,28 +6936,12 @@ static exact_expr integration_rothstein_trager_rational(
     do{ generator = context.symbol("_risch_rt_t" + std::to_string(suffix++)); }
     while(used_symbols.count(generator.id()) || generator == z);
 
-    integration_expr_poly residue_expression, denominator_expression;
-    residue_expression.reserve(residue.size());
-    denominator_expression.reserve(denominator.size());
-    for(const numeric_value &coefficient : residue)
-        residue_expression.push_back(context.value(coefficient));
-    for(const numeric_value &coefficient : denominator)
-        denominator_expression.push_back(context.value(coefficient));
-    integration_expr_poly characteristic;
+    integration_poly residue_polynomial;
     risch_options options;
     options.maximum_degree = maximum_degree;
-    if(!integration_residue_characteristic_polynomial(context,
-        residue_expression, denominator_expression, generator, options,
-        characteristic)) return exact_expr();
-    integration_poly residue_polynomial;
-    for(const exact_expr &coefficient : characteristic){
-        integration_poly n, d;
-        if(!integration_parse_rational(coefficient, generator, n, d,
-                maximum_degree, maximum_degree) ||
-           !integration_normalize_rational(n, d) || n.size() != 1 || d.size() != 1)
-            return exact_expr();
-        residue_polynomial.push_back(n[0] / d[0]);
-    }
+    if(!integration_residue_characteristic_polynomial_rational(
+        residue, denominator, maximum_degree, options.maximum_matrix_entries,
+        residue_polynomial)) return exact_expr();
 
     std::vector<exact_expr> factors;
     integration_factor_list(context.factor(
