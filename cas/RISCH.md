@@ -1252,6 +1252,8 @@ R(z) = resultant_x(W, V - z*W')
 RT/LRT 路径不再另设 8 次硬上限，实际受 `maximum_degree`、矩阵项数预算、节点预算
 以及精确因式分解能力共同约束。回归将可选上限提高到 10 次并验证 7–10 次输入；
 更高次数的 LRT 子结式路径、内容因子分析和大次数因式分解策略仍待实现。
+严格入口会将 `maximum_matrix_entries` 传给该特征矩阵；预算不足时跳过留数分组，
+仍可回退到精确 `LogRootSum`，不把优化路径的资源限制误报为积分失败。
 当分子、分母系数属于 `Q` 时，留数乘法矩阵及 Faddeev–LeVerrier 特征多项式
 直接用精确 `numeric_value` 算术构造，并在 `Q[t]/(W)` 中重放
 Cayley–Hamilton 余数证书；不再经过通用表达式 DAG 矩阵及其有理式解析。

@@ -3172,7 +3172,8 @@ static exact_expr integration_algebraic_logarithmic_rational(
 static exact_expr integration_rothstein_trager_rational(
     exact_context &context, const integration_poly &numerator,
     const integration_poly &denominator, const exact_expr &variable,
-    size_t maximum_degree, size_t maximum_rothstein_degree);
+    size_t maximum_degree, size_t maximum_rothstein_degree,
+    size_t maximum_matrix_entries);
 
 static bool integration_hermite_reduce(
     const integration_poly &numerator, const integration_poly &denominator,
@@ -3364,7 +3365,8 @@ static exact_expr integration_rational_antiderivative(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable,
     size_t maximum_degree = integration_public_hermite_degree_limit,
-    size_t maximum_rothstein_degree = 6){
+    size_t maximum_rothstein_degree = 6,
+    size_t maximum_matrix_entries = 65536){
     integration_poly numerator, denominator;
     if(!integration_parse_rational(expression, variable, numerator, denominator,
                                    maximum_degree, maximum_degree))
@@ -3416,7 +3418,7 @@ static exact_expr integration_rational_antiderivative(
        denominator.size() - 1 <= maximum_rothstein_degree)
         proper = integration_rothstein_trager_rational(
             context, remainder, denominator, variable, maximum_degree,
-            maximum_rothstein_degree);
+            maximum_rothstein_degree, maximum_matrix_entries);
     if(denominator.size() - 1 > 4 &&
        !proper.valid() &&
        integration_gcd_poly(denominator,
@@ -6882,7 +6884,8 @@ static bool integration_algebraic_residue_factor(
 static exact_expr integration_rothstein_trager_rational(
     exact_context &context, const integration_poly &numerator,
     const integration_poly &denominator, const exact_expr &variable,
-    size_t maximum_degree, size_t maximum_rothstein_degree){
+    size_t maximum_degree, size_t maximum_rothstein_degree,
+    size_t maximum_matrix_entries){
     const size_t degree = denominator.size() - 1;
     // The caller controls how much residue factorization to attempt; the
     // characteristic-polynomial and matrix budgets bound opt-in higher degrees.
@@ -6937,10 +6940,8 @@ static exact_expr integration_rothstein_trager_rational(
     while(used_symbols.count(generator.id()) || generator == z);
 
     integration_poly residue_polynomial;
-    risch_options options;
-    options.maximum_degree = maximum_degree;
     if(!integration_residue_characteristic_polynomial_rational(
-        residue, denominator, maximum_degree, options.maximum_matrix_entries,
+        residue, denominator, maximum_degree, maximum_matrix_entries,
         residue_polynomial)) return exact_expr();
 
     std::vector<exact_expr> factors;
@@ -19408,7 +19409,8 @@ risch_result exact_context::integrate_elementary_impl(
                 ? value(log_coefficient) * natural_logarithm(
                     integration_poly_expr(*this, reduced_denominator, variable))
                 : integration_rational_antiderivative(*this, residual, variable,
-                    degree_budget, options.maximum_rothstein_degree);
+                    degree_budget, options.maximum_rothstein_degree,
+                    options.maximum_matrix_entries);
             bool logarithmic_verified = logarithmic.valid() &&
                 verified(partial + logarithmic, integer(0));
             if(!logarithmic_verified &&
