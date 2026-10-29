@@ -14253,7 +14253,7 @@ risch_result exact_context::integrate_elementary_impl(
                 for(const exact_expr &coefficient : polynomial)
                     if(!exact_constant(coefficient)) return false;
                 std::vector<std::pair<exact_expr, exact_expr>> coefficients;
-                bool valid = true, all_numeric = true;
+                bool valid = true;
                 for(const auto &factor : factors){
                     integration_expr_poly fn, fd;
                     if(!integration_parse_expr_rational(*this, factor.first, generator,
@@ -14270,8 +14270,6 @@ risch_result exact_context::integrate_elementary_impl(
                         valid = false;
                         break;
                     }
-                    all_numeric = all_numeric && fn[0].is_value() &&
-                        fn[1].is_value();
                     coefficients.emplace_back(fn[0], fn[1]);
                 }
                 for(size_t i = 0; valid && i < coefficients.size(); ++i){
@@ -14299,7 +14297,7 @@ risch_result exact_context::integrate_elementary_impl(
                         break;
                     }
                 }
-                if(valid && !all_numeric){
+                if(valid){
                     integration_expr_poly denominator_product{integer(1)};
                     for(size_t i = 0; i < coefficients.size(); ++i)
                         for(size_t k = 0; k < factors[i].second; ++k)
