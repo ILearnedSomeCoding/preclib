@@ -1479,7 +1479,10 @@ D(y) + a*y = Σ c_i*b_i,     c_i∈C.
 
 `cas/test/test_risch_rde_core.cpp` 覆盖前三个构造性方程，并验证
 `exp(x^2)` 的非初等结论；构造解由严格入口验证导数恒等式，测试另在
-`x=0` 做精确代入抽查。
+`x=0` 做精确代入抽查。另有高次幂输入在受限 `maximum_nodes`/
+`maximum_degree` 下必须拒绝的回归。严格入口中用于候选验证和递归
+primitive 归约的展开预算现受 `maximum_nodes` 限制（最多 100000 项），
+不再因固定展开上限绕过调用方的预算设置。
 
 可参考 SymPy 的 RDE 实现梳理分母归约、次数界与多项式求解的接口分工，但本项目需针对自己的系数域和证据结构重新实现。[SymPy rde.py](https://github.com/sympy/sympy/blob/master/sympy/integrals/rde.py)
 

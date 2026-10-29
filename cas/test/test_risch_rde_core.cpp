@@ -47,5 +47,17 @@ int main(){
                   << no_rational_solution.diagnostic << '\n';
         return 1;
     }
+
+    risch_options constrained;
+    constrained.maximum_nodes = 64;
+    constrained.maximum_degree = 64;
+    risch_result bounded_result = context.integrate_elementary(
+        context.power(x + context.integer(1), context.integer(100)),
+        x, constrained);
+    if(bounded_result.status == risch_status::elementary){
+        std::cerr << "strict integration accepted a high-degree candidate "
+                     "outside the configured budget\n";
+        return 1;
+    }
     std::cout << "risch core RDE cases ok\n";
 }

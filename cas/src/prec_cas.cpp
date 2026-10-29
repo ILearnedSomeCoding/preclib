@@ -6693,8 +6693,11 @@ static bool integration_differential_denominator_parts(
     auto full_derivative = [&](const integration_expr_poly &polynomial,
                                integration_expr_poly &derivative) -> bool{
         exact_expr expression = integration_expr_poly_expr(context, polynomial, generator);
+        size_t expansion_budget = std::min(options.maximum_nodes,
+                                           (size_t)100000);
         return integration_parse_expr_poly(context,
-            context.simplify(context.expand(context.differentiate(expression, variable), 100000)),
+            context.simplify(context.expand(context.differentiate(expression, variable),
+                                            expansion_budget)),
             generator, derivative);
     };
     integration_expr_poly derivative;
@@ -7657,8 +7660,11 @@ static exact_expr integration_recursive_primitive_polynomial(
         if(!solved) continue;
         exact_expr candidate = integration_expr_poly_expr(context, primitive,
                                                           generator);
+        size_t verification_budget = std::min(options.maximum_nodes,
+                                               (size_t)100000);
         exact_expr error = context.simplify(context.expand(
-            context.differentiate(candidate, variable) - expression, 100000));
+            context.differentiate(candidate, variable) - expression,
+            verification_budget));
         if(error == context.integer(0)){
             if(output_conditions)
                 for(const exact_expr &condition : candidate_conditions)
@@ -12392,6 +12398,8 @@ risch_result exact_context::integrate_elementary_impl(
     const size_t verification_degree_budget =
         degree_budget <= options.maximum_nodes / 4
             ? degree_budget * 4 : options.maximum_nodes;
+    const size_t verification_expansion_budget =
+        std::min(options.maximum_nodes, (size_t)100000);
     auto classify_ei_log_product = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
         for(size_t i = 0; i < expression.operand_count(); ++i){
@@ -12493,14 +12501,15 @@ risch_result exact_context::integrate_elementary_impl(
                 dummy_kernel, variable, options);
             if(lower.status != risch_status::proven_nonelementary ||
                lower.elementary_part != integer(0) ||
-               simplify(expand(lower.remainder - dummy_kernel, 100000)) !=
+               simplify(expand(lower.remainder - dummy_kernel,
+                               verification_expansion_budget)) !=
                    integer(0)) continue;
             exact_expr combined_part = elementary_part;
             exact_expr combined_remainder = -scale * rate *
                 exponential_factor / inner;
             exact_expr reconstruction_error = simplify(expand(
                 differentiate(combined_part, variable) + combined_remainder -
-                expression, 100000));
+                expression, verification_expansion_budget));
             bool reconstruction_verified = reconstruction_error == integer(0);
             if(!reconstruction_verified){
                 exact_expr normalized_error = simplify(
@@ -12830,9 +12839,11 @@ risch_result exact_context::integrate_elementary_impl(
         };
         if(!elementary_dag(elementary_dag, candidate)) return false;
         exact_expr error = simplify(expand(
-            differentiate(candidate, variable) - expression, 100000));
+            differentiate(candidate, variable) - expression,
+            verification_expansion_budget));
         if(error != integer(0))
-            error = simplify(expand(trig_reduce(error), 100000));
+            error = simplify(expand(trig_reduce(error),
+                                    verification_expansion_budget));
         if(error != integer(0) && integration_tower_rational_zero(
                 *this, error, variable, degree_budget,
                 options.maximum_nodes))
@@ -13197,7 +13208,7 @@ risch_result exact_context::integrate_elementary_impl(
         // has an exact primitive in any admitted differential tower.
         std::vector<exact_expr> factors;
         integration_factor_list(expression, factors);
-        size_t expansion_budget = std::min(options.maximum_nodes, (size_t)100000);
+        size_t expansion_budget = verification_expansion_budget;
         for(const exact_expr &factor : factors){
             if(factor.operation() != exact_opcode::power) continue;
             int64_t exponent = 0;
@@ -13314,7 +13325,8 @@ risch_result exact_context::integrate_elementary_impl(
             }
         }
         if(verify_candidate(integrate(expression, variable))) return true;
-        exact_expr expanded = expand(expression, 100000);
+        exact_expr expanded = expand(expression,
+                                     verification_expansion_budget);
         if(expanded != expression &&
            verify_candidate(integrate(expanded, variable))) return true;
         std::vector<exact_expr> subexpressions;
@@ -15832,7 +15844,8 @@ risch_result exact_context::integrate_elementary_impl(
 
             // Divide before substituting so lower-field derivative factors cancel.
             exact_expr transformed_input = simplify(
-                substitute(simplify(expand(expression / generator_derivative, 100000)),
+                substitute(simplify(expand(expression / generator_derivative,
+                                           verification_expansion_budget)),
                     generator, parameter));
             integration_poly numerator, denominator;
             if(!integration_parse_rational(transformed_input, parameter,
@@ -16108,7 +16121,7 @@ risch_result exact_context::integrate_elementary_impl(
                                expression;
             error = substitute(error, root, y_of_t);
             error = substitute(error, variable, x_of_t);
-            error = simplify(expand(error, 100000));
+            error = simplify(expand(error, verification_expansion_budget));
             integration_poly error_numerator, error_denominator;
             bool verified = error == integer(0);
             if(!verified &&
