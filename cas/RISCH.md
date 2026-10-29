@@ -1477,6 +1477,10 @@ D(y) + a*y = Σ c_i*b_i,     c_i∈C.
 | `y'+a*y=1` | 泛型 `a!=0` 时 `1/a`；`a=0` 时 `x` |
 | 人为降低分母/次数预算 | `resource_limit`，禁止 `no_solution` |
 
+`cas/test/test_risch_rde_core.cpp` 覆盖前三个构造性方程，并验证
+`exp(x^2)` 的非初等结论；构造解由严格入口验证导数恒等式，测试另在
+`x=0` 做精确代入抽查。
+
 可参考 SymPy 的 RDE 实现梳理分母归约、次数界与多项式求解的接口分工，但本项目需针对自己的系数域和证据结构重新实现。[SymPy rde.py](https://github.com/sympy/sympy/blob/master/sympy/integrals/rde.py)
 
 ## 10. 三角、双曲与一般幂

@@ -14387,13 +14387,13 @@ risch_result exact_context::integrate_elementary_impl(
                                 residues[i][k] = series[order - k] /
                                     power(b, integer(order - k));
                                 candidate = candidate + residues[i][k] * primitive;
-                            }
-                            if(candidate.reachable_node_count() >
-                                    options.maximum_nodes){
-                                result.status = risch_status::resource_limit;
-                                result.diagnostic =
-                                    "constant-coefficient exponential result node budget exceeded";
-                                return true;
+                                if(candidate.reachable_node_count() >
+                                        options.maximum_nodes){
+                                    result.status = risch_status::resource_limit;
+                                    result.diagnostic =
+                                        "constant-coefficient exponential result node budget exceeded";
+                                    return true;
+                                }
                             }
                         }
                         // D(t^k/(s*k)) = t^k; the recurrence above integrates
