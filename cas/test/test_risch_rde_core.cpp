@@ -27,6 +27,9 @@ int main(){
     exact_expr exp_x = context.exponential(x);
     exact_expr exp_x2 = context.exponential(context.power(x,
         context.integer(2)));
+    exact_expr log_x = context.natural_logarithm(x);
+    exact_expr log_square = context.power(log_x, context.integer(2));
+    exact_expr logarithmic_exponential = context.exponential(log_square);
 
     exact_expr polynomial_rhs = x * exp_x;
     exact_expr rational_rhs = exp_x * x /
@@ -36,6 +39,36 @@ int main(){
        !verified_primitive(context, rational_rhs, x) ||
        !verified_primitive(context, polynomial_rate_rhs, x)){
         std::cerr << "a constructive polynomial RDE case failed\n";
+        return 1;
+    }
+    exact_expr logarithmic_exponential_rhs = logarithmic_exponential *
+        (context.integer(1) + context.integer(2) * log_x);
+    risch_result logarithmic_result = context.integrate_elementary(
+        logarithmic_exponential_rhs, x);
+    exact_expr logarithmic_error = context.simplify(
+        context.differentiate(logarithmic_result.elementary_part, x) -
+        logarithmic_exponential_rhs);
+    if(logarithmic_result.status != risch_status::elementary ||
+       logarithmic_result.remainder != context.integer(0) ||
+       logarithmic_error != context.integer(0)){
+        std::cerr << "logarithmic strict integration status "
+                  << (int)logarithmic_result.status << ": "
+                  << logarithmic_result.diagnostic << " primitive="
+                  << logarithmic_result.elementary_part.to_string()
+                  << " remainder=" << logarithmic_result.remainder.to_string()
+                  << " error=" << logarithmic_error.to_string() << '\n';
+        std::cerr << "logarithmic exponential chain RDE failed\n";
+        return 1;
+    }
+    exact_expr ordinary_logarithmic_exponential = context.integrate(
+        logarithmic_exponential_rhs, x);
+    exact_expr ordinary_logarithmic_error = context.simplify(
+        context.differentiate(ordinary_logarithmic_exponential, x) -
+        logarithmic_exponential_rhs);
+    if(ordinary_logarithmic_error != context.integer(0)){
+        std::cerr << "ordinary integration missed logarithmic exponential "
+                     "chain: "
+                  << ordinary_logarithmic_exponential.to_string() << '\n';
         return 1;
     }
 

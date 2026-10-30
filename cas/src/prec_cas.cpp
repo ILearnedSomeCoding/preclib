@@ -7550,24 +7550,55 @@ static exact_expr integration_mixed_primitive_exponential(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, const risch_options &options){
     std::vector<exact_expr> factors, coefficients;
-    integration_factor_list(expression, factors);
     exact_expr inner = context.integer(0);
     bool has_exponential = false;
-    for(const auto &factor : factors){
-        if(factor.operation() == exact_opcode::exponential){
-            inner = inner + factor.operand(0);
-            has_exponential = true;
-        }else coefficients.push_back(factor);
+    if(expression.operation() == exact_opcode::add){
+        // Preserve a common exponential factor before additive Risch
+        // splitting.  Otherwise D(exp(g)*Y) can be split into terms whose
+        // missing pieces only cancel after the common factor is restored.
+        std::vector<exact_expr> terms;
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            terms.push_back(expression.operand(i));
+        std::vector<exact_expr> first_factors;
+        integration_factor_list(terms[0], first_factors);
+        for(const auto &candidate : first_factors){
+            if(candidate.operation() != exact_opcode::exponential) continue;
+            std::vector<exact_expr> cofactors;
+            bool present = true;
+            for(const auto &term : terms){
+                std::vector<exact_expr> term_factors;
+                integration_factor_list(term, term_factors);
+                auto found = std::find(term_factors.begin(), term_factors.end(),
+                                       candidate);
+                if(found == term_factors.end()){
+                    present = false;
+                    break;
+                }
+                term_factors.erase(found);
+                cofactors.push_back(term_factors.empty() ? context.integer(1) :
+                    term_factors.size() == 1 ? term_factors[0] :
+                    context.multiply(term_factors));
+            }
+            if(present){
+                inner = candidate.operand(0);
+                coefficients.push_back(context.add(cofactors));
+                has_exponential = true;
+                break;
+            }
+        }
+    }else{
+        integration_factor_list(expression, factors);
+        for(const auto &factor : factors){
+            if(factor.operation() == exact_opcode::exponential){
+                inner = inner + factor.operand(0);
+                has_exponential = true;
+            }else coefficients.push_back(factor);
+        }
     }
     if(!has_exponential) return exact_expr();
-    integration_poly n, d;
-    if(!integration_parse_rational(inner, variable, n, d,
-        options.maximum_degree, options.maximum_degree)) return exact_expr();
     exact_expr derivative = context.differentiate(inner, variable);
     exact_expr cofactor = coefficients.empty() ? context.integer(1) :
         context.multiply(coefficients);
-    exact_expr joint = integration_joint_primitives(context, cofactor, variable, options, derivative);
-    if(joint.valid()) return joint * context.exponential(inner);
     std::vector<exact_expr> generators;
     std::unordered_set<uint32_t> seen;
     auto collect = [&](auto &&self, const exact_expr &part) -> void{
@@ -7577,7 +7608,142 @@ static exact_expr integration_mixed_primitive_exponential(
         for(size_t i = 0; i < part.operand_count(); ++i)
             self(self, part.operand(i));
     };
+    collect(collect, inner);
     collect(collect, cofactor);
+    // Solve the one-generator polynomial RDE
+    //     D(Y) + D(inner) * Y = cofactor
+    // when D(inner) has positive degree in a logarithmic generator.  The
+    // highest generator coefficient determines Y from top to bottom; each
+    // step is an exact expression-field division followed by a full check.
+    for(const auto &generator : generators){
+        integration_expr_poly input, rate, generator_rate;
+        if(!integration_parse_expr_poly(context, cofactor, generator, input) ||
+           !integration_parse_expr_poly(context, derivative, generator, rate) ||
+           !integration_parse_expr_poly(context,
+               context.differentiate(generator, variable), generator,
+               generator_rate)) continue;
+        integration_expr_trim(context, input);
+        integration_expr_trim(context, rate);
+        integration_expr_trim(context, generator_rate);
+        if(rate.size() < 2 || generator_rate.size() != 1) continue;
+        size_t rate_degree = rate.size() - 1;
+        if(input.empty() || input.size() - 1 < rate_degree) continue;
+        size_t solution_degree = input.size() - 1 - rate_degree;
+        if(solution_degree > options.maximum_degree) continue;
+        std::vector<exact_expr> solution(solution_degree + 1,
+                                         context.integer(0));
+        bool valid = true;
+        for(size_t k = solution_degree + 1; k-- > 0;){
+            size_t target = k + rate_degree;
+            exact_expr residual = target < input.size()
+                ? input[target] : context.integer(0);
+            if(target <= solution_degree)
+                residual = residual - context.differentiate(
+                    solution[target], variable);
+            if(target + 1 <= solution_degree)
+                residual = residual - context.integer(target + 1) *
+                    generator_rate[0] * solution[target + 1];
+            for(size_t j = 0; j < rate.size(); ++j){
+                if(j == rate_degree || j > target) continue;
+                size_t index = target - j;
+                if(index <= solution_degree)
+                    residual = residual - rate[j] * solution[index];
+            }
+            solution[k] = context.simplify(residual / rate[rate_degree]);
+            if(solution[k].reachable_node_count() > options.maximum_nodes){
+                valid = false;
+                break;
+            }
+        }
+        if(!valid) continue;
+        exact_expr candidate = context.integer(0);
+        for(size_t i = 0; i < solution.size(); ++i)
+            if(!integration_expr_zero(context, solution[i]))
+                candidate = candidate + solution[i] *
+                    context.power(generator, context.integer(i));
+        size_t check_degree = std::max(input.size(), solution.size() + rate.size());
+        integration_expr_poly lhs(check_degree, context.integer(0));
+        for(size_t i = 0; i < solution.size(); ++i){
+            lhs[i] = lhs[i] + context.differentiate(solution[i], variable);
+            if(i + 1 < solution.size())
+                lhs[i] = lhs[i] + context.integer(i + 1) *
+                    generator_rate[0] * solution[i + 1];
+            for(size_t j = 0; j < rate.size(); ++j){
+                if(i + j >= lhs.size()) lhs.resize(i + j + 1,
+                    context.integer(0));
+                lhs[i + j] = lhs[i + j] + rate[j] * solution[i];
+            }
+        }
+        bool identity = true;
+        size_t check_size = std::max(lhs.size(), input.size());
+        for(size_t i = 0; i < check_size; ++i){
+            exact_expr left = i < lhs.size() ? lhs[i] : context.integer(0);
+            exact_expr right = i < input.size() ? input[i] : context.integer(0);
+            if(!integration_expr_zero(context, context.simplify(left - right))){
+                identity = false;
+                break;
+            }
+        }
+        if(identity){
+            exact_expr error = context.simplify(context.expand(
+                context.differentiate(candidate * context.exponential(inner),
+                    variable) - expression,
+                std::min(options.maximum_nodes, (size_t)100000)));
+            if(error == context.integer(0))
+                return candidate * context.exponential(inner);
+        }
+    }
+    // A low-field multiple of D(inner) is an exact chain certificate even
+    // when inner itself is polynomial in a logarithmic generator rather than
+    // a rational function of x.  Keep the certificate deliberately narrow:
+    // the quotient must be independent of the selected generator and the
+    // complete derivative is checked before returning it.
+    for(const auto &generator : generators){
+        integration_expr_poly input, rate;
+        bool input_ok = integration_parse_expr_poly(context, cofactor, generator, input);
+        bool rate_ok = integration_parse_expr_poly(context, derivative, generator, rate);
+        if(!input_ok || !rate_ok)
+            continue;
+        size_t count = std::max(input.size(), rate.size());
+        exact_expr quotient;
+        bool found = false;
+        for(size_t index = 0; index < rate.size(); ++index){
+            const auto &coefficient = rate[index];
+            if(!integration_expr_zero(context, coefficient)){
+                if(index >= input.size() ||
+                   integration_expr_zero(context, input[index])) break;
+                quotient = context.simplify(input[index] / coefficient);
+                found = true;
+                break;
+            }
+        }
+        if(!found || integration_depends_on(quotient, generator)) continue;
+        bool proportional = true;
+        for(size_t i = 0; i < count; ++i){
+            exact_expr left = i < input.size() ? input[i] : context.integer(0);
+            exact_expr right = i < rate.size() ? rate[i] : context.integer(0);
+            if(!integration_expr_zero(context,
+                    context.simplify(left - right * quotient))){
+                proportional = false;
+                break;
+            }
+        }
+        if(!proportional) continue;
+        exact_expr candidate = quotient * context.exponential(inner);
+        size_t verification_budget = std::min(options.maximum_nodes,
+                                               (size_t)100000);
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(candidate, variable) - expression,
+            verification_budget));
+        if(error == context.integer(0)) return candidate;
+    }
+    integration_poly n, d;
+    if(integration_parse_rational(inner, variable, n, d,
+        options.maximum_degree, options.maximum_degree)){
+        exact_expr joint = integration_joint_primitives(context, cofactor,
+            variable, options, derivative);
+        if(joint.valid()) return joint * context.exponential(inner);
+    }
     for(const auto &generator : generators){
         integration_expr_poly input;
         if(!integration_parse_expr_poly(context, cofactor, generator, input) ||
@@ -12400,6 +12566,25 @@ risch_result exact_context::integrate_elementary_impl(
             ? degree_budget * 4 : options.maximum_nodes;
     const size_t verification_expansion_budget =
         std::min(options.maximum_nodes, (size_t)100000);
+    // Try the unexpanded common-exponential form before additive splitting.
+    // Terms such as exp(g) + D(Y)*exp(g) must be combined into
+    // exp(g)*(1+D(Y)) before the RDE can see the chain certificate.
+    exact_expr common_exponential_candidate =
+        integration_mixed_primitive_exponential(*this, expression,
+                                                 variable, options);
+    if(common_exponential_candidate.valid()){
+        if(common_exponential_candidate.reachable_node_count() >
+           options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.diagnostic = "common exponential candidate node budget exceeded";
+            return result;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(common_exponential_candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return result;
+    }
     auto classify_ei_log_product = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
         for(size_t i = 0; i < expression.operand_count(); ++i){
