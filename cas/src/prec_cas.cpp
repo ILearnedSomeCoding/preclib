@@ -12687,6 +12687,21 @@ risch_result exact_context::integrate_elementary(
     risch_result result = integrate_elementary_impl(normalized, variable, options);
     if(!result.elementary_part.valid() || result.elementary_part == integer(0))
         return result;
+    // A pure nested logarithmic primitive is safe to present on the real
+    // branch as ln(abs(u)).  Restrict this normalization to the whole result;
+    // applying it inside arbitrary RDE candidates would alter their algebraic
+    // coefficient representation.
+    if(result.remainder == integer(0) &&
+       result.elementary_part.operation() == exact_opcode::natural_logarithm &&
+       result.elementary_part.operand_count() == 1 &&
+       result.elementary_part.operand(0).operation() ==
+           exact_opcode::natural_logarithm){
+        exact_expr formal = result.elementary_part;
+        exact_expr branch_safe = natural_logarithm(absolute_value(
+            result.elementary_part.operand(0)));
+        if(simplify(differentiate(formal, variable) - normalized) == integer(0))
+            result.elementary_part = std::move(branch_safe);
+    }
     auto prove_nonzero_rational_log_sum = [&](const exact_expr &input) -> bool{
         std::vector<exact_expr> terms;
         auto split_sum = [&](auto &&self, const exact_expr &part) -> void{
@@ -13015,6 +13030,92 @@ risch_result exact_context::integrate_elementary_impl(
             }
         }
     }
+    // A repeated affine pole in a logarithmic generator has a direct RDE
+    // solution over the exact constant field:
+    //   int(D(t)/(a*t+b)^m) = (a*t+b)^(1-m)/(a*(1-m)),
+    //   t=ln(g(x)), m>=2.
+    // The generic numeric rational parser cannot retain symbolic a and b,
+    // so recognize this small expression-coefficient case explicitly and
+    // certify it by differentiating the candidate.
+    auto classify_affine_logarithmic_pole = [&]() -> bool{
+        std::vector<exact_expr> logarithms;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               integration_depends_on(part, variable))
+                logarithms.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        for(const exact_expr &generator : logarithms){
+            exact_expr generator_derivative = simplify(
+                differentiate(generator, variable));
+            if(generator_derivative == integer(0)) continue;
+            exact_expr cofactor = simplify(expression / generator_derivative);
+            exact_expr scalar = integer(1);
+            exact_expr pole = cofactor;
+            if(pole.operation() == exact_opcode::multiply){
+                std::vector<exact_expr> constants;
+                std::vector<exact_expr> powers;
+                for(size_t i = 0; i < pole.operand_count(); ++i){
+                    exact_expr factor = pole.operand(i);
+                    if(factor.operation() == exact_opcode::power &&
+                       factor.operand_count() == 2)
+                        powers.push_back(std::move(factor));
+                    else if(!integration_depends_on(factor, variable) &&
+                            integration_exact_expression_tree(factor))
+                        constants.push_back(std::move(factor));
+                    else{
+                        powers.clear();
+                        break;
+                    }
+                }
+                if(powers.size() != 1 || constants.empty()) continue;
+                scalar = constants.size() == 1 ? constants[0] :
+                    multiply(constants);
+                pole = std::move(powers[0]);
+            }
+            if(pole.operation() != exact_opcode::power ||
+               pole.operand_count() != 2) continue;
+            int64_t exponent = 0;
+            if(!integration_signed_exponent(pole.operand(1), exponent) ||
+               exponent > -1) continue;
+            integration_expr_poly affine;
+            if(!integration_parse_expr_poly(*this, pole.operand(0),
+                    generator, affine, degree_budget) || affine.size() != 2)
+                continue;
+            exact_expr a = simplify(affine[1]);
+            exact_expr base = pole.operand(0);
+            if(a == integer(0)) continue;
+            if(exponent == -1){
+                exact_expr candidate = scalar * natural_logarithm(base) / a;
+                if(candidate.reachable_node_count() > options.maximum_nodes)
+                    continue;
+                if(simplify(differentiate(candidate, variable) - expression) !=
+                   integer(0)) continue;
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+            exact_expr candidate = scalar * power(base,
+                integer(exponent + 1)) / (a * integer(exponent + 1));
+            if(candidate.reachable_node_count() > options.maximum_nodes)
+                continue;
+            if(simplify(differentiate(candidate, variable) - expression) !=
+               integer(0)) continue;
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        return false;
+    };
+    if(classify_affine_logarithmic_pole()) return result;
     // Pull exact constants out before the tower-specific RDEs.  This keeps
     // the lower-field coefficient domain honest: a symbol such as `a` may be
     // constant with respect to x, but it must not be mistaken for a rational
@@ -14677,6 +14778,7 @@ risch_result exact_context::integrate_elementary_impl(
                         result.diagnostic.clear();
                         return true;
                     }
+
                 }
             }
             integration_expr_poly symbolic_n, symbolic_d;

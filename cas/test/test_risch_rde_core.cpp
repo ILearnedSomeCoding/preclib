@@ -252,7 +252,8 @@ int main(){
         (x * log_x);
     risch_result nested_log_result = context.integrate_elementary(
         nested_log_derivative, x);
-    exact_expr nested_log_expected = context.natural_logarithm(log_x);
+    exact_expr nested_log_expected = context.natural_logarithm(
+        context.absolute_value(log_x));
     if(nested_log_result.status != risch_status::elementary ||
        nested_log_result.remainder != context.integer(0) ||
        context.simplify(nested_log_result.elementary_part -
@@ -283,7 +284,8 @@ int main(){
         (x * log_x * quad_log_1 * quad_log_2);
     risch_result quad_log_result = context.integrate_elementary(
         quad_log_derivative, x);
-    exact_expr quad_log_expected = context.natural_logarithm(quad_log_2);
+    exact_expr quad_log_expected = context.natural_logarithm(
+        context.absolute_value(quad_log_2));
     if(quad_log_result.status != risch_status::elementary ||
        quad_log_result.remainder != context.integer(0) ||
        context.simplify(quad_log_result.elementary_part -
@@ -293,7 +295,109 @@ int main(){
                   << " diagnostic=" << quad_log_result.diagnostic << '\n';
         return 1;
     }
-
+    exact_expr affine_log = a * log_x + b;
+    exact_expr affine_log_square_pole = context.integer(1) /
+        (x * context.power(affine_log, context.integer(2)));
+    risch_result affine_log_square_result = context.integrate_elementary(
+        affine_log_square_pole, x);
+    exact_expr affine_log_square_expected = -context.integer(1) /
+        (a * affine_log);
+    bool affine_log_has_a_condition = std::find(
+        affine_log_square_result.conditions.begin(),
+        affine_log_square_result.conditions.end(), a) !=
+        affine_log_square_result.conditions.end();
+    if(affine_log_square_result.status != risch_status::elementary ||
+       affine_log_square_result.remainder != context.integer(0) ||
+       context.simplify(affine_log_square_result.elementary_part -
+                        affine_log_square_expected) != context.integer(0) ||
+       !affine_log_has_a_condition){
+        std::cerr << "symbolic affine logarithm square-pole RDE failed: "
+                  << affine_log_square_result.elementary_part.to_string()
+                  << " diagnostic=" << affine_log_square_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr affine_log_simple_pole = context.integer(1) /
+        (x * affine_log);
+    risch_result affine_log_simple_result = context.integrate_elementary(
+        affine_log_simple_pole, x);
+    exact_expr affine_log_simple_expected =
+        context.natural_logarithm(affine_log) / a;
+    bool affine_log_simple_has_a_condition = std::find(
+        affine_log_simple_result.conditions.begin(),
+        affine_log_simple_result.conditions.end(), a) !=
+        affine_log_simple_result.conditions.end();
+    if(affine_log_simple_result.status != risch_status::elementary ||
+       affine_log_simple_result.remainder != context.integer(0) ||
+       context.simplify(affine_log_simple_result.elementary_part -
+                        affine_log_simple_expected) != context.integer(0) ||
+       !affine_log_simple_has_a_condition){
+        std::cerr << "symbolic affine logarithm simple-pole RDE failed: "
+                  << affine_log_simple_result.elementary_part.to_string()
+                  << " diagnostic=" << affine_log_simple_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr scalar_log_simple_pole = context.integer(3) /
+        (x * affine_log);
+    risch_result scalar_log_simple_result = context.integrate_elementary(
+        scalar_log_simple_pole, x);
+    exact_expr scalar_log_simple_expected = context.integer(3) *
+        context.natural_logarithm(affine_log) / a;
+    if(scalar_log_simple_result.status != risch_status::elementary ||
+       scalar_log_simple_result.remainder != context.integer(0) ||
+       context.simplify(scalar_log_simple_result.elementary_part -
+                        scalar_log_simple_expected) != context.integer(0)){
+        std::cerr << "constant multiple affine logarithm simple-pole failed: "
+                  << scalar_log_simple_result.elementary_part.to_string()
+                  << " diagnostic=" << scalar_log_simple_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr affine_log_cube_pole = context.integer(1) /
+        (x * context.power(affine_log, context.integer(3)));
+    risch_result affine_log_cube_result = context.integrate_elementary(
+        affine_log_cube_pole, x);
+    exact_expr affine_log_cube_expected = -context.integer(1) /
+        (context.integer(2) * a * context.power(affine_log,
+                                                  context.integer(2)));
+    if(affine_log_cube_result.status != risch_status::elementary ||
+       affine_log_cube_result.remainder != context.integer(0) ||
+       context.simplify(affine_log_cube_result.elementary_part -
+                        affine_log_cube_expected) != context.integer(0)){
+        std::cerr << "symbolic affine logarithm cube-pole RDE failed: "
+                  << affine_log_cube_result.elementary_part.to_string()
+                  << " diagnostic=" << affine_log_cube_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr affine_log_quartic_pole = context.integer(1) /
+        (x * context.power(affine_log, context.integer(4)));
+    risch_result affine_log_quartic_result = context.integrate_elementary(
+        affine_log_quartic_pole, x);
+    exact_expr affine_log_quartic_expected = -context.integer(1) /
+        (context.integer(3) * a * context.power(affine_log,
+                                                  context.integer(3)));
+    if(affine_log_quartic_result.status != risch_status::elementary ||
+       affine_log_quartic_result.remainder != context.integer(0) ||
+       context.simplify(affine_log_quartic_result.elementary_part -
+                        affine_log_quartic_expected) != context.integer(0)){
+        std::cerr << "symbolic affine logarithm quartic-pole RDE failed: "
+                  << affine_log_quartic_result.elementary_part.to_string()
+                  << " diagnostic=" << affine_log_quartic_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr scalar_log_square_pole = context.integer(3) /
+        (x * context.power(affine_log, context.integer(2)));
+    risch_result scalar_log_square_result = context.integrate_elementary(
+        scalar_log_square_pole, x);
+    exact_expr scalar_log_square_expected = -context.integer(3) /
+        (a * affine_log);
+    if(scalar_log_square_result.status != risch_status::elementary ||
+       scalar_log_square_result.remainder != context.integer(0) ||
+       context.simplify(scalar_log_square_result.elementary_part -
+                        scalar_log_square_expected) != context.integer(0)){
+        std::cerr << "constant multiple affine logarithm pole failed: "
+                  << scalar_log_square_result.elementary_part.to_string()
+                  << " diagnostic=" << scalar_log_square_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr shifted_log_square = context.power(
         context.natural_logarithm(x + context.integer(1)), context.integer(2));
     exact_expr symbolic_log_sum = a * log_power_input + b * shifted_log_square;
