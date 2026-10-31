@@ -17,7 +17,7 @@ static bool verified_primitive(exact_context &context,
         variable, context.integer(0)));
     if(error != context.integer(0))
         std::cerr << "strict derivative verification returned "
-                  << error.to_string() << '\n';
+                  << error.to_string() << " for " << integrand.to_string() << '\n';
     return error == context.integer(0);
 }
 
@@ -66,6 +66,70 @@ int main(){
                   << shifted_laurent_numerator_result.elementary_part.to_string()
                   << " status=" << (int)shifted_laurent_numerator_result.status
                   << " diagnostic=" << shifted_laurent_numerator_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr negative_shifted_laurent = context.integer(1) /
+        (context.exponential(-context.integer(3) * x) +
+         context.exponential(-context.integer(2) * x + context.integer(1)));
+    risch_result negative_shifted_result = context.integrate_elementary(
+        negative_shifted_laurent, x);
+    if(negative_shifted_result.status != risch_status::elementary ||
+       negative_shifted_result.remainder != context.integer(0)){
+        std::cerr << "negative shifted exponential Laurent RDE failed: "
+                  << negative_shifted_result.elementary_part.to_string()
+                  << " status=" << (int)negative_shifted_result.status
+                  << " diagnostic=" << negative_shifted_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr mixed_laurent = context.integer(1) /
+        (context.exponential(x) + context.exponential(-x));
+    risch_result mixed_laurent_result = context.integrate_elementary(
+        mixed_laurent, x);
+    if(mixed_laurent_result.status != risch_status::elementary ||
+       mixed_laurent_result.remainder != context.integer(0)){
+        std::cerr << "mixed-sign exponential Laurent RDE failed: "
+                  << mixed_laurent_result.elementary_part.to_string()
+                  << " status=" << (int)mixed_laurent_result.status
+                  << " diagnostic=" << mixed_laurent_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr shifted_mixed_laurent = context.integer(1) /
+        (context.exponential(x) +
+         context.exponential(-x + context.integer(1)));
+    risch_result shifted_mixed_result = context.integrate_elementary(
+        shifted_mixed_laurent, x);
+    if(shifted_mixed_result.status != risch_status::elementary ||
+       shifted_mixed_result.remainder != context.integer(0)){
+        std::cerr << "shifted mixed-sign exponential Laurent RDE failed: "
+                  << shifted_mixed_result.elementary_part.to_string()
+                  << " status=" << (int)shifted_mixed_result.status
+                  << " diagnostic=" << shifted_mixed_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr a = context.symbol("a");
+    exact_expr symbolic_shifted_mixed = context.integer(1) /
+        (context.exponential(x + a) + context.exponential(-x));
+    risch_result symbolic_shifted_result = context.integrate_elementary(
+        symbolic_shifted_mixed, x);
+    if(symbolic_shifted_result.status != risch_status::elementary ||
+       symbolic_shifted_result.remainder != context.integer(0)){
+        std::cerr << "symbolic shifted exponential Laurent RDE failed: "
+                  << symbolic_shifted_result.elementary_part.to_string()
+                  << " status=" << (int)symbolic_shifted_result.status
+                  << " diagnostic=" << symbolic_shifted_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr cubic_laurent = context.integer(1) /
+        (context.integer(1) + context.exponential(x) +
+         context.exponential(context.integer(2) * x));
+    risch_result cubic_laurent_result = context.integrate_elementary(
+        cubic_laurent, x);
+    if(cubic_laurent_result.status != risch_status::elementary ||
+       cubic_laurent_result.remainder != context.integer(0)){
+        std::cerr << "cubic exponential Laurent RDE failed: "
+                  << cubic_laurent_result.elementary_part.to_string()
+                  << " status=" << (int)cubic_laurent_result.status
+                  << " diagnostic=" << cubic_laurent_result.diagnostic << '\n';
         return 1;
     }
     exact_expr logarithmic_exponential_rhs = logarithmic_exponential *

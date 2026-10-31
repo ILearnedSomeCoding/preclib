@@ -4538,6 +4538,10 @@ static exact_expr integration_joint_primitives(
 static bool integration_normalize_expr_coefficient(
     exact_context &, exact_expr &, const exact_expr &, size_t);
 
+static bool integration_formal_constant_zero(
+    exact_context &, const exact_expr &, const exact_expr &, size_t,
+    size_t generators_left);
+
 static bool integration_parse_expr_rational(
     exact_context &context, const exact_expr &expression, const exact_expr &generator,
     integration_expr_poly &n, integration_expr_poly &d, size_t degree,
@@ -4647,6 +4651,66 @@ static exact_expr integration_exact_linear_tail_primitive(
         context.integer((int64_t)multiplicity));
     exact_expr logarithmic_coefficient =
         context.simplify(value_at_root / root_power);
+    // Rebuild the numerator from the principal parts and the logarithmic
+    // residue before constructing a result.  This is the exact partial-
+    // fraction certificate for t^m*(a*t+b), and catches any coefficient
+    // recurrence or root-evaluation mistake without relying on simplify()
+    // to manipulate logarithms.
+    integration_expr_poly reconstructed(
+        std::max(numerator.size(), multiplicity + 1),
+        context.integer(0));
+    for(size_t i = 0; i < multiplicity; ++i){
+        reconstructed[i] = context.simplify(
+            reconstructed[i] + principal[i] * b);
+        reconstructed[i + 1] = context.simplify(
+            reconstructed[i + 1] + principal[i] * a);
+    }
+    reconstructed[multiplicity] = context.simplify(
+        reconstructed[multiplicity] + logarithmic_coefficient);
+    integration_expr_trim(context, reconstructed);
+    integration_expr_trim(context, numerator);
+    bool numeric_coefficient_domain = true;
+    for(const exact_expr &coefficient : numerator)
+        numeric_coefficient_domain = numeric_coefficient_domain &&
+            coefficient.is_value() && !coefficient.value().is_approximate();
+    numeric_coefficient_domain = numeric_coefficient_domain &&
+        a.is_value() && !a.value().is_approximate() &&
+        b.is_value() && !b.value().is_approximate();
+    auto coefficient_zero = [&](const exact_expr &difference) -> bool{
+        if(integration_expr_zero(context, difference)) return true;
+        // e is a constant-field generator, not a variable-dependent tower
+        // node, so the general formal-constant helper deliberately ignores
+        // it.  Normalize this small certificate explicitly in Q(e).
+        integration_expr_poly constant_numerator, constant_denominator;
+        if(integration_parse_expr_rational(context, difference, context.e(),
+                constant_numerator, constant_denominator, maximum_degree)){
+            integration_expr_trim(context, constant_numerator);
+            if(constant_numerator.size() == 1 &&
+               integration_expr_zero(context, constant_numerator[0]))
+                return true;
+        }
+        constant_numerator.clear();
+        constant_denominator.clear();
+        exact_expr exponential_one = context.exponential(context.integer(1));
+        if(integration_parse_expr_rational(context, difference,
+                exponential_one, constant_numerator, constant_denominator,
+                maximum_degree)){
+            integration_expr_trim(context, constant_numerator);
+            if(constant_numerator.size() == 1 &&
+               integration_expr_zero(context, constant_numerator[0]))
+                return true;
+        }
+        return integration_formal_constant_zero(context, difference,
+            variable, maximum_degree, 6);
+    };
+    if(reconstructed.size() != numerator.size()){
+        if(numeric_coefficient_domain) return exact_expr();
+    }else{
+        for(size_t i = 0; i < numerator.size(); ++i)
+            if(!coefficient_zero(reconstructed[i] - numerator[i]) &&
+               numeric_coefficient_domain)
+                return exact_expr();
+    }
     exact_expr candidate = context.integer(0);
     for(size_t i = 0; i < multiplicity; ++i){
         int64_t power = (int64_t)i - (int64_t)multiplicity;
@@ -16888,21 +16952,47 @@ risch_result exact_context::integrate_elementary_impl(
             std::vector<int64_t> slopes;
             std::vector<exact_expr> intercepts;
             int64_t common_slope = 0;
+            bool all_negative = true;
             for(const exact_expr &factor : exponentials){
                 integration_poly n, d;
-                if(!integration_parse_rational(factor.operand(0), variable,
-                        n, d, degree_budget, degree_budget) ||
-                   !integration_normalize_rational(n, d) || d.size() != 1 ||
-                   n.size() > 2 || n.size() < 2) return exact_expr();
                 int64_t slope = 0;
-                if(!integer_i64(n[1], slope) || slope == 0) return exact_expr();
+                exact_expr intercept;
+                bool parsed = integration_parse_rational(
+                    factor.operand(0), variable, n, d, degree_budget,
+                    degree_budget) && integration_normalize_rational(n, d) &&
+                    d.size() == 1 && n.size() > 1 && n.size() <= 2;
+                if(parsed && integer_i64(n[1], slope)){
+                    intercept = value(n[0]);
+                }else{
+                    // The slope remains an integer, but the intercept may be
+                    // any exact constant-field expression such as a or ln(2).
+                    // Parse that affine form over exact expression
+                    // coefficients instead of reducing it to numeric Q[x].
+                    integration_expr_poly affine;
+                    if(!integration_parse_expr_poly(*this,
+                            factor.operand(0), variable, affine,
+                            degree_budget) || affine.size() != 2 ||
+                       !affine[1].is_value() ||
+                       affine[1].value().is_approximate() ||
+                       !integer_i64(affine[1].value(), slope) ||
+                       slope == 0 || integration_depends_on(affine[0], variable))
+                        return exact_expr();
+                    intercept = simplify(affine[0]);
+                }
+                if(slope == 0 || !intercept.valid()) return exact_expr();
                 slopes.push_back(slope);
-                intercepts.push_back(value(n[0]));
+                intercepts.push_back(std::move(intercept));
+                all_negative = all_negative && slope < 0;
                 int64_t magnitude = slope < 0 ? -(slope + 1) + 1 : slope;
                 common_slope = common_slope == 0
                     ? magnitude : std::gcd(common_slope, magnitude);
             }
             if(common_slope == 0) return exact_expr();
+            // When every slope is negative, use exp(-d*x) as the generator.
+            // This keeps all Laurent exponents nonnegative and lets the
+            // exact rational tail reducer work without a separate Laurent
+            // denominator normalizer. Mixed signs still use exp(d*x).
+            if(all_negative) common_slope = -common_slope;
             exact_expr generator = exponential(
                 integer(common_slope) * variable);
             exact_expr normalized = expression;
@@ -16924,8 +17014,50 @@ risch_result exact_context::integrate_elementary_impl(
             }
             exact_expr transformed = substitute(normalized, generator, parameter) /
                 (integer(common_slope) * parameter);
+            // The parameter rational integrators treat every coefficient as
+            // constant in the new variable.  Reject a mixed expression that
+            // still contains the original x, rather than silently freezing
+            // x during the substitution (for example x*exp(x)).
+            if(integration_depends_on(transformed, variable))
+                return exact_expr();
             exact_expr primitive = integration_exact_linear_tail_primitive(
                 *this, transformed, parameter, degree_budget);
+            if(!primitive.valid()){
+                // Mixed signs produce an ordinary polynomial after Laurent
+                // cancellation in common cases, for example
+                // 1/(t+t^-1) * dt/t = 1/(t^2+1) dt. Reuse the verified
+                // symbolic low-degree rational integrators before falling
+                // back to the general Laurent classifier.
+                std::vector<exact_expr> local_conditions;
+                bool resource_limited = false;
+                primitive = integration_symbolic_linear_primitive(
+                    *this, transformed, parameter, degree_budget,
+                    options.maximum_nodes, local_conditions,
+                    &resource_limited);
+                if(!primitive.valid())
+                    primitive = integration_symbolic_quadratic_primitive(
+                        *this, transformed, parameter, degree_budget,
+                        options.maximum_nodes, local_conditions,
+                        &resource_limited);
+                if(!primitive.valid()){
+                    // With numeric coefficients the ordinary rational
+                    // backend already has Hermite reduction and the compact
+                    // LogRootSum fallback for arbitrary denominator degree.
+                    // Use it only after the lower-degree symbolic paths so
+                    // parameterized quadratic output stays readable.
+                    integration_poly numeric_n, numeric_d;
+                    if(integration_parse_rational(transformed, parameter,
+                            numeric_n, numeric_d, degree_budget,
+                            degree_budget))
+                        primitive = integration_rational_antiderivative(
+                            *this, transformed, parameter, degree_budget,
+                            options.maximum_rothstein_degree,
+                            options.maximum_matrix_entries);
+                }
+                if(primitive.valid())
+                    result.conditions.insert(result.conditions.end(),
+                        local_conditions.begin(), local_conditions.end());
+            }
             if(!primitive.valid()) return exact_expr();
             exact_expr candidate = substitute(primitive, parameter, generator);
             return candidate;
