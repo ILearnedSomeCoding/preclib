@@ -197,7 +197,7 @@ int main(){
     risch_result positive_exponential_sine_result =
         context.integrate_elementary(symbolic_exponential_sine, x);
     assert(positive_exponential_sine_result.status == risch_status::elementary);
-    assert(!positive_exponential_sine_result.conditions.empty());
+    assert(positive_exponential_sine_result.conditions.empty());
 
     exact_expr exponential_hyperbolic_sine =
         context.exponential(context.integer(2) * x) *

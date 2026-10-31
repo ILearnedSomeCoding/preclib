@@ -17,6 +17,19 @@ int main(){
     context.assume(q, "positive");
     context.assume(r, "positive");
     exact_expr t = context.exponential(x);
+
+    exact_expr exponential_square = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr exponential_square_chain = context.integer(2) * x *
+        exponential_square / (context.integer(1) + exponential_square);
+    risch_result exponential_square_chain_result = context.integrate_elementary(
+        exponential_square_chain, x);
+    assert(exponential_square_chain_result.status ==
+        risch_status::elementary);
+    assert(exponential_square_chain_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        exponential_square_chain_result.elementary_part, x) -
+        exponential_square_chain, 100000)) == context.integer(0));
     risch_options options;
     options.maximum_recursion_depth = 1;
 

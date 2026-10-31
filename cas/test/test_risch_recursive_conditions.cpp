@@ -103,5 +103,83 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(rate_regular_result.elementary_part, x) -
         rate_regular_input, 100000)) == context.integer(0));
+
+    std::puts("checking square-root denominator conditions");
+    std::fflush(stdout);
+    exact_expr radical_parameter = context.symbol(
+        "_risch_radical_condition_parameter");
+    exact_expr radical_primitive = context.exponential(x) /
+        context.square_root(radical_parameter);
+    exact_expr radical_input = context.differentiate(radical_primitive, x);
+    risch_result radical_result = context.integrate_elementary(
+        radical_input, x);
+    assert(radical_result.status == risch_status::elementary);
+    assert(std::find(radical_result.conditions.begin(),
+                     radical_result.conditions.end(),
+                     context.square_root(radical_parameter)) !=
+           radical_result.conditions.end());
+    context.assume(radical_parameter, "positive");
+    risch_result positive_radical_result = context.integrate_elementary(
+        radical_input, x);
+    assert(positive_radical_result.status == risch_status::elementary);
+    assert(positive_radical_result.conditions.empty());
+    assert(context.simplify(context.expand(
+        context.differentiate(positive_radical_result.elementary_part, x) -
+        radical_input, 100000)) == context.integer(0));
+
+    exact_expr absolute_parameter = context.symbol(
+        "_risch_absolute_condition_parameter");
+    exact_expr absolute_primitive = context.exponential(x) /
+        context.absolute_value(absolute_parameter);
+    exact_expr absolute_input = context.differentiate(absolute_primitive, x);
+    risch_result absolute_result = context.integrate_elementary(
+        absolute_input, x);
+    assert(absolute_result.status == risch_status::elementary);
+    assert(std::find(absolute_result.conditions.begin(),
+                     absolute_result.conditions.end(),
+                     context.absolute_value(absolute_parameter)) !=
+           absolute_result.conditions.end());
+    context.assume(absolute_parameter, "positive");
+    risch_result positive_absolute_result = context.integrate_elementary(
+        absolute_input, x);
+    assert(positive_absolute_result.status == risch_status::elementary);
+    assert(positive_absolute_result.conditions.empty());
+
+    exact_expr logarithmic_constant_primitive = context.exponential(x) /
+        context.natural_logarithm(context.integer(2));
+    exact_expr logarithmic_constant_input = context.differentiate(
+        logarithmic_constant_primitive, x);
+    risch_result logarithmic_constant_result = context.integrate_elementary(
+        logarithmic_constant_input, x);
+    assert(logarithmic_constant_result.status == risch_status::elementary);
+    assert(logarithmic_constant_result.conditions.empty());
+
+    exact_expr pi_logarithmic_primitive = context.exponential(x) /
+        context.natural_logarithm(context.pi());
+    exact_expr pi_logarithmic_input = context.differentiate(
+        pi_logarithmic_primitive, x);
+    risch_result pi_logarithmic_result = context.integrate_elementary(
+        pi_logarithmic_input, x);
+    assert(pi_logarithmic_result.status == risch_status::elementary);
+    assert(pi_logarithmic_result.conditions.empty());
+
+    exact_expr zero_power_primitive = context.exponential(x) /
+        context.power(context.symbol("_risch_zero_power_base"),
+                      context.integer(0));
+    exact_expr zero_power_input = context.differentiate(
+        zero_power_primitive, x);
+    risch_result zero_power_result = context.integrate_elementary(
+        zero_power_input, x);
+    assert(zero_power_result.status == risch_status::elementary);
+    assert(zero_power_result.conditions.empty());
+
+    exact_expr imaginary_primitive = context.exponential(x) /
+        context.i();
+    exact_expr imaginary_input = context.differentiate(
+        imaginary_primitive, x);
+    risch_result imaginary_result = context.integrate_elementary(
+        imaginary_input, x);
+    assert(imaginary_result.status == risch_status::elementary);
+    assert(imaginary_result.conditions.empty());
     std::puts("recursive Risch conditions preserved");
 }

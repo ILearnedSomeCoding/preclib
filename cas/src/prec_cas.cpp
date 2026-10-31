@@ -11750,7 +11750,9 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         if(part.operation() == exact_opcode::constant_i) return false;
         if(part.operation() == exact_opcode::symbol)
             return storage_->has_assumption(part.root_,
-                                             exact_storage::assumed_real);
+                                             exact_storage::assumed_real) ||
+                storage_->has_assumption(part.root_,
+                                         exact_storage::assumed_positive);
         if(part.operation() == exact_opcode::add ||
            part.operation() == exact_opcode::multiply){
             for(size_t i = 0; i < part.operand_count(); ++i)
@@ -12621,7 +12623,83 @@ risch_result exact_context::integrate_elementary(
         }
         return simplify(rational_product) != integer(1);
     };
-    auto known_nonzero = [&](auto &&self, const exact_expr &part) -> bool{
+    std::function<bool(const exact_expr &)> known_nonzero;
+    std::function<bool(const exact_expr &)> known_nonnegative;
+    std::function<bool(const exact_expr &)> known_positive;
+    std::function<bool(const exact_expr &)> known_real;
+    known_real = [&](const exact_expr &part) -> bool{
+        if(part.is_value()) return !part.value().is_approximate();
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                            exact_storage::assumed_real) ||
+                storage_->has_assumption(part.root_,
+                                         exact_storage::assumed_positive);
+        if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::exponential)
+            return known_real(part.operand(0));
+        if(part.operation() == exact_opcode::add ||
+           part.operation() == exact_opcode::multiply){
+            if(part.operand_count() == 0) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!known_real(part.operand(i))) return false;
+            return true;
+        }
+        if(part.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            return integration_signed_exponent(part.operand(1), exponent) &&
+                known_real(part.operand(0));
+        }
+        return false;
+    };
+    known_positive = [&](const exact_expr &part) -> bool{
+        if(part.is_value()) return !part.value().is_approximate() &&
+            !part.value().is_zero() && !part.value().is_negative();
+        if(part.operation() == exact_opcode::symbol)
+            return storage_->has_assumption(part.root_,
+                                            exact_storage::assumed_positive);
+        if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi) return true;
+        if(part.operation() == exact_opcode::exponential)
+            return known_real(part.operand(0));
+        if(part.operation() == exact_opcode::square_root)
+            return known_positive(part.operand(0));
+        if(part.operation() == exact_opcode::multiply){
+            if(part.operand_count() == 0) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!known_positive(part.operand(i))) return false;
+            return true;
+        }
+        if(part.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            if(!integration_signed_exponent(part.operand(1), exponent) ||
+               exponent == 0) return false;
+            if(known_positive(part.operand(0))) return true;
+            return exponent % 2 == 0 && exponent > 0 &&
+                known_nonzero(part.operand(0)) &&
+                known_real(part.operand(0));
+        }
+        return false;
+    };
+    known_nonnegative = [&](const exact_expr &part) -> bool{
+        if(known_positive(part)) return true;
+        if(part.operation() == exact_opcode::power){
+            int64_t exponent = 0;
+            return integration_signed_exponent(part.operand(1), exponent) &&
+                exponent > 0 && exponent % 2 == 0 &&
+                known_real(part.operand(0));
+        }
+        if(part.operation() == exact_opcode::multiply){
+            if(part.operand_count() == 0) return false;
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                if(!known_nonnegative(part.operand(i))) return false;
+            return true;
+        }
+        if(part.is_value() && !part.value().is_approximate())
+            return !part.value().is_negative();
+        return false;
+    };
+    known_nonzero = [&](const exact_expr &part) -> bool{
         if(prove_nonzero_rational_log_sum(part)) return true;
         if(part.is_value()) return !part.value().is_approximate() &&
             !part.value().is_zero();
@@ -12631,16 +12709,41 @@ risch_result exact_context::integrate_elementary(
             return true;
         if(integration_strictly_positive_constant(part)) return true;
         if(part.operation() == exact_opcode::constant_e ||
+           part.operation() == exact_opcode::constant_pi ||
+           part.operation() == exact_opcode::constant_i ||
            part.operation() == exact_opcode::exponential) return true;
+        if(part.operation() == exact_opcode::square_root)
+            return known_nonzero(part.operand(0));
+        if(part.operation() == exact_opcode::absolute_value)
+            return known_nonzero(part.operand(0));
+        if(part.operation() == exact_opcode::natural_logarithm){
+            exact_expr argument = part.operand(0);
+            if(argument.operation() == exact_opcode::constant_e ||
+               argument.operation() == exact_opcode::constant_pi)
+                return true;
+            if(argument.is_value() && !argument.value().is_approximate() &&
+               !argument.value().is_negative() &&
+               !argument.value().is_zero() && argument != integer(1))
+                return true;
+        }
         if(part.operation() == exact_opcode::multiply){
             for(size_t i = 0; i < part.operand_count(); ++i)
-                if(!self(self, part.operand(i))) return false;
+                if(!known_nonzero(part.operand(i))) return false;
             return part.operand_count() != 0;
         }
         if(part.operation() == exact_opcode::power){
             int64_t exponent = 0;
-            return integration_signed_exponent(part.operand(1), exponent) &&
-                self(self, part.operand(0));
+            if(!integration_signed_exponent(part.operand(1), exponent))
+                return false;
+            return exponent == 0 || known_nonzero(part.operand(0));
+        }
+        if(part.operation() == exact_opcode::add){
+            bool has_positive_term = false;
+            for(size_t i = 0; i < part.operand_count(); ++i){
+                if(!known_nonnegative(part.operand(i))) return false;
+                if(known_positive(part.operand(i))) has_positive_term = true;
+            }
+            return has_positive_term;
         }
         return false;
     };
@@ -12654,7 +12757,7 @@ risch_result exact_context::integrate_elementary(
                exponent < 0){
                 exact_expr base = part.operand(0);
                 if(!integration_depends_on(base, variable) &&
-                   !known_nonzero(known_nonzero, base)){
+                   !known_nonzero(base)){
                     if(base.is_value() && base.value().is_zero()) invalid = true;
                     else if(std::find(result.conditions.begin(),
                             result.conditions.end(), base) == result.conditions.end())
@@ -12669,7 +12772,7 @@ risch_result exact_context::integrate_elementary(
     std::vector<exact_expr> unresolved_conditions;
     unresolved_conditions.reserve(result.conditions.size());
     for(const exact_expr &condition : result.conditions){
-        if(known_nonzero(known_nonzero, condition)) continue;
+        if(known_nonzero(condition)) continue;
         if(condition.is_value() && !condition.value().is_approximate() &&
            condition.value().is_zero()){
             invalid = true;
@@ -13262,7 +13365,22 @@ risch_result exact_context::integrate_elementary_impl(
                                              exact_storage::assumed_positive);
         if(part.operation() == exact_opcode::constant_e ||
            part.operation() == exact_opcode::constant_pi ||
+           part.operation() == exact_opcode::constant_i ||
            part.operation() == exact_opcode::exponential) return true;
+        if(part.operation() == exact_opcode::square_root)
+            return self(self, part.operand(0));
+        if(part.operation() == exact_opcode::absolute_value)
+            return self(self, part.operand(0));
+        if(part.operation() == exact_opcode::natural_logarithm){
+            exact_expr argument = part.operand(0);
+            if(argument.operation() == exact_opcode::constant_e ||
+               argument.operation() == exact_opcode::constant_pi)
+                return true;
+            if(argument.is_value() && !argument.value().is_approximate() &&
+               !argument.value().is_negative() &&
+               !argument.value().is_zero() && argument != integer(1))
+                return true;
+        }
         if(part.operation() == exact_opcode::multiply){
             for(size_t i = 0; i < part.operand_count(); ++i)
                 if(!self(self, part.operand(i))) return false;
@@ -13270,8 +13388,9 @@ risch_result exact_context::integrate_elementary_impl(
         }
         if(part.operation() == exact_opcode::power){
             int64_t exponent = 0;
-            return integration_signed_exponent(part.operand(1), exponent) &&
-                   exponent != 0 && self(self, part.operand(0));
+            if(!integration_signed_exponent(part.operand(1), exponent))
+                return false;
+            return exponent == 0 || self(self, part.operand(0));
         }
         if(part.operation() == exact_opcode::add){
             bool has_strictly_positive = false;
