@@ -279,5 +279,37 @@ int main(){
         context.integer(2) * x + context.integer(1),
         context.power(rational_log, context.integer(3)) +
             context.integer(3) * rational_log + context.integer(2));
+
+    // The quotient spelling keeps the lower-field reciprocal factors in the
+    // coefficient field while the joint solver handles both log generators.
+    exact_expr quotient_log_x_plus_one =
+        context.natural_logarithm(x + context.integer(1));
+    exact_expr log_product = log_x * quotient_log_x_plus_one;
+    exact_expr log_product_derivative =
+        log_x / (x + context.integer(1)) + quotient_log_x_plus_one / x;
+    check_elementary_primitive(context, x, log_product_derivative,
+                               log_product_derivative);
+    risch_result log_product_result = context.integrate_elementary(
+        log_product_derivative, x);
+    assert(log_product_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(
+        context.differentiate(log_product_result.elementary_part, x) -
+            log_product_derivative, 100000)) == context.integer(0));
+
+    // Laurent powers in two logarithmic generators are normalized by
+    // temporarily using their reciprocal generators.
+    exact_expr inverse_log_product = context.integer(1) /
+        (log_x * quotient_log_x_plus_one);
+    exact_expr inverse_log_product_derivative =
+        context.integer(-1) / (x * context.power(log_x, context.integer(2)) *
+            quotient_log_x_plus_one) -
+        context.integer(1) / ((x + context.integer(1)) * log_x *
+            context.power(quotient_log_x_plus_one, context.integer(2)));
+    risch_result inverse_log_product_result = context.integrate_elementary(
+        inverse_log_product_derivative, x);
+    assert(inverse_log_product_result.status == risch_status::elementary);
+    assert(context.simplify(context.expand(
+        context.differentiate(inverse_log_product_result.elementary_part, x) -
+            inverse_log_product_derivative, 100000)) == context.integer(0));
     std::puts("logarithmic hyperexponential Risch reductions ok");
 }

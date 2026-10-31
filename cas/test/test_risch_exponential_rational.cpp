@@ -46,6 +46,26 @@ int main(){
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
     }
+    // The two rational slopes have gcd 1/4.  No individual exponential can
+    // serve as an integral Laurent base, so this exercises the shared-base
+    // rational-slope normalization.
+    exact_expr rational_slope_denominator = context.integer(1) +
+        context.exponential(x / context.integer(2)) +
+        context.exponential(context.integer(3) * x / context.integer(4));
+    risch_result rational_slope_result = context.integrate_elementary(
+        context.integer(1) / rational_slope_denominator, x, options);
+    assert(rational_slope_result.status == risch_status::elementary);
+    assert(rational_slope_result.remainder == context.integer(0));
+    exact_expr rational_slope_base = context.exponential(x / context.integer(4));
+    exact_expr slope_parameter = context.symbol("rational_slope_t");
+    exact_expr rational_slope_error = context.simplify(context.expand(
+        context.substitute(context.differentiate(
+            rational_slope_result.elementary_part, x),
+            rational_slope_base, slope_parameter) -
+        context.integer(1) / (context.integer(1) +
+            context.power(slope_parameter, context.integer(2)) +
+            context.power(slope_parameter, context.integer(3))), 100000));
+    assert(rational_slope_error == context.integer(0));
     exact_expr two_to_x = context.power(context.integer(2), x);
     risch_result two_to_x_result = context.integrate_elementary(two_to_x, x);
     assert(two_to_x_result.status == risch_status::elementary);

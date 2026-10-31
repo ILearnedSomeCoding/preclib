@@ -4495,6 +4495,74 @@ static exact_expr integration_joint_primitive_polynomial(
         {padded.size()}, variable, options, rde_coefficient);
 }
 
+// Return the exponent interval of an expression as a Laurent polynomial in
+// one generator. Nodes outside that generator are coefficients; unknown
+// operations are rejected instead of guessing their exponent behavior.
+static bool integration_laurent_exponent_range(
+    const exact_expr &expression, const exact_expr &generator,
+    int64_t &minimum, int64_t &maximum){
+    if(expression == generator){ minimum = maximum = 1; return true; }
+    if(!integration_depends_on(expression, generator)){
+        minimum = maximum = 0;
+        return true;
+    }
+    exact_opcode op = expression.operation();
+    if(op == exact_opcode::add){
+        bool first = true;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            int64_t lo = 0, hi = 0;
+            if(!integration_laurent_exponent_range(expression.operand(i),
+                    generator, lo, hi)) return false;
+            if(first){ minimum = lo; maximum = hi; first = false; }
+            else{
+                minimum = std::min(minimum, lo);
+                maximum = std::max(maximum, hi);
+            }
+        }
+        return !first;
+    }
+    if(op == exact_opcode::multiply){
+        minimum = maximum = 0;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            int64_t lo = 0, hi = 0;
+            if(!integration_laurent_exponent_range(expression.operand(i),
+                    generator, lo, hi)) return false;
+            if((lo < 0 && minimum < std::numeric_limits<int64_t>::min() - lo) ||
+               (hi > 0 && maximum > std::numeric_limits<int64_t>::max() - hi))
+                return false;
+            minimum += lo;
+            maximum += hi;
+        }
+        return true;
+    }
+    if(op == exact_opcode::power){
+        int64_t exponent = 0, lo = 0, hi = 0;
+        if(!integration_signed_exponent(expression.operand(1), exponent) ||
+           !integration_laurent_exponent_range(expression.operand(0),
+                generator, lo, hi)) return false;
+        auto product = [](int64_t a, int64_t b, int64_t &out) -> bool{
+            if(a == 0 || b == 0){ out = 0; return true; }
+            if((a == std::numeric_limits<int64_t>::min() && b == -1) ||
+               (b == std::numeric_limits<int64_t>::min() && a == -1))
+                return false;
+            if(a > 0){
+                if(b > 0 && a > std::numeric_limits<int64_t>::max()/b) return false;
+                if(b < 0 && b < std::numeric_limits<int64_t>::min()/a) return false;
+            }else{
+                if(b > 0 && a < std::numeric_limits<int64_t>::min()/b) return false;
+                if(b < 0 && a < std::numeric_limits<int64_t>::max()/b) return false;
+            }
+            out = a * b;
+            return true;
+        };
+        if(!product(lo, exponent, minimum) || !product(hi, exponent, maximum))
+            return false;
+        if(minimum > maximum) std::swap(minimum, maximum);
+        return true;
+    }
+    return false;
+}
+
 static exact_expr integration_joint_primitives(
     exact_context &context, const exact_expr &expression, const exact_expr &variable,
     const risch_options &options, const exact_expr &rde_coefficient = exact_expr()){
@@ -4511,9 +4579,59 @@ static exact_expr integration_joint_primitives(
     };
     collect(collect, expression);
     if(generators.size() < 2) return exact_expr();
-    integration_expr_poly input{expression};
+    exact_expr normalized = expression;
+    std::vector<exact_expr> working_generators = generators;
+    // A direction with only non-positive powers becomes an ordinary
+    // polynomial after replacing g by 1/g. Mixed signs remain unsupported;
+    // they need a shifted Laurent grid instead of a heuristic rewrite.
+    for(size_t i = 0; i < generators.size(); ++i){
+        int64_t minimum = 0, maximum = 0;
+        if(!integration_laurent_exponent_range(normalized, generators[i],
+                minimum, maximum)) return exact_expr();
+        if(minimum < 0 && maximum <= 0){
+            exact_expr reciprocal = context.power(generators[i],
+                context.integer(-1));
+            auto invert = [&](auto &&self, const exact_expr &part) -> exact_expr{
+                if(part == generators[i]) return reciprocal;
+                if(!integration_depends_on(part, generators[i])) return part;
+                if(part.operation() == exact_opcode::add){
+                    std::vector<exact_expr> terms;
+                    for(size_t k = 0; k < part.operand_count(); ++k){
+                        exact_expr term = self(self, part.operand(k));
+                        if(!term.valid()) return exact_expr();
+                        terms.push_back(std::move(term));
+                    }
+                    return context.add(terms);
+                }
+                if(part.operation() == exact_opcode::multiply){
+                    std::vector<exact_expr> factors;
+                    for(size_t k = 0; k < part.operand_count(); ++k){
+                        exact_expr factor = self(self, part.operand(k));
+                        if(!factor.valid()) return exact_expr();
+                        factors.push_back(std::move(factor));
+                    }
+                    return context.multiply(factors);
+                }
+                if(part.operation() == exact_opcode::power &&
+                   part.operand(0) == generators[i]){
+                    int64_t exponent = 0;
+                    if(!integration_signed_exponent(part.operand(1), exponent) ||
+                       exponent > 0 || exponent == std::numeric_limits<int64_t>::min())
+                        return exact_expr();
+                    if(exponent == 0) return context.integer(1);
+                    return context.power(reciprocal,
+                        context.integer(-exponent));
+                }
+                return exact_expr();
+            };
+            normalized = invert(invert, normalized);
+            if(!normalized.valid()) return exact_expr();
+            working_generators[i] = reciprocal;
+        }
+    }
+    integration_expr_poly input{normalized};
     std::vector<size_t> counts;
-    for(const auto &generator : generators){
+    for(const auto &generator : working_generators){
         std::vector<integration_expr_poly> children;
         size_t count = 1;
         for(const auto &coefficient : input){
@@ -4531,8 +4649,8 @@ static exact_expr integration_joint_primitives(
         input = std::move(expanded);
         counts.push_back(count);
     }
-    return integration_joint_primitive_grid(context, input, generators, counts,
-        variable, options, rde_coefficient);
+    return integration_joint_primitive_grid(context, input, working_generators,
+        counts, variable, options, rde_coefficient);
 }
 
 static bool integration_normalize_expr_coefficient(
@@ -9592,8 +9710,6 @@ static integration_parametric_rde_status integration_primitive_derivative_relati
     if(generators.empty()) return integration_parametric_rde_status::unsupported;
     std::vector<std::pair<integration_poly, integration_poly>> right;
     for(const auto &generator : generators){
-        if(generator.operation() != exact_opcode::natural_logarithm)
-            return integration_parametric_rde_status::unsupported;
         integration_poly n, d;
         if(!integration_parse_rational(context.differentiate(generator, variable), variable,
                 n, d, options.maximum_degree, options.maximum_degree) ||
@@ -9649,8 +9765,7 @@ static exact_expr integration_parametric_primitive_grid(
     std::vector<size_t> steps;
     std::vector<exact_expr> derivatives;
     for(size_t axis = 0; axis < generators.size(); ++axis){
-        if(generators[axis].operation() != exact_opcode::natural_logarithm || !counts[axis] ||
-           counts[axis] - 1 > options.maximum_degree ||
+        if(!counts[axis] || counts[axis] - 1 > options.maximum_degree ||
            levels > options.maximum_matrix_entries / counts[axis]) return exact_expr();
         steps.push_back(levels);
         levels *= counts[axis];
@@ -17280,56 +17395,70 @@ risch_result exact_context::integrate_elementary_impl(
             };
             collect_affine(collect_affine, expression);
             if(exponentials.empty()) return exact_expr();
-            std::vector<int64_t> slopes;
+            std::vector<precq_t> slopes;
             std::vector<exact_expr> intercepts;
-            int64_t common_slope = 0;
+            precn_t common_numerator;
+            precn_t common_denominator(1);
             bool all_negative = true;
             for(const exact_expr &factor : exponentials){
                 integration_poly n, d;
-                int64_t slope = 0;
+                numeric_value slope_value;
                 exact_expr intercept;
                 bool parsed = integration_parse_rational(
                     factor.operand(0), variable, n, d, degree_budget,
                     degree_budget) && integration_normalize_rational(n, d) &&
                     d.size() == 1 && n.size() > 1 && n.size() <= 2;
-                if(parsed && integer_i64(n[1], slope)){
+                if(parsed && n[1].is_rational() && !n[1].is_zero()){
+                    slope_value = n[1];
                     intercept = value(n[0]);
                 }else{
-                    // The slope remains an integer, but the intercept may be
+                    // The slope may be rational, but the intercept may be
                     // any exact constant-field expression such as a or ln(2).
-                    // Parse that affine form over exact expression
-                    // coefficients instead of reducing it to numeric Q[x].
+                    // Parse that affine form over exact expression coefficients
+                    // instead of reducing it to numeric Q[x].
                     integration_expr_poly affine;
                     if(!integration_parse_expr_poly(*this,
                             factor.operand(0), variable, affine,
                             degree_budget) || affine.size() != 2 ||
                        !affine[1].is_value() ||
                        affine[1].value().is_approximate() ||
-                       !integer_i64(affine[1].value(), slope) ||
-                       slope == 0 || integration_depends_on(affine[0], variable))
+                       !affine[1].value().is_rational() ||
+                       affine[1].value().is_zero() ||
+                       integration_depends_on(affine[0], variable))
                         return exact_expr();
+                    slope_value = affine[1].value();
                     intercept = simplify(affine[0]);
                 }
-                if(slope == 0 || !intercept.valid()) return exact_expr();
+                if(!slope_value.is_rational() || slope_value.is_zero() ||
+                   !intercept.valid()) return exact_expr();
+                precq_t slope = slope_value.rational();
                 slopes.push_back(slope);
                 intercepts.push_back(std::move(intercept));
-                all_negative = all_negative && slope < 0;
-                int64_t magnitude = slope < 0 ? -(slope + 1) + 1 : slope;
-                common_slope = common_slope == 0
-                    ? magnitude : std::gcd(common_slope, magnitude);
+                all_negative = all_negative && slope.is_negative();
+                if(common_numerator.rsiz == 0) common_numerator = slope.numerator();
+                else common_numerator = ::gcd(common_numerator, slope.numerator());
+                precn_t denominator_gcd = ::gcd(common_denominator,
+                                               slope.denominator());
+                common_denominator = precn_divexact(common_denominator,
+                    denominator_gcd) * slope.denominator();
             }
-            if(common_slope == 0) return exact_expr();
+            if(common_numerator.rsiz == 0) return exact_expr();
+            precq_t common_slope_q(common_numerator, common_denominator,
+                                   all_negative);
+            numeric_value common_slope_value(common_slope_q);
+            exact_expr common_slope = value(common_slope_value);
             // When every slope is negative, use exp(-d*x) as the generator.
             // This keeps all Laurent exponents nonnegative and lets the
             // exact rational tail reducer work without a separate Laurent
             // denominator normalizer. Mixed signs still use exp(d*x).
-            if(all_negative) common_slope = -common_slope;
             exact_expr generator = exponential(
-                integer(common_slope) * variable);
+                common_slope * variable);
             exact_expr normalized = expression;
             for(size_t i = 0; i < exponentials.size(); ++i){
-                if(slopes[i] % common_slope != 0) return exact_expr();
-                int64_t exponent = slopes[i] / common_slope;
+                numeric_value exponent_value = normalized_rational(
+                    slopes[i] / common_slope_q);
+                int64_t exponent = 0;
+                if(!integer_i64(exponent_value, exponent)) return exact_expr();
                 exact_expr power_factor = exponent == 1 ? generator :
                     power(generator, integer(exponent));
                 exact_expr replacement = exponential(intercepts[i]) *
@@ -17344,7 +17473,7 @@ risch_result exact_context::integrate_elementary_impl(
                         normalized, parameter)) break;
             }
             exact_expr transformed = substitute(normalized, generator, parameter) /
-                (integer(common_slope) * parameter);
+                (common_slope * parameter);
             // The parameter rational integrators treat every coefficient as
             // constant in the new variable.  Reject a mixed expression that
             // still contains the original x, rather than silently freezing
