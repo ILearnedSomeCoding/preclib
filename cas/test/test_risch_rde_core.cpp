@@ -72,6 +72,59 @@ int main(){
         return 1;
     }
 
+    exact_expr logarithmic_polynomial_rhs = logarithmic_exponential *
+        (context.integer(1) + log_x + context.integer(2) *
+         context.power(log_x, context.integer(2)));
+    risch_result logarithmic_polynomial_result = context.integrate_elementary(
+        logarithmic_polynomial_rhs, x);
+    exact_expr logarithmic_polynomial_error = context.simplify(
+        context.differentiate(logarithmic_polynomial_result.elementary_part, x) -
+        logarithmic_polynomial_rhs);
+    if(logarithmic_polynomial_result.status != risch_status::elementary ||
+       logarithmic_polynomial_result.remainder != context.integer(0) ||
+       logarithmic_polynomial_error != context.integer(0)){
+        std::cerr << "logarithmic polynomial RDE failed: "
+                  << logarithmic_polynomial_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr nested_log = context.natural_logarithm(log_x);
+    exact_expr nested_exponential = context.exponential(
+        context.power(nested_log, context.integer(2)));
+    exact_expr nested_rhs = nested_exponential *
+        (context.integer(1) + log_x + context.integer(2) * nested_log);
+    risch_result nested_result = context.integrate_elementary(nested_rhs, x);
+    exact_expr nested_error = context.simplify(
+        context.differentiate(nested_result.elementary_part, x) - nested_rhs);
+    if(nested_result.status != risch_status::elementary ||
+       nested_result.remainder != context.integer(0) ||
+       nested_error != context.integer(0)){
+        std::cerr << "nested logarithmic RDE failed: "
+                  << nested_result.elementary_part.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr nested_product_inner = log_x * nested_log;
+    exact_expr nested_product_exponential = context.exponential(
+        nested_product_inner);
+    exact_expr nested_product_rhs = nested_product_exponential *
+        (context.integer(2) + nested_log);
+    risch_result nested_product_result = context.integrate_elementary(
+        nested_product_rhs, x);
+    exact_expr nested_product_error = context.simplify(context.expand(
+        context.differentiate(nested_product_result.elementary_part, x) -
+        nested_product_rhs, 100000));
+    if(nested_product_result.status != risch_status::elementary ||
+       nested_product_result.remainder != context.integer(0) ||
+       nested_product_error != context.integer(0)){
+        std::cerr << "nested product RDE failed: "
+                  << nested_product_result.elementary_part.to_string()
+                  << " status=" << (int)nested_product_result.status
+                  << " error=" << nested_product_error.to_string() << '\n';
+        return 1;
+    }
+
     risch_result no_rational_solution =
         context.integrate_elementary(exp_x2, x);
     if(no_rational_solution.status != risch_status::proven_nonelementary){
