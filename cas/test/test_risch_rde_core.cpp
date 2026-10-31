@@ -41,6 +41,33 @@ int main(){
         std::cerr << "a constructive polynomial RDE case failed\n";
         return 1;
     }
+    exact_expr shifted_laurent_rhs = context.integer(1) /
+        (context.exponential(context.integer(3) * x) +
+         context.exponential(context.integer(2) * x + context.integer(1)));
+    risch_result shifted_laurent_result = context.integrate_elementary(
+        shifted_laurent_rhs, x);
+    if(shifted_laurent_result.status != risch_status::elementary ||
+       shifted_laurent_result.remainder != context.integer(0)){
+        std::cerr << "shifted exponential Laurent RDE failed: "
+                  << shifted_laurent_result.elementary_part.to_string()
+                  << " status=" << (int)shifted_laurent_result.status
+                  << " remainder=" << shifted_laurent_result.remainder.to_string()
+                  << " diagnostic=" << shifted_laurent_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr shifted_laurent_numerator = exp_x /
+        (context.exponential(context.integer(3) * x) +
+         context.exponential(context.integer(2) * x + context.integer(1)));
+    risch_result shifted_laurent_numerator_result = context.integrate_elementary(
+        shifted_laurent_numerator, x);
+    if(shifted_laurent_numerator_result.status != risch_status::elementary ||
+       shifted_laurent_numerator_result.remainder != context.integer(0)){
+        std::cerr << "shifted exponential numerator RDE failed: "
+                  << shifted_laurent_numerator_result.elementary_part.to_string()
+                  << " status=" << (int)shifted_laurent_numerator_result.status
+                  << " diagnostic=" << shifted_laurent_numerator_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr logarithmic_exponential_rhs = logarithmic_exponential *
         (context.integer(1) + context.integer(2) * log_x);
     risch_result logarithmic_result = context.integrate_elementary(

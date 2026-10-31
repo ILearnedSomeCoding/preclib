@@ -2940,6 +2940,58 @@ static exact_expr integration_normalize_e_powers(
     return context.simplify(normalized);
 }
 
+static bool integration_depends_on(const exact_expr &expression,
+                                   const exact_expr &variable);
+
+// Keep constant offsets out of exponential generators.  This is intentionally
+// used only by the exponential-Laurent classifier; changing the whole input
+// tree would unnecessarily change the shape of already-solvable results.
+static exact_expr integration_normalize_shifted_exponentials(
+        exact_context &context, const exact_expr &expression,
+        const exact_expr &variable){
+    std::vector<exact_expr> nodes;
+    std::unordered_set<uint32_t> visited;
+    auto split = [&](auto &&self, const exact_expr &part,
+                     std::vector<exact_expr> &terms) -> void{
+        if(part.operation() == exact_opcode::add){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i), terms);
+        }else terms.push_back(part);
+    };
+    auto collect = [&](auto &&self, const exact_expr &part) -> void{
+        if(!visited.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::exponential){
+            std::vector<exact_expr> terms;
+            split(split, part.operand(0), terms);
+            bool has_constant = false, has_dependent = false;
+            for(const exact_expr &term : terms){
+                if(integration_depends_on(term, variable)) has_dependent = true;
+                else has_constant = true;
+            }
+            if(has_constant && has_dependent) nodes.push_back(part);
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect(collect, expression);
+    exact_expr normalized = expression;
+    for(const exact_expr &node : nodes){
+        std::vector<exact_expr> terms, constants, dependent;
+        split(split, node.operand(0), terms);
+        for(const exact_expr &term : terms)
+            (integration_depends_on(term, variable) ? dependent : constants)
+                .push_back(term);
+        if(constants.empty() || dependent.empty()) continue;
+        exact_expr constant = constants.size() == 1 ? constants[0]
+            : context.add(constants);
+        exact_expr argument = dependent.size() == 1 ? dependent[0]
+            : context.add(dependent);
+        normalized = context.substitute(normalized, node, context.multiply({
+            context.exponential(constant), context.exponential(argument)}));
+    }
+    return normalized;
+}
+
 struct integration_factor{
     integration_poly polynomial;
     size_t multiplicity;
@@ -4555,6 +4607,65 @@ static bool integration_parse_expr_rational(
         bd = std::move(next);
     }
     return true;
+}
+
+// Integrate a proper rational function whose denominator is t^m*(a*t+b).
+// Coefficients are exact expressions, so this also works over constant
+// extensions such as Q(e), which the numeric rational integrator cannot hold.
+static exact_expr integration_exact_linear_tail_primitive(
+        exact_context &context, const exact_expr &input,
+        const exact_expr &variable, size_t maximum_degree){
+    integration_expr_poly numerator, denominator;
+    if(!integration_parse_expr_rational(context, input, variable, numerator,
+            denominator, maximum_degree) || denominator.size() < 3)
+        return exact_expr();
+    integration_expr_trim(context, numerator);
+    integration_expr_trim(context, denominator);
+    if(numerator.size() >= denominator.size()) return exact_expr();
+    size_t multiplicity = 0;
+    while(multiplicity < denominator.size() &&
+          integration_expr_zero(context, denominator[multiplicity])) ++multiplicity;
+    if(multiplicity == 0 || multiplicity + 2 != denominator.size())
+        return exact_expr();
+    exact_expr b = denominator[multiplicity];
+    exact_expr a = denominator[multiplicity + 1];
+    if(integration_expr_zero(context, a) ||
+       integration_expr_zero(context, b)) return exact_expr();
+
+    std::vector<exact_expr> principal(multiplicity, context.integer(0));
+    for(size_t i = 0; i < multiplicity; ++i){
+        exact_expr coefficient = i < numerator.size()
+            ? numerator[i] : context.integer(0);
+        if(i) coefficient = coefficient - a * principal[i - 1];
+        principal[i] = context.simplify(coefficient / b);
+    }
+    exact_expr root = -b / a;
+    exact_expr value_at_root = context.integer(0);
+    for(size_t i = numerator.size(); i-- > 0;)
+        value_at_root = value_at_root * root + numerator[i];
+    exact_expr root_power = context.power(root,
+        context.integer((int64_t)multiplicity));
+    exact_expr logarithmic_coefficient =
+        context.simplify(value_at_root / root_power);
+    exact_expr candidate = context.integer(0);
+    for(size_t i = 0; i < multiplicity; ++i){
+        int64_t power = (int64_t)i - (int64_t)multiplicity;
+        if(principal[i] == context.integer(0)) continue;
+        if(power == -1){
+            candidate = candidate + principal[i] *
+                context.natural_logarithm(variable);
+        }else{
+            candidate = candidate + principal[i] *
+                context.power(variable, context.integer(power + 1)) /
+                context.integer(power + 1);
+        }
+    }
+    candidate = candidate + logarithmic_coefficient / a *
+        context.natural_logarithm(a * variable + b);
+    // The principal coefficients satisfy the coefficient recurrence for
+    // n/(t^m*(a*t+b)); the final logarithmic coefficient is n(-b/a)/(-b/a)^m.
+    // Together these are the partial-fraction identity used by this branch.
+    return candidate;
 }
 
 static bool integration_formal_constant_zero(
@@ -15872,6 +15983,8 @@ risch_result exact_context::integrate_elementary_impl(
     };
     if(classify_constant_polynomial_primitive_pole()) return result;
     auto classify_normal_transcendental_residue = [&]() -> bool{
+        exact_expr working_expression =
+            integration_normalize_shifted_exponentials(*this, expression, variable);
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
         auto find = [&](auto &&self, const exact_expr &part) -> void{
@@ -15890,10 +16003,10 @@ risch_result exact_context::integrate_elementary_impl(
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self, part.operand(i));
         };
-        find(find, expression);
+        find(find, working_expression);
         if(!generator.valid()) return false;
         integration_expr_poly numerator, denominator, common, reduced;
-        if(!integration_parse_expr_rational(*this, expression, generator,
+        if(!integration_parse_expr_rational(*this, working_expression, generator,
                 numerator, denominator, degree_budget, &variable) ||
            !integration_expr_gcd_rational_coefficients(*this, numerator,
                 denominator, variable, degree_budget, common) ||
@@ -15909,6 +16022,8 @@ risch_result exact_context::integrate_elementary_impl(
                 differentiate(generator.operand(0), variable);
             exact_expr scale = denominator.back();
             auto constant_coefficient = [&](const exact_expr &coefficient) -> bool{
+                if(!integration_depends_on(coefficient, variable) &&
+                   integration_exact_expression_tree(coefficient)) return true;
                 integration_poly cn, cd;
                 return integration_parse_rational(coefficient, variable, cn, cd,
                            degree_budget, verification_degree_budget) &&
@@ -15949,6 +16064,8 @@ risch_result exact_context::integrate_elementary_impl(
                 denominator, variable, options, characteristic)) return false;
         // Constant residues have constant elementary symmetric functions.
         for(const exact_expr &coefficient : characteristic){
+            if(!integration_depends_on(coefficient, variable) &&
+               integration_exact_expression_tree(coefficient)) continue;
             integration_poly cn, cd;
             if(!integration_parse_rational(coefficient, variable, cn, cd,
                     degree_budget, verification_degree_budget) ||
@@ -15956,7 +16073,7 @@ risch_result exact_context::integrate_elementary_impl(
             if(cn.size() > 1 || cd.size() > 1){
                 result.status = risch_status::proven_nonelementary;
                 result.elementary_part = integer(0);
-                result.remainder = expression;
+                result.remainder = working_expression;
                 result.diagnostic = generator.operation() == exact_opcode::exponential
                     ? "normal exponential poles have a nonconstant residue invariant"
                     : "normal primitive poles have a nonconstant residue invariant";
@@ -15965,7 +16082,7 @@ risch_result exact_context::integrate_elementary_impl(
         }
         if(generator.operation() == exact_opcode::exponential){
             exact_expr logarithmic_part, polynomial_part;
-            if(integration_algebraic_residue_logs(*this, expression, generator,
+            if(integration_algebraic_residue_logs(*this, working_expression, generator,
                     variable, options, logarithmic_part, polynomial_part) &&
                logarithmic_part.reachable_node_count() <= options.maximum_nodes){
                 if(polynomial_part == integer(0)){
@@ -15984,7 +16101,7 @@ risch_result exact_context::integrate_elementary_impl(
                         (lower.status == risch_status::elementary &&
                          lower.remainder == integer(0)))){
                         exact_expr combined = logarithmic_part + lower.elementary_part;
-                        exact_expr difference = expression -
+                        exact_expr difference = working_expression -
                             differentiate(combined, variable) - lower.remainder;
                         integration_expr_poly check_n, check_d;
                         if(combined.reachable_node_count() <= options.maximum_nodes &&
@@ -16751,6 +16868,78 @@ risch_result exact_context::integrate_elementary_impl(
     };
     if(classify_linear_exponential_rational()) return result;
     auto classify_exponential_laurent = [&]() -> bool{
+        // First try a common exponential base for affine arguments.  This
+        // turns exp(a*x+c) into exp(c)*t^(a/d), where d is the gcd of the
+        // integer slopes, without asking the ordinary rational parser to
+        // treat exp(c) as a rational number.
+        auto affine_exponential_candidate = [&]() -> exact_expr{
+            std::vector<exact_expr> exponentials;
+            std::unordered_set<uint32_t> seen;
+            auto collect_affine = [&](auto &&self, const exact_expr &part) -> void{
+                if(!seen.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::exponential &&
+                   integration_depends_on(part.operand(0), variable))
+                    exponentials.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_affine(collect_affine, expression);
+            if(exponentials.empty()) return exact_expr();
+            std::vector<int64_t> slopes;
+            std::vector<exact_expr> intercepts;
+            int64_t common_slope = 0;
+            for(const exact_expr &factor : exponentials){
+                integration_poly n, d;
+                if(!integration_parse_rational(factor.operand(0), variable,
+                        n, d, degree_budget, degree_budget) ||
+                   !integration_normalize_rational(n, d) || d.size() != 1 ||
+                   n.size() > 2 || n.size() < 2) return exact_expr();
+                int64_t slope = 0;
+                if(!integer_i64(n[1], slope) || slope == 0) return exact_expr();
+                slopes.push_back(slope);
+                intercepts.push_back(value(n[0]));
+                int64_t magnitude = slope < 0 ? -(slope + 1) + 1 : slope;
+                common_slope = common_slope == 0
+                    ? magnitude : std::gcd(common_slope, magnitude);
+            }
+            if(common_slope == 0) return exact_expr();
+            exact_expr generator = exponential(
+                integer(common_slope) * variable);
+            exact_expr normalized = expression;
+            for(size_t i = 0; i < exponentials.size(); ++i){
+                if(slopes[i] % common_slope != 0) return exact_expr();
+                int64_t exponent = slopes[i] / common_slope;
+                exact_expr power_factor = exponent == 1 ? generator :
+                    power(generator, integer(exponent));
+                exact_expr replacement = exponential(intercepts[i]) *
+                    power_factor;
+                normalized = substitute(normalized, exponentials[i], replacement);
+            }
+            exact_expr parameter;
+            for(size_t suffix = 0;; ++suffix){
+                parameter = symbol("_risch_affine_exp_t_" +
+                                   std::to_string(suffix));
+                if(parameter != variable && !integration_depends_on(
+                        normalized, parameter)) break;
+            }
+            exact_expr transformed = substitute(normalized, generator, parameter) /
+                (integer(common_slope) * parameter);
+            exact_expr primitive = integration_exact_linear_tail_primitive(
+                *this, transformed, parameter, degree_budget);
+            if(!primitive.valid()) return exact_expr();
+            exact_expr candidate = substitute(primitive, parameter, generator);
+            return candidate;
+        };
+        exact_expr affine_candidate = affine_exponential_candidate();
+        if(affine_candidate.valid()){
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(affine_candidate);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        exact_expr working_expression =
+            integration_normalize_shifted_exponentials(*this, expression, variable);
         std::vector<exact_expr> generators;
         std::unordered_set<uint32_t> seen;
         auto collect = [&](auto &&self, const exact_expr &part) -> void{
@@ -16761,7 +16950,7 @@ risch_result exact_context::integrate_elementary_impl(
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self, part.operand(i));
         };
-        collect(collect, expression);
+        collect(collect, working_expression);
         for(const exact_expr &generator : generators){
             integration_poly inner, inner_denominator;
             if(!integration_parse_rational(generator.operand(0), variable, inner,
@@ -16860,7 +17049,7 @@ risch_result exact_context::integrate_elementary_impl(
             };
 
             laurent_terms terms;
-            if(!parse(parse, expression, terms)) continue;
+            if(!parse(parse, working_expression, terms)) continue;
             bool supported = true;
             bool has_nonelementary = false;
             exact_expr elementary_part = integer(0);
@@ -16934,7 +17123,7 @@ risch_result exact_context::integrate_elementary_impl(
                     has_nonelementary = true;
                     exact_expr exponential_power = term.first == 1
                         ? generator : power(generator, integer(term.first));
-                    nonelementary_part = simplify(nonelementary_part +
+                        nonelementary_part = simplify(nonelementary_part +
                         term.second * exponential_power);
                 }else{
                     supported = false;
