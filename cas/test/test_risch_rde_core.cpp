@@ -248,6 +248,52 @@ int main(){
         return 1;
     }
 
+    exact_expr nested_log_derivative = context.integer(1) /
+        (x * log_x);
+    risch_result nested_log_result = context.integrate_elementary(
+        nested_log_derivative, x);
+    exact_expr nested_log_expected = context.natural_logarithm(log_x);
+    if(nested_log_result.status != risch_status::elementary ||
+       nested_log_result.remainder != context.integer(0) ||
+       context.simplify(nested_log_result.elementary_part -
+                        nested_log_expected) != context.integer(0)){
+        std::cerr << "nested logarithm RDE failed: "
+                  << nested_log_result.elementary_part.to_string()
+                  << " diagnostic=" << nested_log_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr triple_log_derivative = context.integer(1) /
+        (x * log_x * context.natural_logarithm(log_x));
+    risch_result triple_log_result = context.integrate_elementary(
+        triple_log_derivative, x);
+    exact_expr triple_log_expected = context.natural_logarithm(
+        context.absolute_value(context.natural_logarithm(log_x)));
+    if(triple_log_result.status != risch_status::elementary ||
+       triple_log_result.remainder != context.integer(0) ||
+       context.simplify(triple_log_result.elementary_part -
+                        triple_log_expected) != context.integer(0)){
+        std::cerr << "triple logarithm RDE failed: "
+                  << triple_log_result.elementary_part.to_string()
+                  << " diagnostic=" << triple_log_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr quad_log_1 = context.natural_logarithm(log_x);
+    exact_expr quad_log_2 = context.natural_logarithm(quad_log_1);
+    exact_expr quad_log_derivative = context.integer(1) /
+        (x * log_x * quad_log_1 * quad_log_2);
+    risch_result quad_log_result = context.integrate_elementary(
+        quad_log_derivative, x);
+    exact_expr quad_log_expected = context.natural_logarithm(quad_log_2);
+    if(quad_log_result.status != risch_status::elementary ||
+       quad_log_result.remainder != context.integer(0) ||
+       context.simplify(quad_log_result.elementary_part -
+                        quad_log_expected) != context.integer(0)){
+        std::cerr << "fourth logarithm RDE failed: "
+                  << quad_log_result.elementary_part.to_string()
+                  << " diagnostic=" << quad_log_result.diagnostic << '\n';
+        return 1;
+    }
+
     exact_expr shifted_log_square = context.power(
         context.natural_logarithm(x + context.integer(1)), context.integer(2));
     exact_expr symbolic_log_sum = a * log_power_input + b * shifted_log_square;
