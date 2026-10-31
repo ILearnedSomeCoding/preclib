@@ -36,8 +36,10 @@ int main(){
     assert(quartic_result.status == risch_status::elementary);
     exact_expr expanded_quartic = context.expand(
         quartic_result.elementary_part);
-    assert(expanded_quartic.operation() == exact_opcode::log_root_sum);
-    assert(context.simplify(context.differentiate(expanded_quartic, x) -
+    assert(expanded_quartic.valid());
+    assert(expanded_quartic.operation() != exact_opcode::integral);
+    assert(context.simplify(context.differentiate(
+        quartic_result.elementary_part, x) -
         quartic_integrand) == context.integer(0));
 
     exact_expr sine_x = context.sine(x);
@@ -180,6 +182,22 @@ int main(){
         context.integrate_elementary(symbolic_exponential_sine, x);
     assert(symbolic_exponential_sine_result.status == risch_status::elementary);
     assert(!symbolic_exponential_sine_result.conditions.empty());
+    exact_expr symbolic_trig_denominator = context.power(a, context.integer(2)) +
+        context.power(b, context.integer(2));
+    bool has_symbolic_trig_denominator = false;
+    for(const exact_expr &condition : symbolic_exponential_sine_result.conditions)
+        if(context.simplify(condition - symbolic_trig_denominator) ==
+           context.integer(0)){
+            has_symbolic_trig_denominator = true;
+            break;
+        }
+    assert(has_symbolic_trig_denominator);
+    context.assume(a, "positive");
+    context.assume(b, "real");
+    risch_result positive_exponential_sine_result =
+        context.integrate_elementary(symbolic_exponential_sine, x);
+    assert(positive_exponential_sine_result.status == risch_status::elementary);
+    assert(!positive_exponential_sine_result.conditions.empty());
 
     exact_expr exponential_hyperbolic_sine =
         context.exponential(context.integer(2) * x) *

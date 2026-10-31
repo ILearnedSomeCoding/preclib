@@ -12939,8 +12939,26 @@ risch_result exact_context::integrate_elementary_impl(
                     degree_budget) &&
                 integration_normalize_rational(rate_numerator,
                     rate_denominator) && !integration_zero_poly(rate_numerator);
-            if(!parsed_inner || !parsed_rate) continue;
             exact_expr scale;
+            bool symbolic_rate = false;
+            if(!parsed_inner || !parsed_rate){
+                // The pullback proof only needs a nonzero constant slope;
+                // requiring Q(x) here would reject exp(a*x+b)*ln(a*x+b).
+                if(!integration_exact_expression_tree(inner) ||
+                   !integration_exact_expression_tree(rate) ||
+                   integration_depends_on(rate, variable) ||
+                   (rate.is_value() && rate.value().is_zero())) continue;
+                exact_expr ratio = integer(1);
+                for(size_t j = 0; j < expression.operand_count(); ++j)
+                    if(j != i && j != logarithm_index)
+                        ratio = ratio * expression.operand(j);
+                if(!integration_exact_expression_tree(ratio) ||
+                   integration_depends_on(ratio, variable)) continue;
+                scale = simplify(ratio / rate);
+                if(integration_depends_on(scale, variable) ||
+                   simplify(scale) == integer(0)) continue;
+                symbolic_rate = true;
+            }
             for(size_t rate_index = 0;
                 rate_index < expression.operand_count() && !scale.valid();
                 ++rate_index){
@@ -13041,6 +13059,9 @@ risch_result exact_context::integrate_elementary_impl(
             result.elementary_part = std::move(combined_part);
             result.remainder = std::move(combined_remainder);
             result.conditions = std::move(lower.conditions);
+            if(symbolic_rate && std::find(result.conditions.begin(),
+                    result.conditions.end(), rate) == result.conditions.end())
+                result.conditions.push_back(rate);
             if(std::find(result.conditions.begin(), result.conditions.end(),
                          scale) == result.conditions.end())
                 result.conditions.push_back(scale);
@@ -13252,6 +13273,27 @@ risch_result exact_context::integrate_elementary_impl(
             return integration_signed_exponent(part.operand(1), exponent) &&
                    exponent != 0 && self(self, part.operand(0));
         }
+        if(part.operation() == exact_opcode::add){
+            bool has_strictly_positive = false;
+            for(size_t i = 0; i < part.operand_count(); ++i){
+                const exact_expr &term = part.operand(i);
+                bool nonnegative = is_provably_positive_constant(
+                    is_provably_positive_constant, term);
+                if(!nonnegative && term.operation() == exact_opcode::power){
+                    int64_t exponent = 0;
+                    nonnegative = integration_signed_exponent(
+                        term.operand(1), exponent) && exponent > 0 &&
+                        (exponent % 2 == 0) &&
+                        is_real_constant_expression(
+                            is_real_constant_expression, term.operand(0));
+                }
+                if(!nonnegative) return false;
+                if(is_provably_positive_constant(
+                        is_provably_positive_constant, term))
+                    has_strictly_positive = true;
+            }
+            return has_strictly_positive;
+        }
         return false;
     };
     exact_expr multi_pole_candidate = integration_mixed_linear_poles_primitive(
@@ -13427,6 +13469,16 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
         };
         bool exponential_trigonometric_certificate = false;
+        std::vector<exact_expr> exponential_trigonometric_conditions;
+        auto add_exponential_trigonometric_condition =
+            [&](const exact_expr &condition){
+                if(condition.is_value() && !condition.value().is_approximate() &&
+                   !condition.value().is_zero()) return;
+                if(std::find(exponential_trigonometric_conditions.begin(),
+                             exponential_trigonometric_conditions.end(), condition) ==
+                   exponential_trigonometric_conditions.end())
+                    exponential_trigonometric_conditions.push_back(condition);
+            };
         auto exponential_trig_polynomial_candidate = [&]() -> exact_expr{
             std::vector<exact_expr> factors;
             integration_factor_list(expression, factors);
@@ -13580,9 +13632,12 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 rate = simplify(rate);
                 exact_expr exponential_term = exponential(exponent);
-                exact_expr primitive = rate == integer(0)
-                    ? variable * exponential_term
-                    : exponential_term / rate;
+                exact_expr primitive;
+                if(rate == integer(0)) primitive = variable * exponential_term;
+                else{
+                    add_exponential_trigonometric_condition(rate);
+                    primitive = exponential_term / rate;
+                }
                 candidate = candidate + coefficient *
                     term.second * primitive;
                 if(candidate.reachable_node_count() > options.maximum_nodes)
@@ -13594,12 +13649,16 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr exponential_trig_polynomial =
             exponential_trig_polynomial_candidate();
         if(exponential_trig_polynomial.valid()){
-            if(verify_candidate(exponential_trig_polynomial)) return true;
+            if(verify_candidate(exponential_trig_polynomial)){
+                result.conditions = exponential_trigonometric_conditions;
+                return true;
+            }
             if(exponential_trigonometric_certificate){
                 result.status = risch_status::elementary;
                 result.elementary_part =
                     std::move(exponential_trig_polynomial);
                 result.remainder = integer(0);
+                result.conditions = exponential_trigonometric_conditions;
                 result.diagnostic.clear();
                 return true;
             }
@@ -13663,8 +13722,9 @@ risch_result exact_context::integrate_elementary_impl(
                 auto exponential_primitive = [&](const exact_expr &argument,
                                                   const exact_expr &rate){
                     exact_expr term = exponential(argument);
-                    return rate == integer(0)
-                        ? variable * term : term / rate;
+                    if(rate == integer(0)) return variable * term;
+                    add_exponential_trigonometric_condition(rate);
+                    return term / rate;
                 };
                 exact_expr plus_primitive = exponential_primitive(
                     plus_argument, plus_rate);
@@ -13684,6 +13744,7 @@ risch_result exact_context::integrate_elementary_impl(
                !denominator.value().is_approximate() &&
                denominator.value().is_zero())
                 return exact_expr();
+            add_exponential_trigonometric_condition(denominator);
 
             exact_expr numerator;
             if(trigonometric_factor.operation() == exact_opcode::sine){
@@ -13702,11 +13763,15 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr exponential_trigonometric =
             exponential_trigonometric_candidate();
         if(exponential_trigonometric.valid()){
-            if(verify_candidate(exponential_trigonometric)) return true;
+            if(verify_candidate(exponential_trigonometric)){
+                result.conditions = exponential_trigonometric_conditions;
+                return true;
+            }
             if(exponential_trigonometric_certificate){
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(exponential_trigonometric);
                 result.remainder = integer(0);
+                result.conditions = exponential_trigonometric_conditions;
                 result.diagnostic.clear();
                 return true;
             }

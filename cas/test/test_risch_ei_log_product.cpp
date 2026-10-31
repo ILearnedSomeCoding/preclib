@@ -231,6 +231,25 @@ int main(){
         parameter_result.remainder - parameter_integrand, 100000)) ==
         context.integer(0));
 
+    exact_expr symbolic_ei_inner = rate * x + context.integer(1);
+    exact_expr symbolic_ei_slope_integrand = context.exponential(symbolic_ei_inner) *
+        context.natural_logarithm(symbolic_ei_inner);
+    risch_result symbolic_ei_slope_result = context.integrate_elementary(
+        symbolic_ei_slope_integrand, x);
+    assert(symbolic_ei_slope_result.status ==
+           risch_status::proven_nonelementary);
+    assert(std::find(symbolic_ei_slope_result.conditions.begin(),
+        symbolic_ei_slope_result.conditions.end(), rate) !=
+        symbolic_ei_slope_result.conditions.end());
+    assert(context.simplify(symbolic_ei_slope_result.elementary_part -
+        context.exponential(symbolic_ei_inner) *
+            context.natural_logarithm(symbolic_ei_inner) / rate) ==
+        context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(symbolic_ei_slope_result.elementary_part, x) +
+        symbolic_ei_slope_result.remainder - symbolic_ei_slope_integrand,
+        100000)) == context.integer(0));
+
     exact_expr leading_coefficient = context.symbol("log_poly_lead");
     exact_expr parameter_lead_integrand = context.exponential(x) *
         (leading_coefficient * log_x + context.integer(1));
