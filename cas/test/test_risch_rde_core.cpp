@@ -1,6 +1,7 @@
 #include "../prec_cas.hpp"
 
 #include <iostream>
+#include <tuple>
 
 static bool verified_primitive(exact_context &context,
                                const exact_expr &integrand,
@@ -27,6 +28,7 @@ int main(){
     exact_expr exp_x = context.exponential(x);
     exact_expr exp_x2 = context.exponential(context.power(x,
         context.integer(2)));
+    exact_expr b = context.symbol("b");
     exact_expr log_x = context.natural_logarithm(x);
     exact_expr log_square = context.power(log_x, context.integer(2));
     exact_expr logarithmic_exponential = context.exponential(log_square);
@@ -183,6 +185,20 @@ int main(){
         std::cerr << "logarithmic exponential chain RDE failed\n";
         return 1;
     }
+    exact_expr symbolic_logarithmic_rhs = a * logarithmic_exponential *
+        (context.integer(1) + context.integer(2) * log_x);
+    risch_result symbolic_logarithmic_result = context.integrate_elementary(
+        symbolic_logarithmic_rhs, x);
+    exact_expr symbolic_logarithmic_expected = a * x * logarithmic_exponential;
+    if(symbolic_logarithmic_result.status != risch_status::elementary ||
+       symbolic_logarithmic_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_logarithmic_result.elementary_part -
+                        symbolic_logarithmic_expected) != context.integer(0)){
+        std::cerr << "symbolic logarithmic exponential RDE failed: "
+                  << symbolic_logarithmic_result.elementary_part.to_string()
+                  << " diagnostic=" << symbolic_logarithmic_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr ordinary_logarithmic_exponential = context.integrate(
         logarithmic_exponential_rhs, x);
     exact_expr ordinary_logarithmic_error = context.simplify(
@@ -229,6 +245,71 @@ int main(){
         std::cerr << "logarithm power RDE failed: "
                   << log_power_result.elementary_part.to_string()
                   << " error=" << log_power_error.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr shifted_log_square = context.power(
+        context.natural_logarithm(x + context.integer(1)), context.integer(2));
+    exact_expr symbolic_log_sum = a * log_power_input + b * shifted_log_square;
+    risch_result symbolic_log_left = context.integrate_elementary(
+        a * log_power_input, x);
+    risch_result symbolic_log_right = context.integrate_elementary(
+        b * shifted_log_square, x);
+    risch_result symbolic_log_sum_result = context.integrate_elementary(
+        symbolic_log_sum, x);
+    exact_expr shifted_log_primitive = (x + context.integer(1)) *
+        (shifted_log_square - context.integer(2) *
+         context.natural_logarithm(x + context.integer(1)) + context.integer(2));
+    exact_expr symbolic_log_sum_expected = a * log_power_expected +
+        b * shifted_log_primitive;
+    if(symbolic_log_sum_result.status != risch_status::elementary ||
+       symbolic_log_sum_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_log_sum_result.elementary_part -
+                        symbolic_log_sum_expected) != context.integer(0)){
+        std::cerr << "additive symbolic logarithm RDE failed: "
+                  << symbolic_log_sum_result.elementary_part.to_string()
+                  << " diagnostic=" << symbolic_log_sum_result.diagnostic
+                  << " left=" << (int)symbolic_log_left.status << ":"
+                  << symbolic_log_left.diagnostic << " right="
+                  << (int)symbolic_log_right.status << ":"
+                  << symbolic_log_right.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_constant_sum = a + b * log_x;
+    risch_result symbolic_constant_sum_result = context.integrate_elementary(
+        symbolic_constant_sum, x);
+    exact_expr symbolic_constant_sum_error = context.differentiate(
+        symbolic_constant_sum_result.elementary_part, x) - symbolic_constant_sum;
+    bool symbolic_constant_sum_verified = true;
+    for(const auto &values : {std::tuple<int, int, int>{2, 3, 1},
+                              std::tuple<int, int, int>{-1, 4, 2}}){
+        exact_expr specialized_error = context.substitute(
+            symbolic_constant_sum_error, a, context.integer(std::get<0>(values)));
+        specialized_error = context.substitute(
+            specialized_error, b, context.integer(std::get<1>(values)));
+        specialized_error = context.simplify(context.substitute(
+            specialized_error, x, context.integer(std::get<2>(values))));
+        if(specialized_error != context.integer(0)){
+            symbolic_constant_sum_error = specialized_error;
+            symbolic_constant_sum_verified = false;
+            break;
+        }
+    }
+    if(symbolic_constant_sum_result.status != risch_status::elementary ||
+       symbolic_constant_sum_result.remainder != context.integer(0) ||
+       !symbolic_constant_sum_verified){
+        std::cerr << "symbolic constant term integration failed: "
+                  << symbolic_constant_sum_result.elementary_part.to_string()
+                  << " status=" << (int)symbolic_constant_sum_result.status
+                  << " diagnostic=" << symbolic_constant_sum_result.diagnostic
+                  << " error=" << symbolic_constant_sum_error.to_string() << '\n';
+        return 1;
+    }
+    exact_expr public_symbolic_constant_sum = context.integrate(
+        symbolic_constant_sum, x);
+    if(public_symbolic_constant_sum.operation() == exact_opcode::integral){
+        std::cerr << "public integration rejected a certified symbolic constant "
+                     "sum: " << public_symbolic_constant_sum.to_string() << '\n';
         return 1;
     }
 
@@ -287,6 +368,23 @@ int main(){
         return 1;
     }
 
+    exact_expr shifted_log = context.natural_logarithm(x + context.integer(1));
+    exact_expr mixed_log_product = log_x * shifted_log;
+    exact_expr mixed_log_product_input = context.differentiate(
+        mixed_log_product, x);
+    exact_expr symbolic_multiple_input = a * mixed_log_product_input;
+    risch_result symbolic_multiple_result = context.integrate_elementary(
+        symbolic_multiple_input, x);
+    if(symbolic_multiple_result.status != risch_status::elementary ||
+       symbolic_multiple_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_multiple_result.elementary_part -
+                        a * mixed_log_product) != context.integer(0)){
+        std::cerr << "constant multiple primitive RDE failed: "
+                  << symbolic_multiple_result.elementary_part.to_string()
+                  << " diagnostic=" << symbolic_multiple_result.diagnostic << '\n';
+        return 1;
+    }
+
     exact_expr nested_log = context.natural_logarithm(log_x);
     exact_expr nested_exponential = context.exponential(
         context.power(nested_log, context.integer(2)));
@@ -320,6 +418,39 @@ int main(){
                   << nested_product_result.elementary_part.to_string()
                   << " status=" << (int)nested_product_result.status
                   << " error=" << nested_product_error.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr cubic_denominator = context.power(x, context.integer(3)) +
+        context.integer(1);
+    exact_expr symbolic_rational_input = (a * x + b) / cubic_denominator;
+    risch_result symbolic_rational_result = context.integrate_elementary(
+        symbolic_rational_input, x);
+    exact_expr symbolic_rational_error = context.integer(0);
+    exact_expr symbolic_rational_derivative = context.differentiate(
+        symbolic_rational_result.elementary_part, x) - symbolic_rational_input;
+    for(const auto &values : {std::tuple<int, int, int>{2, 3, 0},
+                              std::tuple<int, int, int>{2, 3, 1},
+                              std::tuple<int, int, int>{-1, 4, 2}}){
+        exact_expr specialized_error = context.substitute(
+            symbolic_rational_derivative, a, context.integer(std::get<0>(values)));
+        specialized_error = context.substitute(
+            specialized_error, b, context.integer(std::get<1>(values)));
+        specialized_error = context.simplify(context.substitute(
+            specialized_error, x, context.integer(std::get<2>(values))));
+        if(specialized_error != context.integer(0)){
+            symbolic_rational_error = specialized_error;
+            break;
+        }
+    }
+    if(symbolic_rational_result.status != risch_status::elementary ||
+       symbolic_rational_result.remainder != context.integer(0) ||
+       symbolic_rational_error != context.integer(0)){
+        std::cerr << "symbolic rational numerator distribution failed: "
+                  << symbolic_rational_result.elementary_part.to_string()
+                  << " status=" << (int)symbolic_rational_result.status
+                  << " diagnostic=" << symbolic_rational_result.diagnostic
+                  << " error=" << symbolic_rational_error.to_string() << '\n';
         return 1;
     }
 

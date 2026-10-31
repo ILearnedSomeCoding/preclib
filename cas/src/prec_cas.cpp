@@ -12760,6 +12760,153 @@ risch_result exact_context::integrate_elementary_impl(
         result.diagnostic.clear();
         return result;
     }
+    // A variable-independent exact expression is a constant of the current
+    // differential field.  Keep this separate from numeric rational parsing:
+    // symbolic constants such as `a` must integrate to `a*x` without being
+    // forced into Q(x).
+    if(!integration_depends_on(expression, variable) &&
+       integration_exact_expression_tree(expression) && !expression.is_value()){
+        exact_expr candidate = expression * variable;
+        if(candidate.reachable_node_count() <= options.maximum_nodes){
+            exact_expr error = differentiate(candidate, variable) - expression;
+            if(error == integer(0)){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+        }
+    }
+    // Pull exact constants out before the tower-specific RDEs.  This keeps
+    // the lower-field coefficient domain honest: a symbol such as `a` may be
+    // constant with respect to x, but it must not be mistaken for a rational
+    // coefficient while solving the logarithmic primitive system.
+    auto classify_exact_constant_multiple = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        std::vector<exact_expr> constants, dependent;
+        bool has_symbolic_constant = false;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            exact_expr factor = expression.operand(i);
+            if(integration_depends_on(factor, variable))
+                dependent.push_back(std::move(factor));
+            else if(integration_exact_expression_tree(factor)){
+                has_symbolic_constant |= !factor.is_value();
+                constants.push_back(std::move(factor));
+            }else
+                return false;
+        }
+        if(constants.empty() || dependent.empty() || !has_symbolic_constant)
+            return false;
+        exact_expr cofactor = dependent.size() == 1 ? dependent[0] :
+            multiply(dependent);
+        if(cofactor == expression) return false;
+        exact_expr constant = constants.size() == 1 ? constants[0] :
+            multiply(constants);
+        risch_result lower = integrate_elementary(cofactor, variable, options);
+        if(lower.status == risch_status::resource_limit ||
+           lower.status == risch_status::verification_failed){
+            result.status = lower.status;
+            result.diagnostic = std::move(lower.diagnostic);
+            return true;
+        }
+        if(lower.status != risch_status::elementary ||
+           lower.remainder != integer(0)) return false;
+        exact_expr elementary = simplify(constant * lower.elementary_part);
+        if(elementary.reachable_node_count() > options.maximum_nodes)
+            return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(elementary);
+        result.remainder = integer(0);
+        result.conditions = std::move(lower.conditions);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_exact_constant_multiple()) return result;
+    auto classify_symbolic_constant_additive_terms = [&]() -> bool{
+        if(expression.operation() != exact_opcode::add ||
+           expression.operand_count() < 2) return false;
+        bool has_symbolic_multiple = false;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            const exact_expr &term = expression.operand(i);
+            if(term.operation() != exact_opcode::multiply) continue;
+            for(size_t j = 0; j < term.operand_count(); ++j){
+                const exact_expr &factor = term.operand(j);
+                if(!integration_depends_on(factor, variable) &&
+                   integration_exact_expression_tree(factor) &&
+                   !factor.is_value()){
+                    has_symbolic_multiple = true;
+                    break;
+                }
+            }
+            if(has_symbolic_multiple) break;
+        }
+        if(!has_symbolic_multiple) return false;
+        exact_expr candidate = integer(0);
+        std::vector<exact_expr> conditions;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            risch_result term = integrate_elementary(expression.operand(i),
+                                                      variable, options);
+            if(term.status != risch_status::elementary ||
+               term.remainder != integer(0)) return false;
+            candidate = candidate + term.elementary_part;
+            for(const exact_expr &condition : term.conditions)
+                if(std::find(conditions.begin(), conditions.end(), condition) ==
+                   conditions.end()) conditions.push_back(condition);
+            if(candidate.reachable_node_count() > options.maximum_nodes)
+                return false;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.conditions = std::move(conditions);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_symbolic_constant_additive_terms()) return result;
+    auto classify_common_denominator_additive_terms = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply) return false;
+        for(size_t split = 0; split < expression.operand_count(); ++split){
+            exact_expr numerator = expression.operand(split);
+            if(numerator.operation() != exact_opcode::add ||
+               numerator.operand_count() < 2) continue;
+            std::vector<exact_expr> cofactor_parts;
+            for(size_t i = 0; i < expression.operand_count(); ++i)
+                if(i != split) cofactor_parts.push_back(expression.operand(i));
+            if(cofactor_parts.empty()) continue;
+            exact_expr cofactor = cofactor_parts.size() == 1
+                ? cofactor_parts[0] : multiply(cofactor_parts);
+            exact_expr candidate = integer(0);
+            std::vector<exact_expr> conditions;
+            bool complete = true;
+            for(size_t i = 0; i < numerator.operand_count(); ++i){
+                exact_expr term = numerator.operand(i) * cofactor;
+                risch_result part = integrate_elementary(term, variable, options);
+                if(part.status != risch_status::elementary ||
+                   part.remainder != integer(0)){
+                    complete = false;
+                    break;
+                }
+                candidate = candidate + part.elementary_part;
+                for(const exact_expr &condition : part.conditions)
+                    if(std::find(conditions.begin(), conditions.end(), condition) ==
+                       conditions.end()) conditions.push_back(condition);
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    complete = false;
+                    break;
+                }
+            }
+            if(!complete) continue;
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(candidate);
+            result.remainder = integer(0);
+            result.conditions = std::move(conditions);
+            result.diagnostic.clear();
+            return true;
+        }
+        return false;
+    };
+    if(classify_common_denominator_additive_terms()) return result;
     auto classify_ei_log_product = [&]() -> bool{
         if(expression.operation() != exact_opcode::multiply) return false;
         for(size_t i = 0; i < expression.operand_count(); ++i){
