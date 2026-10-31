@@ -132,6 +132,38 @@ int main(){
                   << " diagnostic=" << cubic_laurent_result.diagnostic << '\n';
         return 1;
     }
+    exact_expr mixed_cubic_laurent = context.integer(1) /
+        (context.integer(1) + context.exponential(x) +
+         context.exponential(-x));
+    risch_result mixed_cubic_result = context.integrate_elementary(
+        mixed_cubic_laurent, x);
+    if(mixed_cubic_result.status != risch_status::elementary ||
+       mixed_cubic_result.remainder != context.integer(0)){
+        std::cerr << "mixed cubic exponential Laurent RDE failed: "
+                  << mixed_cubic_result.elementary_part.to_string()
+                  << " status=" << (int)mixed_cubic_result.status
+                  << " diagnostic=" << mixed_cubic_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr mixed_cubic_legacy = context.integrate(mixed_cubic_laurent, x);
+    if(mixed_cubic_legacy.operation() == exact_opcode::integral){
+        std::cerr << "public mixed cubic exponential integration failed: "
+                  << mixed_cubic_legacy.to_string() << '\n';
+        return 1;
+    }
+    exact_expr symbolic_mixed_cubic = context.integer(1) /
+        (context.integer(1) + context.exponential(x + a) +
+         context.exponential(-x));
+    risch_result symbolic_mixed_cubic_result = context.integrate_elementary(
+        symbolic_mixed_cubic, x);
+    if(symbolic_mixed_cubic_result.status != risch_status::elementary ||
+       symbolic_mixed_cubic_result.remainder != context.integer(0)){
+        std::cerr << "symbolic mixed cubic exponential RDE failed: "
+                  << symbolic_mixed_cubic_result.elementary_part.to_string()
+                  << " status=" << (int)symbolic_mixed_cubic_result.status
+                  << " diagnostic=" << symbolic_mixed_cubic_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr logarithmic_exponential_rhs = logarithmic_exponential *
         (context.integer(1) + context.integer(2) * log_x);
     risch_result logarithmic_result = context.integrate_elementary(
@@ -177,6 +209,81 @@ int main(){
         std::cerr << "logarithmic polynomial RDE failed: "
                   << logarithmic_polynomial_result.elementary_part.to_string()
                   << '\n';
+        return 1;
+    }
+
+    exact_expr log_power_input = context.power(log_x, context.integer(2));
+    risch_result log_power_result = context.integrate_elementary(
+        log_power_input, x);
+    exact_expr log_power_expected = x *
+        (context.power(log_x, context.integer(2)) - context.integer(2) * log_x +
+         context.integer(2));
+    exact_expr log_power_error = context.simplify(context.expand(
+        context.differentiate(log_power_result.elementary_part, x) -
+        log_power_input, 100000));
+    if(log_power_result.status != risch_status::elementary ||
+       log_power_result.remainder != context.integer(0) ||
+       log_power_error != context.integer(0) ||
+       context.simplify(log_power_result.elementary_part -
+                        log_power_expected) != context.integer(0)){
+        std::cerr << "logarithm power RDE failed: "
+                  << log_power_result.elementary_part.to_string()
+                  << " error=" << log_power_error.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr half = context.rational(
+        precq_t(precn_t(1), precn_t(2)));
+    exact_expr sqrt_x = context.power(x, half);
+    exact_expr log_over_sqrt_input = log_x / sqrt_x;
+    risch_result log_over_sqrt_result = context.integrate_elementary(
+        log_over_sqrt_input, x);
+    exact_expr log_over_sqrt_expected = sqrt_x *
+        (context.integer(2) * log_x - context.integer(4));
+    exact_expr log_over_sqrt_error = context.simplify(context.expand(
+        context.differentiate(log_over_sqrt_result.elementary_part, x) -
+        log_over_sqrt_input, 100000));
+    if(log_over_sqrt_result.status != risch_status::elementary ||
+       log_over_sqrt_result.remainder != context.integer(0) ||
+       context.simplify(log_over_sqrt_result.elementary_part -
+                        log_over_sqrt_expected) != context.integer(0)){
+        std::cerr << "logarithm over square-root RDE failed: "
+                  << log_over_sqrt_result.elementary_part.to_string()
+                  << " error=" << log_over_sqrt_error.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr third = context.rational(
+        precq_t(precn_t(1), precn_t(3)));
+    exact_expr cube_root_x = context.power(x, third);
+    exact_expr cube_root_log_input = cube_root_x *
+        (context.integer(1) + log_x);
+    risch_result cube_root_log_result = context.integrate_elementary(
+        cube_root_log_input, x);
+    exact_expr cube_root_log_expected = context.power(x,
+        context.rational(precq_t(precn_t(4), precn_t(3)))) *
+        (context.rational(precq_t(precn_t(3), precn_t(4))) * log_x -
+         context.rational(precq_t(precn_t(9), precn_t(16))) +
+         context.rational(precq_t(precn_t(3), precn_t(4))));
+    if(cube_root_log_result.status != risch_status::elementary ||
+       cube_root_log_result.remainder != context.integer(0) ||
+       context.simplify(cube_root_log_result.elementary_part -
+                        cube_root_log_expected) != context.integer(0)){
+        std::cerr << "fractional logarithm RDE failed: "
+                  << cube_root_log_result.elementary_part.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr reciprocal_log_input = context.integer(1) / log_x;
+    risch_result reciprocal_log_result = context.integrate_elementary(
+        reciprocal_log_input, x);
+    if(reciprocal_log_result.status != risch_status::proven_nonelementary ||
+       reciprocal_log_result.remainder != reciprocal_log_input){
+        std::cerr << "reciprocal logarithm Risch decision failed: "
+                  << "status=" << (int)reciprocal_log_result.status
+                  << " part=" << reciprocal_log_result.elementary_part.to_string()
+                  << " remainder=" << reciprocal_log_result.remainder.to_string()
+                  << " diagnostic=" << reciprocal_log_result.diagnostic << '\n';
         return 1;
     }
 
