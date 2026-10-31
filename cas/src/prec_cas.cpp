@@ -12664,7 +12664,26 @@ static exact_expr integration_symbolic_linear_primitive(
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
-    exact_expr normalized = integration_normalize_e_powers(*this, expression);
+    exact_expr normalized = expression;
+    std::vector<exact_expr> logarithm_nodes;
+    std::unordered_set<uint32_t> logarithm_seen;
+    auto collect_logarithm_bases = [&](auto &&self, const exact_expr &part) -> void{
+        if(!logarithm_seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::logarithm_base_2 ||
+           part.operation() == exact_opcode::logarithm_base_10)
+            logarithm_nodes.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect_logarithm_bases(collect_logarithm_bases, normalized);
+    for(const exact_expr &logarithm : logarithm_nodes){
+        exact_expr base = logarithm.operand(0);
+        exact_expr scale = logarithm.operation() == exact_opcode::logarithm_base_2
+            ? natural_logarithm(integer(2)) : natural_logarithm(integer(10));
+        normalized = substitute(normalized, logarithm,
+            natural_logarithm(base) / scale);
+    }
+    normalized = integration_normalize_e_powers(*this, normalized);
     risch_result result = integrate_elementary_impl(normalized, variable, options);
     if(!result.elementary_part.valid() || result.elementary_part == integer(0))
         return result;

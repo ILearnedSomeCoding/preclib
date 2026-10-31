@@ -71,6 +71,24 @@ int main(){
     assert(two_to_x_result.status == risch_status::elementary);
     assert(context.simplify(context.differentiate(
         two_to_x_result.elementary_part, x) - two_to_x) == context.integer(0));
+    exact_expr log2_integrand = context.logarithm_base_2(x) / x;
+    risch_result log2_result = context.integrate_elementary(log2_integrand, x);
+    assert(log2_result.status == risch_status::elementary);
+    assert(log2_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(log2_result.elementary_part, x) -
+            context.natural_logarithm(x) /
+                (x * context.natural_logarithm(context.integer(2))),
+        100000)) == context.integer(0));
+    exact_expr log10_integrand = context.logarithm_base_10(x) / x;
+    risch_result log10_result = context.integrate_elementary(log10_integrand, x);
+    assert(log10_result.status == risch_status::elementary);
+    assert(log10_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(log10_result.elementary_part, x) -
+            context.natural_logarithm(x) /
+                (x * context.natural_logarithm(context.integer(10))),
+        100000)) == context.integer(0));
     exact_expr two_to_x_legacy = context.integrate(two_to_x, x);
     assert(two_to_x_legacy.operation() != exact_opcode::integral);
     assert(context.simplify(context.differentiate(two_to_x_legacy, x) -
