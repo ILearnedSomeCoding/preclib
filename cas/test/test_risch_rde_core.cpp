@@ -296,6 +296,42 @@ int main(){
         return 1;
     }
     exact_expr affine_log = a * log_x + b;
+    exact_expr log_abs_square = context.natural_logarithm(
+        context.absolute_value(context.power(affine_log,
+                                             context.integer(2))));
+    exact_expr log_abs_square_expected = context.integer(2) *
+        context.natural_logarithm(context.absolute_value(affine_log));
+    if(context.simplify(log_abs_square - log_abs_square_expected) !=
+       context.integer(0)){
+        std::cerr << "absolute logarithm power normalization failed: "
+                  << context.simplify(log_abs_square).to_string() << '\n';
+        return 1;
+    }
+    exact_expr log_abs_cube = context.natural_logarithm(
+        context.absolute_value(context.power(affine_log,
+                                             context.integer(3))));
+    exact_expr log_abs_cube_expected = context.integer(3) *
+        context.natural_logarithm(context.absolute_value(affine_log));
+    if(context.simplify(log_abs_cube - log_abs_cube_expected) !=
+       context.integer(0)){
+        std::cerr << "absolute logarithm cubic-power normalization failed: "
+                  << context.simplify(log_abs_cube).to_string() << '\n';
+        return 1;
+    }
+    exact_expr log_abs_reciprocal_square = context.natural_logarithm(
+        context.absolute_value(context.power(affine_log,
+                                             context.integer(-2))));
+    exact_expr log_abs_reciprocal_square_expected = context.integer(-2) *
+        context.natural_logarithm(context.absolute_value(affine_log));
+    if(context.simplify(log_abs_reciprocal_square -
+                        log_abs_reciprocal_square_expected) !=
+       context.integer(0)){
+        std::cerr << "absolute logarithm reciprocal-power normalization "
+                     "failed: "
+                  << context.simplify(log_abs_reciprocal_square).to_string()
+                  << '\n';
+        return 1;
+    }
     exact_expr affine_log_square_pole = context.integer(1) /
         (x * context.power(affine_log, context.integer(2)));
     risch_result affine_log_square_result = context.integrate_elementary(

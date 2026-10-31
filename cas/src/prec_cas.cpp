@@ -24211,6 +24211,57 @@ exact_expr exact_context::simplify(const exact_expr &expression,
     if(promoted != expression.root_) return exact_expr(storage_, promoted);
     exact_factor_simplifier factorer(*storage_);
     exact_expr factored(storage_, factorer.simplify(expression.root_));
+    // On the real domain, ln(abs(q^n)) = n*ln(abs(q)) for a nonzero
+    // integer n.  Keeping this rewrite local and explicit avoids relying on
+    // a complex logarithm power rule while making logarithmic RDE certificates
+    // reproducible after differentiation.
+    {
+        std::unordered_map<uint32_t, uint32_t> memo;
+        auto rewrite_log_abs_power = [&](auto &&self, uint32_t id) -> uint32_t{
+            auto cached = memo.find(id);
+            if(cached != memo.end()) return cached->second;
+            exact_node source = storage_->node(id);
+            const uint32_t *args = storage_->children(source);
+            std::vector<uint32_t> children;
+            children.reserve(source.operand_count);
+            for(size_t i = 0; i < source.operand_count; ++i)
+                children.push_back(self(self, args[i]));
+            uint32_t result = id;
+            if(source.operand_count)
+                result = storage_->intern_compound(source.op, children);
+            if(source.op == exact_opcode::natural_logarithm &&
+               children.size() == 1){
+                exact_node absolute = storage_->node(children[0]);
+                if(absolute.op == exact_opcode::absolute_value &&
+                   storage_->node(storage_->children(absolute)[0]).op ==
+                       exact_opcode::power){
+                    uint32_t power_id = storage_->children(absolute)[0];
+                    exact_node power = storage_->node(power_id);
+                    const uint32_t *power_args = storage_->children(power);
+                    int64_t exponent = 0;
+                    if(power.operand_count == 2 &&
+                       storage_->node(power_args[1]).op == exact_opcode::value){
+                        if(integer_i64(storage_->values[storage_->node(
+                               power_args[1]).payload], exponent) &&
+                           exponent != 0){
+                            uint32_t base_abs = storage_->intern_compound(
+                                exact_opcode::absolute_value, {power_args[0]});
+                            uint32_t logarithm = storage_->intern_compound(
+                                exact_opcode::natural_logarithm, {base_abs});
+                            result = storage_->make_multiply({
+                                storage_->intern_value(numeric_value(exponent)),
+                                logarithm});
+                        }
+                    }
+                }
+            }
+            memo.emplace(id, result);
+            return result;
+        };
+        uint32_t rewritten = rewrite_log_abs_power(rewrite_log_abs_power,
+                                                   factored.root_);
+        factored = exact_expr(storage_, rewritten);
+    }
     std::unordered_set<uint32_t> visited;
     auto has_denominator = [&](auto &&self, uint32_t id) -> bool{
         if(!visited.insert(id).second) return false;
