@@ -17427,7 +17427,8 @@ risch_result exact_context::integrate_elementary_impl(
                     factor.operand(0), variable, n, d, degree_budget,
                     degree_budget) && integration_normalize_rational(n, d) &&
                     d.size() == 1 && n.size() > 1 && n.size() <= 2;
-                if(parsed && n[1].is_rational() && !n[1].is_zero()){
+                if(parsed && (n[1].is_rational() || n[1].is_integer()) &&
+                   !n[1].is_zero()){
                     slope_value = n[1];
                     intercept = value(n[0]);
                 }else{
@@ -17441,15 +17442,19 @@ risch_result exact_context::integrate_elementary_impl(
                             degree_budget) || affine.size() != 2 ||
                        !affine[1].is_value() ||
                        affine[1].value().is_approximate() ||
-                       !affine[1].value().is_rational() ||
+                       !(affine[1].value().is_rational() ||
+                         affine[1].value().is_integer()) ||
                        affine[1].value().is_zero() ||
                        integration_depends_on(affine[0], variable))
                         return exact_expr();
                     slope_value = affine[1].value();
                     intercept = simplify(affine[0]);
                 }
-                if(!slope_value.is_rational() || slope_value.is_zero() ||
-                   !intercept.valid()) return exact_expr();
+                if(!(slope_value.is_rational() || slope_value.is_integer()) ||
+                   slope_value.is_zero() ||
+                   !intercept.valid()){
+                    return exact_expr();
+                }
                 precq_t slope = slope_value.rational();
                 slopes.push_back(slope);
                 intercepts.push_back(std::move(intercept));

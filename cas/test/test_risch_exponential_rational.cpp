@@ -46,6 +46,19 @@ int main(){
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
     }
+    // Direct regression for the common logistic primitive.  Keep this at
+    // the strict entry point: it must be certified by the exponential
+    // Laurent reduction rather than supplied by the legacy integrator.
+    exact_expr logistic_integrand = context.integer(1) /
+        (context.integer(1) + t);
+    risch_result logistic_result = context.integrate_elementary(
+        logistic_integrand, x, options);
+    assert(logistic_result.status == risch_status::elementary);
+    assert(logistic_result.remainder == context.integer(0));
+    exact_expr logistic_expected = x - context.natural_logarithm(
+        context.integer(1) + t);
+    assert(context.simplify(logistic_result.elementary_part -
+        logistic_expected) == context.integer(0));
     // The two rational slopes have gcd 1/4.  No individual exponential can
     // serve as an integral Laurent base, so this exercises the shared-base
     // rational-slope normalization.
