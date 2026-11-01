@@ -17722,6 +17722,14 @@ risch_result exact_context::integrate_elementary_impl(
                         terms.emplace(0, part);
                         return true;
                     }
+                    // Exact constants such as an assumed-positive symbol are
+                    // valid Laurent coefficients even though they are not
+                    // rational functions of x.
+                    if(integration_exact_expression_tree(part) &&
+                       !integration_depends_on(part, variable)){
+                        terms.emplace(0, part);
+                        return true;
+                    }
                 }
                 if(part.operation() == exact_opcode::power &&
                    part.operand(0) == generator){
@@ -17773,6 +17781,36 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr elementary_part = integer(0);
             exact_expr nonelementary_part = integer(0);
             for(auto &term : terms){
+                // A nonzero Laurent power of a rational exponential with a
+                // finite pole has no elementary primitive in the
+                // single-generator field when its coefficient is a known
+                // nonzero exact constant.  The local equation is
+                // Y' + k*r'*Y = c, so the same pole-order argument applies
+                // for every nonzero integer k.
+                // Keep this certificate before rational-coefficient parsing
+                // so assumed-positive symbolic scalars are preserved.
+                bool exact_scalar = term.first != 0 &&
+                    inner_denominator.size() > 1 &&
+                    integration_exact_expression_tree(term.second) &&
+                    !integration_depends_on(term.second, variable) &&
+                    !(term.second.is_value() &&
+                      term.second.value().is_zero());
+                if(exact_scalar){
+                    bool known_nonzero =
+                        integration_strictly_positive_constant(term.second) ||
+                        integration_strictly_positive_constant(-term.second) ||
+                        (term.second.operation() == exact_opcode::symbol &&
+                         storage_->has_assumption(term.second.root_,
+                             exact_storage::assumed_positive));
+                    if(!known_nonzero)
+                        result.conditions.push_back(term.second);
+                    has_nonelementary = true;
+                    exact_expr exponential_power = term.first == 1
+                        ? generator : power(generator, integer(term.first));
+                    nonelementary_part = simplify(nonelementary_part +
+                                                  term.second * exponential_power);
+                    continue;
+                }
                 integration_poly p, q;
                 if(!integration_parse_rational(term.second, variable, p, q) ||
                    !integration_normalize_rational(p, q)){

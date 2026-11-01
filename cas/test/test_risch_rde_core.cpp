@@ -649,6 +649,107 @@ int main(){
         return 1;
     }
 
+    exact_expr rational_exponential = context.exponential(
+        context.integer(1) /
+        context.power(x + context.integer(1), context.integer(2)));
+    risch_result rational_exponential_result = context.integrate_elementary(
+        rational_exponential, x);
+    if(rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       rational_exponential_result.remainder != rational_exponential){
+        std::cerr << "expected exp(1/(x+1)^2) to have a finite-pole "
+                     "non-elementary certificate, got: "
+                  << rational_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr mixed_rational_exponential = context.exponential(
+        x + context.integer(1) /
+        context.power(x + context.integer(1), context.integer(2)));
+    risch_result mixed_rational_exponential_result =
+        context.integrate_elementary(mixed_rational_exponential, x);
+    if(mixed_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       mixed_rational_exponential_result.remainder !=
+           mixed_rational_exponential){
+        std::cerr << "finite-pole certificate failed with a polynomial "
+                     "part in the rational exponent: "
+                  << mixed_rational_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr scaled_rational_exponential = context.integer(2) *
+        rational_exponential;
+    risch_result scaled_rational_exponential_result =
+        context.integrate_elementary(scaled_rational_exponential, x);
+    if(scaled_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       scaled_rational_exponential_result.remainder !=
+           scaled_rational_exponential){
+        std::cerr << "finite-pole certificate failed for a nonzero rational "
+                     "scalar coefficient: "
+                  << scaled_rational_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr scalar = context.symbol("scalar");
+    context.assume(scalar, "positive");
+    exact_expr symbolic_scaled_rational_exponential = scalar *
+        rational_exponential;
+    risch_result symbolic_scaled_rational_exponential_result =
+        context.integrate_elementary(symbolic_scaled_rational_exponential, x);
+    if(symbolic_scaled_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       symbolic_scaled_rational_exponential_result.remainder !=
+           symbolic_scaled_rational_exponential){
+        std::cerr << "finite-pole certificate failed for a symbol proven "
+                     "nonzero: "
+                  << symbolic_scaled_rational_exponential_result.diagnostic
+                  << '\n';
+        return 1;
+    }
+    exact_expr unconstrained_scalar = context.symbol("unconstrained_scalar");
+    exact_expr conditional_scaled_rational_exponential = unconstrained_scalar *
+        rational_exponential;
+    risch_result conditional_scaled_rational_exponential_result =
+        context.integrate_elementary(conditional_scaled_rational_exponential,
+                                     x);
+    if(conditional_scaled_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       conditional_scaled_rational_exponential_result.remainder !=
+           conditional_scaled_rational_exponential ||
+       conditional_scaled_rational_exponential_result.conditions.size() != 1 ||
+       conditional_scaled_rational_exponential_result.conditions[0] !=
+           unconstrained_scalar){
+        std::cerr << "finite-pole certificate failed to retain the scalar "
+                     "nonzero condition: "
+                  << conditional_scaled_rational_exponential_result.diagnostic
+                  << '\n';
+        return 1;
+    }
+    exact_expr squared_rational_exponential = context.power(
+        rational_exponential, context.integer(2));
+    risch_result squared_rational_exponential_result =
+        context.integrate_elementary(squared_rational_exponential, x);
+    if(squared_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       squared_rational_exponential_result.remainder !=
+           squared_rational_exponential){
+        std::cerr << "finite-pole certificate failed for an exponential "
+                     "square: "
+                  << squared_rational_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr reciprocal_rational_exponential = context.power(
+        rational_exponential, context.integer(-1));
+    risch_result reciprocal_rational_exponential_result =
+        context.integrate_elementary(reciprocal_rational_exponential, x);
+    if(reciprocal_rational_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       reciprocal_rational_exponential_result.remainder !=
+           reciprocal_rational_exponential){
+        std::cerr << "finite-pole certificate failed for an exponential "
+                     "reciprocal: "
+                  << reciprocal_rational_exponential_result.diagnostic << '\n';
+        return 1;
+    }
     risch_options constrained;
     constrained.maximum_nodes = 64;
     constrained.maximum_degree = 64;
