@@ -803,6 +803,40 @@ int main(){
                   << symbolic_slope_result.diagnostic << '\n';
         return 1;
     }
+    exact_expr symbolic_slope_polynomial = x * x + context.integer(2) * x +
+        context.integer(3);
+    exact_expr symbolic_slope_polynomial_input = symbolic_slope_polynomial *
+        symbolic_slope_exponential;
+    risch_result symbolic_slope_polynomial_result = context.integrate_elementary(
+        symbolic_slope_polynomial_input, x);
+    exact_expr symbolic_slope_polynomial_error = context.simplify(context.expand(
+        context.differentiate(symbolic_slope_polynomial_result.elementary_part,
+                              x) - symbolic_slope_polynomial_input, 100000));
+    if(symbolic_slope_polynomial_result.status != risch_status::elementary ||
+       symbolic_slope_polynomial_result.remainder != context.integer(0) ||
+       symbolic_slope_polynomial_error != context.integer(0) ||
+       symbolic_slope_polynomial_result.conditions.size() != 1 ||
+       symbolic_slope_polynomial_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic affine exponential polynomial RDE failed: "
+                  << symbolic_slope_polynomial_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_slope_inverse_input = x /
+        symbolic_slope_exponential;
+    risch_result symbolic_slope_inverse_result = context.integrate_elementary(
+        symbolic_slope_inverse_input, x);
+    exact_expr symbolic_slope_inverse_error = context.simplify(context.expand(
+        context.differentiate(symbolic_slope_inverse_result.elementary_part,
+                              x) - symbolic_slope_inverse_input, 100000));
+    if(symbolic_slope_inverse_result.status != risch_status::elementary ||
+       symbolic_slope_inverse_result.remainder != context.integer(0) ||
+       symbolic_slope_inverse_error != context.integer(0) ||
+       symbolic_slope_inverse_result.conditions.size() != 1 ||
+       symbolic_slope_inverse_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic affine inverse exponential RDE failed: "
+                  << symbolic_slope_inverse_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr symbolic_slope_laurent = symbolic_slope_exponential +
         context.power(symbolic_slope_exponential, context.integer(-1));
     risch_result symbolic_slope_laurent_result = context.integrate_elementary(
@@ -823,6 +857,53 @@ int main(){
                   << symbolic_slope_laurent_result.remainder.to_string()
                   << " conditions="
                   << symbolic_slope_laurent_result.conditions.size() << '\n';
+        return 1;
+    }
+    exact_expr same_slope_shifted = context.exponential(symbolic_slope * x +
+        context.integer(1)) + context.integer(2) *
+        context.exponential(symbolic_slope * x + context.integer(2));
+    risch_result same_slope_shifted_result = context.integrate_elementary(
+        same_slope_shifted, x);
+    exact_expr same_slope_shifted_error = context.simplify(context.expand(
+        context.differentiate(same_slope_shifted_result.elementary_part, x) -
+        same_slope_shifted, 100000));
+    if(same_slope_shifted_result.status != risch_status::elementary ||
+       same_slope_shifted_result.remainder != context.integer(0) ||
+       same_slope_shifted_error != context.integer(0) ||
+       same_slope_shifted_result.conditions.size() != 1 ||
+       same_slope_shifted_result.conditions[0] != symbolic_slope){
+        std::cerr << "same-symbolic-slope exponential reduction failed: "
+                  << same_slope_shifted_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr integer_multiple_slopes = context.exponential(symbolic_slope * x) +
+        context.integer(2) * context.exponential(
+            context.integer(2) * symbolic_slope * x);
+    risch_result integer_multiple_slopes_result = context.integrate_elementary(
+        integer_multiple_slopes, x);
+    exact_expr integer_multiple_slopes_error = context.simplify(context.expand(
+        context.differentiate(integer_multiple_slopes_result.elementary_part, x) -
+        integer_multiple_slopes, 100000));
+    integer_multiple_slopes_error = context.simplify(context.expand(
+        context.substitute(integer_multiple_slopes_error,
+            context.exponential(context.integer(2) * symbolic_slope * x),
+            context.power(context.exponential(symbolic_slope * x),
+                          context.integer(2))), 100000));
+    if(integer_multiple_slopes_result.status != risch_status::elementary ||
+       integer_multiple_slopes_result.remainder != context.integer(0) ||
+       integer_multiple_slopes_error != context.integer(0) ||
+       integer_multiple_slopes_result.conditions.size() != 1 ||
+       integer_multiple_slopes_result.conditions[0] != symbolic_slope){
+        std::cerr << "integer-multiple symbolic slopes were not reduced: "
+                  << integer_multiple_slopes_result.diagnostic
+                  << " status=" << (int)integer_multiple_slopes_result.status
+                  << " primitive="
+                  << integer_multiple_slopes_result.elementary_part.to_string()
+                  << " remainder="
+                  << integer_multiple_slopes_result.remainder.to_string()
+                  << " error=" << integer_multiple_slopes_error.to_string()
+                  << " conditions="
+                  << integer_multiple_slopes_result.conditions.size() << '\n';
         return 1;
     }
     exact_expr conditional_scaled_rational_exponential = unconstrained_scalar *

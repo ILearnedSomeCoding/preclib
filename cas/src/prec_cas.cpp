@@ -17516,6 +17516,68 @@ risch_result exact_context::integrate_elementary_impl(
             };
             collect_affine(collect_affine, expression);
             if(exponentials.empty()) return exact_expr();
+            // Several affine exponentials with the same exact slope share
+            // one transcendental generator.  Normalize their intercepts into
+            // constant coefficients, then reuse the single-generator RDE
+            // path below.  Do not infer ratios between unrelated symbolic
+            // slopes here; that requires an integer-relation proof.
+            if(exponentials.size() > 1){
+                integration_expr_poly first_affine;
+                if(integration_parse_expr_poly(*this,
+                        exponentials[0].operand(0), variable, first_affine,
+                        degree_budget) && first_affine.size() == 2){
+                    exact_expr common_slope = simplify(first_affine[1]);
+                    bool same_slope = integration_exact_expression_tree(
+                        common_slope) &&
+                        !integration_depends_on(common_slope, variable) &&
+                        common_slope != integer(0);
+                    if(same_slope){
+                        exact_expr common_generator = exponential(
+                            common_slope * variable);
+                        exact_expr normalized = expression;
+                        const int64_t multiplier_limit = (int64_t)
+                            std::min<size_t>(degree_budget, 128);
+                        for(const exact_expr &factor : exponentials){
+                            integration_expr_poly affine;
+                            if(!integration_parse_expr_poly(*this,
+                                    factor.operand(0), variable, affine,
+                                    degree_budget) || affine.size() != 2){
+                                same_slope = false;
+                                break;
+                            }
+                            int64_t multiplier = 0;
+                            bool found_multiplier = false;
+                            for(int64_t candidate = -multiplier_limit;
+                                candidate <= multiplier_limit; ++candidate){
+                                if(candidate == 0) continue;
+                                if(simplify(affine[1] - common_slope *
+                                             integer(candidate)) == integer(0)){
+                                    multiplier = candidate;
+                                    found_multiplier = true;
+                                    break;
+                                }
+                            }
+                            if(!found_multiplier){
+                                same_slope = false;
+                                break;
+                            }
+                            normalized = substitute(normalized, factor,
+                                exponential(affine[0]) *
+                                (multiplier == 1 ? common_generator :
+                                 power(common_generator, integer(multiplier))));
+                        }
+                        if(same_slope && normalized != expression){
+                            risch_result reduced = integrate_elementary(
+                                normalized, variable, options);
+                            if(reduced.status == risch_status::elementary &&
+                               reduced.remainder == integer(0)){
+                                result.conditions = std::move(reduced.conditions);
+                                return reduced.elementary_part;
+                            }
+                        }
+                    }
+                }
+            }
             // A single affine exponential with an exact (possibly
             // symbolic) slope is already a valid Laurent generator.  Solve
             // each monomial directly instead of forcing the slope through
@@ -17530,6 +17592,108 @@ risch_result exact_context::integrate_elementary_impl(
                     if(integration_exact_expression_tree(slope) &&
                        !integration_depends_on(slope, variable) &&
                        slope != integer(0)){
+                        // For P(x)*t, t=exp(a*x+b), solve the polynomial
+                        // RDE Q' + a*Q = P.  This is the affine
+                        // hyperexponential case with an exact constant
+                        // slope, including symbolic slopes.
+                        exact_expr cofactor;
+                        int64_t generator_exponent = 0;
+                        if(expression == generator){
+                            cofactor = integer(1);
+                            generator_exponent = 1;
+                        }else if(expression.operation() == exact_opcode::power &&
+                                 expression.operand(0) == generator){
+                            if(!integration_signed_exponent(expression.operand(1),
+                                                             generator_exponent) ||
+                               generator_exponent == 0 ||
+                               generator_exponent < -(int64_t)degree_budget ||
+                               generator_exponent > (int64_t)degree_budget)
+                                generator_exponent = 0;
+                            cofactor = integer(1);
+                        }else if(expression.operation() ==
+                                 exact_opcode::multiply){
+                            std::vector<exact_expr> factors;
+                            for(size_t i = 0; i < expression.operand_count(); ++i){
+                                const exact_expr &factor = expression.operand(i);
+                                if(factor == generator){
+                                    if(generator_exponent ==
+                                       INT64_MAX){
+                                        generator_exponent = 0;
+                                        break;
+                                    }
+                                    ++generator_exponent;
+                                }else if(factor.operation() == exact_opcode::power &&
+                                         factor.operand(0) == generator){
+                                    int64_t exponent = 0;
+                                    if(!integration_signed_exponent(
+                                           factor.operand(1), exponent) ||
+                                       (exponent > 0 && generator_exponent >
+                                            INT64_MAX - exponent) ||
+                                       (exponent < 0 && generator_exponent <
+                                            INT64_MIN - exponent)){
+                                        generator_exponent = 0;
+                                        break;
+                                    }
+                                    generator_exponent += exponent;
+                                }else factors.push_back(factor);
+                            }
+                            if(generator_exponent != 0)
+                                cofactor = factors.empty() ? integer(1) :
+                                    factors.size() == 1 ? factors[0] :
+                                    multiply(factors);
+                        }
+                        if(generator_exponent != 0){
+                            integration_expr_poly rhs;
+                            if(integration_parse_expr_poly(*this, cofactor,
+                                    variable, rhs, degree_budget) &&
+                               rhs.size() <= degree_budget + 1){
+                                integration_expr_poly solution(rhs.size(),
+                                                               integer(0));
+                                bool solved = true;
+                                for(size_t degree = rhs.size(); degree-- > 0;){
+                                    exact_expr coefficient = rhs[degree];
+                                    if(degree + 1 < solution.size())
+                                        coefficient = coefficient -
+                                            integer(degree + 1) *
+                                            solution[degree + 1];
+                                    solution[degree] = simplify(
+                                        coefficient /
+                                        (slope * integer(generator_exponent)));
+                                    if(solution[degree].reachable_node_count() >
+                                       options.maximum_nodes){
+                                        solved = false;
+                                        break;
+                                    }
+                                }
+                                if(solved){
+                                    exact_expr candidate =
+                                        integration_expr_poly_expr(*this,
+                                            solution, variable) *
+                                        (generator_exponent == 1 ? generator :
+                                         power(generator,
+                                              integer(generator_exponent)));
+                                    exact_expr error = simplify(expand(
+                                        differentiate(candidate, variable) -
+                                        expression, verification_expansion_budget));
+                                    if(error == integer(0)){
+                                        result.conditions.clear();
+                                        bool known_nonzero =
+                                            integration_strictly_positive_constant(
+                                                slope) ||
+                                            integration_strictly_positive_constant(
+                                                -slope) ||
+                                            (slope.operation() ==
+                                                 exact_opcode::symbol &&
+                                             storage_->has_assumption(
+                                                 slope.root_,
+                                                 exact_storage::assumed_positive));
+                                        if(!known_nonzero)
+                                            result.conditions.push_back(slope);
+                                        return candidate;
+                                    }
+                                }
+                            }
+                        }
                         using exact_laurent_terms =
                             std::map<int64_t, exact_expr>;
                         exact_laurent_terms terms;
