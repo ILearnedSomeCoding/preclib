@@ -17516,49 +17516,96 @@ risch_result exact_context::integrate_elementary_impl(
             };
             collect_affine(collect_affine, expression);
             if(exponentials.empty()) return exact_expr();
-            // Several affine exponentials with the same exact slope share
-            // one transcendental generator.  Normalize their intercepts into
-            // constant coefficients, then reuse the single-generator RDE
-            // path below.  Do not infer ratios between unrelated symbolic
-            // slopes here; that requires an integer-relation proof.
+            // Affine slopes with exact rational ratios share a generator.
+            // Their rational gcd gives the smallest common slope, while
+            // every resulting integer exponent is checked exactly below.
             if(exponentials.size() > 1){
                 integration_expr_poly first_affine;
                 if(integration_parse_expr_poly(*this,
                         exponentials[0].operand(0), variable, first_affine,
                         degree_budget) && first_affine.size() == 2){
-                    exact_expr common_slope = simplify(first_affine[1]);
-                    bool same_slope = integration_exact_expression_tree(
-                        common_slope) &&
-                        !integration_depends_on(common_slope, variable) &&
-                        common_slope != integer(0);
-                    if(same_slope){
+                    exact_expr base_slope = simplify(first_affine[1]);
+                    bool commensurate_slopes =
+                        integration_exact_expression_tree(base_slope) &&
+                        !integration_depends_on(base_slope, variable) &&
+                        base_slope != integer(0);
+                    std::vector<precq_t> slope_ratios;
+                    precn_t ratio_numerator_gcd;
+                    precn_t ratio_denominator_lcm(1);
+                    for(const exact_expr &factor : exponentials){
+                        integration_expr_poly affine;
+                        if(!integration_parse_expr_poly(*this,
+                                factor.operand(0), variable, affine,
+                                degree_budget) || affine.size() != 2){
+                            commensurate_slopes = false;
+                            break;
+                        }
+                        exact_expr ratio = simplify(affine[1] / base_slope);
+                        if(!ratio.is_value() || ratio.value().is_approximate() ||
+                           !(ratio.value().is_rational() ||
+                             ratio.value().is_integer())){
+                            commensurate_slopes = false;
+                            break;
+                        }
+                        precq_t rational_ratio = ratio.value().rational();
+                        if(rational_ratio.is_zero()){
+                            commensurate_slopes = false;
+                            break;
+                        }
+                        slope_ratios.push_back(rational_ratio);
+                        precq_t magnitude = abs(rational_ratio);
+                        if(ratio_numerator_gcd.rsiz == 0)
+                            ratio_numerator_gcd = magnitude.numerator();
+                        else
+                            ratio_numerator_gcd = ::gcd(ratio_numerator_gcd,
+                                                       magnitude.numerator());
+                        precn_t denominator_gcd = ::gcd(
+                            ratio_denominator_lcm, magnitude.denominator());
+                        ratio_denominator_lcm = precn_divexact(
+                            ratio_denominator_lcm, denominator_gcd) *
+                            magnitude.denominator();
+                    }
+                    if(commensurate_slopes &&
+                       ratio_numerator_gcd.rsiz != 0){
+                        precq_t ratio_gcd(ratio_numerator_gcd,
+                                          ratio_denominator_lcm);
+                        numeric_value ratio_gcd_value(ratio_gcd);
+                        exact_expr common_slope = simplify(base_slope *
+                            value(ratio_gcd_value));
                         exact_expr common_generator = exponential(
                             common_slope * variable);
                         exact_expr normalized = expression;
-                        const int64_t multiplier_limit = (int64_t)
-                            std::min<size_t>(degree_budget, 128);
-                        for(const exact_expr &factor : exponentials){
+                        for(size_t i = 0; i < exponentials.size(); ++i){
+                            const exact_expr &factor = exponentials[i];
                             integration_expr_poly affine;
                             if(!integration_parse_expr_poly(*this,
                                     factor.operand(0), variable, affine,
                                     degree_budget) || affine.size() != 2){
-                                same_slope = false;
+                                commensurate_slopes = false;
+                                break;
+                            }
+                            precq_t multiplier_ratio = slope_ratios[i] /
+                                ratio_gcd;
+                            numeric_value multiplier_value(multiplier_ratio);
+                            if(multiplier_value.is_approximate() ||
+                               !multiplier_value.is_integer()){
+                                commensurate_slopes = false;
                                 break;
                             }
                             int64_t multiplier = 0;
-                            bool found_multiplier = false;
-                            for(int64_t candidate = -multiplier_limit;
-                                candidate <= multiplier_limit; ++candidate){
-                                if(candidate == 0) continue;
-                                if(simplify(affine[1] - common_slope *
-                                             integer(candidate)) == integer(0)){
-                                    multiplier = candidate;
-                                    found_multiplier = true;
-                                    break;
-                                }
+                            uint64_t multiplier_magnitude = 0;
+                            if(!integer_i64(multiplier_value, multiplier) ||
+                               multiplier == 0){
+                                commensurate_slopes = false;
+                                break;
                             }
-                            if(!found_multiplier){
-                                same_slope = false;
+                            multiplier_magnitude = multiplier < 0
+                                ? (uint64_t)(-(multiplier + 1)) + 1
+                                : (uint64_t)multiplier;
+                            if(multiplier_magnitude > degree_budget ||
+                               simplify(affine[1] - common_slope *
+                                   integer(multiplier)) != integer(0)){
+                                commensurate_slopes = false;
                                 break;
                             }
                             normalized = substitute(normalized, factor,
@@ -17566,7 +17613,7 @@ risch_result exact_context::integrate_elementary_impl(
                                 (multiplier == 1 ? common_generator :
                                  power(common_generator, integer(multiplier))));
                         }
-                        if(same_slope && normalized != expression){
+                        if(commensurate_slopes && normalized != expression){
                             risch_result reduced = integrate_elementary(
                                 normalized, variable, options);
                             if(reduced.status == risch_status::elementary &&

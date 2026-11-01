@@ -906,6 +906,53 @@ int main(){
                   << integer_multiple_slopes_result.conditions.size() << '\n';
         return 1;
     }
+    exact_expr rational_multiple_slopes = context.exponential(
+        symbolic_slope * x) + context.integer(2) * context.exponential(
+            context.integer(3) * symbolic_slope * x / context.integer(2));
+    risch_result rational_multiple_slopes_result = context.integrate_elementary(
+        rational_multiple_slopes, x);
+    exact_expr rational_common_generator = context.exponential(
+        symbolic_slope * x / context.integer(2));
+    exact_expr rational_multiple_slopes_error = context.simplify(context.expand(
+        context.differentiate(rational_multiple_slopes_result.elementary_part,
+                              x) - rational_multiple_slopes, 100000));
+    rational_multiple_slopes_error = context.simplify(context.expand(
+        context.substitute(rational_multiple_slopes_error,
+            context.exponential(context.integer(3) * symbolic_slope * x /
+                                context.integer(2)),
+            context.power(rational_common_generator, context.integer(3))),
+        100000));
+    rational_multiple_slopes_error = context.simplify(context.expand(
+        context.substitute(rational_multiple_slopes_error,
+            context.exponential(symbolic_slope * x),
+            context.power(rational_common_generator, context.integer(2))),
+        100000));
+    bool rational_slope_conditions_valid =
+        !rational_multiple_slopes_result.conditions.empty();
+    for(const exact_expr &condition :
+        rational_multiple_slopes_result.conditions){
+        exact_expr condition_error = context.simplify(context.expand(
+            context.integer(2) * condition - symbolic_slope, 100000));
+        rational_slope_conditions_valid = rational_slope_conditions_valid &&
+            (condition == symbolic_slope ||
+             condition_error == context.integer(0));
+    }
+    if(rational_multiple_slopes_result.status != risch_status::elementary ||
+       rational_multiple_slopes_result.remainder != context.integer(0) ||
+       rational_multiple_slopes_error != context.integer(0) ||
+       !rational_slope_conditions_valid){
+        std::cerr << "rational-multiple symbolic slopes were not reduced: "
+                  << rational_multiple_slopes_result.diagnostic
+                  << " primitive="
+                  << rational_multiple_slopes_result.elementary_part.to_string()
+                  << " error=" << rational_multiple_slopes_error.to_string()
+                  << " conditions=";
+        for(const exact_expr &condition :
+            rational_multiple_slopes_result.conditions)
+            std::cerr << condition.to_string() << ' ';
+        std::cerr << '\n';
+        return 1;
+    }
     exact_expr conditional_scaled_rational_exponential = unconstrained_scalar *
         rational_exponential;
     risch_result conditional_scaled_rational_exponential_result =
@@ -921,6 +968,52 @@ int main(){
         std::cerr << "finite-pole certificate failed to retain the scalar "
                      "nonzero condition: "
                   << conditional_scaled_rational_exponential_result.diagnostic
+                  << '\n';
+        return 1;
+    }
+    exact_expr signed_rational_slopes = context.exponential(
+        symbolic_slope * x) + context.exponential(
+            -symbolic_slope * x / context.integer(3));
+    risch_result signed_rational_slopes_result = context.integrate_elementary(
+        signed_rational_slopes, x);
+    exact_expr signed_common_generator = context.exponential(
+        symbolic_slope * x / context.integer(3));
+    exact_expr signed_rational_slopes_error = context.simplify(context.expand(
+        context.differentiate(signed_rational_slopes_result.elementary_part,
+                              x) - signed_rational_slopes, 100000));
+    signed_rational_slopes_error = context.simplify(context.expand(
+        context.substitute(signed_rational_slopes_error,
+            context.exponential(-symbolic_slope * x / context.integer(3)),
+            context.power(signed_common_generator, context.integer(-1))),
+        100000));
+    signed_rational_slopes_error = context.simplify(context.expand(
+        context.substitute(signed_rational_slopes_error,
+            context.exponential(symbolic_slope * x),
+            context.power(signed_common_generator, context.integer(3))),
+        100000));
+    if(signed_rational_slopes_result.status != risch_status::elementary ||
+       signed_rational_slopes_result.remainder != context.integer(0) ||
+       signed_rational_slopes_error != context.integer(0) ||
+       signed_rational_slopes_result.conditions.empty()){
+        std::cerr << "signed rational-multiple slopes were not reduced: "
+                  << signed_rational_slopes_result.diagnostic
+                  << " primitive="
+                  << signed_rational_slopes_result.elementary_part.to_string()
+                  << " error=" << signed_rational_slopes_error.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr irrational_slope_ratio = context.square_root(context.integer(2)) *
+        symbolic_slope;
+    exact_expr incommensurate_slope_input = context.integer(1) /
+        (context.exponential(symbolic_slope * x) +
+         context.exponential(irrational_slope_ratio * x));
+    risch_result incommensurate_slope_result = context.integrate_elementary(
+        incommensurate_slope_input, x);
+    if(incommensurate_slope_result.status != risch_status::unsupported){
+        std::cerr << "an unproved irrational slope relation was accepted: "
+                  << incommensurate_slope_result.elementary_part.to_string()
+                  << " status=" << (int)incommensurate_slope_result.status
                   << '\n';
         return 1;
     }
