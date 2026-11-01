@@ -17516,6 +17516,121 @@ risch_result exact_context::integrate_elementary_impl(
             };
             collect_affine(collect_affine, expression);
             if(exponentials.empty()) return exact_expr();
+            // A single affine exponential with an exact (possibly
+            // symbolic) slope is already a valid Laurent generator.  Solve
+            // each monomial directly instead of forcing the slope through
+            // the numeric Q[x] parser used by the multi-generator path.
+            if(exponentials.size() == 1){
+                exact_expr generator = exponentials[0];
+                integration_expr_poly affine;
+                if(integration_parse_expr_poly(*this,
+                        generator.operand(0), variable, affine,
+                        degree_budget) && affine.size() == 2){
+                    exact_expr slope = simplify(affine[1]);
+                    if(integration_exact_expression_tree(slope) &&
+                       !integration_depends_on(slope, variable) &&
+                       slope != integer(0)){
+                        using exact_laurent_terms =
+                            std::map<int64_t, exact_expr>;
+                        exact_laurent_terms terms;
+                        auto add_term = [&](exact_laurent_terms &target,
+                                            int64_t exponent,
+                                            const exact_expr &coefficient){
+                            auto found = target.find(exponent);
+                            if(found == target.end())
+                                target.emplace(exponent, coefficient);
+                            else
+                                found->second = simplify(found->second +
+                                                         coefficient);
+                        };
+                        auto parse = [&](auto &&self,
+                                         const exact_expr &part,
+                                         exact_laurent_terms &target) -> bool{
+                            if(part == generator){
+                                add_term(target, 1, integer(1));
+                                return true;
+                            }
+                            if(part.operation() == exact_opcode::power &&
+                               part.operand(0) == generator){
+                                int64_t exponent = 0;
+                                if(!integration_signed_exponent(
+                                       part.operand(1), exponent) ||
+                                   exponent < -(int64_t)degree_budget ||
+                                   exponent > (int64_t)degree_budget)
+                                    return false;
+                                add_term(target, exponent, integer(1));
+                                return true;
+                            }
+                            if(!integration_depends_on(part, variable) &&
+                               integration_exact_expression_tree(part)){
+                                add_term(target, 0, part);
+                                return true;
+                            }
+                            if(part.operation() == exact_opcode::add){
+                                for(size_t i = 0; i < part.operand_count(); ++i)
+                                    if(!self(self, part.operand(i), target))
+                                        return false;
+                                return true;
+                            }
+                            if(part.operation() == exact_opcode::multiply){
+                                exact_laurent_terms product{{0, integer(1)}};
+                                for(size_t i = 0; i < part.operand_count(); ++i){
+                                    exact_laurent_terms factor;
+                                    if(!self(self, part.operand(i), factor))
+                                        return false;
+                                    exact_laurent_terms combined;
+                                    for(const auto &left : product)
+                                        for(const auto &right : factor){
+                                            if((right.first > 0 && left.first >
+                                                    (int64_t)degree_budget -
+                                                        right.first) ||
+                                               (right.first < 0 && left.first <
+                                                    -(int64_t)degree_budget -
+                                                        right.first))
+                                                return false;
+                                            add_term(combined,
+                                                left.first + right.first,
+                                                simplify(left.second *
+                                                         right.second));
+                                        }
+                                    product.swap(combined);
+                                }
+                                target = std::move(product);
+                                return true;
+                            }
+                            return false;
+                        };
+                        if(parse(parse, expression, terms)){
+                            exact_expr candidate = integer(0);
+                            for(const auto &term : terms){
+                                if(term.second == integer(0)) continue;
+                                if(term.first == 0)
+                                    candidate = candidate + term.second * variable;
+                                else
+                                    candidate = candidate + term.second *
+                                        power(generator, integer(term.first)) /
+                                        (slope * integer(term.first));
+                            }
+                            candidate = simplify(candidate);
+                            exact_expr error = simplify(expand(
+                                differentiate(candidate, variable) - expression,
+                                verification_expansion_budget));
+                            if(error == integer(0)){
+                                result.conditions.clear();
+                                bool known_nonzero =
+                                    integration_strictly_positive_constant(slope) ||
+                                    integration_strictly_positive_constant(-slope) ||
+                                    (slope.operation() == exact_opcode::symbol &&
+                                     storage_->has_assumption(slope.root_,
+                                         exact_storage::assumed_positive));
+                                if(!known_nonzero)
+                                    result.conditions.push_back(slope);
+                                return candidate;
+                            }
+                        }
+                    }
+                }
+            }
             std::vector<precq_t> slopes;
             std::vector<exact_expr> intercepts;
             precn_t common_numerator;
@@ -17811,6 +17926,41 @@ risch_result exact_context::integrate_elementary_impl(
                                                   term.second * exponential_power);
                     continue;
                 }
+                if(term.first == 0 &&
+                   integration_exact_expression_tree(term.second) &&
+                   !integration_depends_on(term.second, variable)){
+                    elementary_part = simplify(elementary_part +
+                                               term.second * variable);
+                    continue;
+                }
+                // A coefficient that is constant in x need not be a
+                // rational number.  Solve the RDE for unit coefficient and
+                // multiply the result back by the exact constant.  This is
+                // valid because the coefficient belongs to the constant
+                // field of the current differential tower.
+                exact_expr coefficient_scale = integer(1);
+                bool scaled_constant = false;
+                bool exact_constant_coefficient = term.first != 0 &&
+                    integration_exact_expression_tree(term.second) &&
+                    !integration_depends_on(term.second, variable);
+                if(exact_constant_coefficient){
+                    if(term.second.is_value() &&
+                       term.second.value().is_zero())
+                        continue;
+                    integration_poly coefficient_numerator,
+                                     coefficient_denominator;
+                    bool rational_coefficient =
+                        integration_parse_rational(term.second, variable,
+                            coefficient_numerator, coefficient_denominator,
+                            degree_budget, degree_budget) &&
+                        integration_normalize_rational(
+                            coefficient_numerator, coefficient_denominator);
+                    if(!rational_coefficient){
+                        coefficient_scale = term.second;
+                        term.second = integer(1);
+                        scaled_constant = true;
+                    }
+                }
                 integration_poly p, q;
                 if(!integration_parse_rational(term.second, variable, p, q) ||
                    !integration_normalize_rational(p, q)){
@@ -17873,14 +18023,35 @@ risch_result exact_context::integrate_elementary_impl(
                     exact_expr exponential_power = term.first == 1
                         ? generator : power(generator, integer(term.first));
                     elementary_part = simplify(elementary_part +
-                        rational_solution * exponential_power);
+                        (scaled_constant ? coefficient_scale *
+                             rational_solution : rational_solution) *
+                        exponential_power);
                 }else if(rde.status ==
                          integration_rde_status::no_polynomial_solution){
                     has_nonelementary = true;
                     exact_expr exponential_power = term.first == 1
                         ? generator : power(generator, integer(term.first));
-                        nonelementary_part = simplify(nonelementary_part +
-                        term.second * exponential_power);
+                    exact_expr coefficient = scaled_constant ?
+                        coefficient_scale : term.second;
+                    nonelementary_part = simplify(nonelementary_part +
+                        coefficient * exponential_power);
+                    if(scaled_constant){
+                        bool known_nonzero =
+                            integration_strictly_positive_constant(
+                                coefficient_scale) ||
+                            integration_strictly_positive_constant(
+                                -coefficient_scale) ||
+                            (coefficient_scale.operation() ==
+                                 exact_opcode::symbol &&
+                             storage_->has_assumption(
+                                 coefficient_scale.root_,
+                                 exact_storage::assumed_positive));
+                        if(!known_nonzero &&
+                           std::find(result.conditions.begin(),
+                                     result.conditions.end(), coefficient_scale) ==
+                               result.conditions.end())
+                            result.conditions.push_back(coefficient_scale);
+                    }
                 }else{
                     supported = false;
                     break;

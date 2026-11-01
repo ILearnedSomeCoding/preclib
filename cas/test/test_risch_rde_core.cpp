@@ -705,7 +705,126 @@ int main(){
                   << '\n';
         return 1;
     }
+    exact_expr mixed_constant_exponential = scalar + rational_exponential;
+    risch_result mixed_constant_exponential_result =
+        context.integrate_elementary(mixed_constant_exponential, x);
+    if(mixed_constant_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       mixed_constant_exponential_result.remainder != rational_exponential ||
+       context.simplify(mixed_constant_exponential_result.elementary_part -
+                        scalar * x) != context.integer(0)){
+        std::cerr << "exact constant Laurent coefficient was not integrated: "
+                  << mixed_constant_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_linear_exponential = scalar * exp_x;
+    risch_result symbolic_linear_exponential_result =
+        context.integrate_elementary(symbolic_linear_exponential, x);
+    if(symbolic_linear_exponential_result.status != risch_status::elementary ||
+       symbolic_linear_exponential_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_linear_exponential_result.elementary_part -
+                        symbolic_linear_exponential) != context.integer(0)){
+        std::cerr << "symbolic constant exponential coefficient was not "
+                     "pulled through the RDE: "
+                  << symbolic_linear_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr irrational_linear_exponential = context.square_root(
+        context.integer(2)) * exp_x;
+    risch_result irrational_linear_exponential_result =
+        context.integrate_elementary(irrational_linear_exponential, x);
+    if(irrational_linear_exponential_result.status != risch_status::elementary ||
+       irrational_linear_exponential_result.remainder != context.integer(0) ||
+       context.simplify(irrational_linear_exponential_result.elementary_part -
+                        irrational_linear_exponential) != context.integer(0)){
+        std::cerr << "exact non-rational exponential coefficient was not "
+                     "pulled through the RDE: "
+                  << irrational_linear_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr sqrt_two = context.square_root(context.integer(2));
+    exact_expr mixed_exact_laurent = scalar + sqrt_two * exp_x +
+        context.exponential(-x);
+    risch_result mixed_exact_laurent_result =
+        context.integrate_elementary(mixed_exact_laurent, x);
+    exact_expr mixed_exact_laurent_expected = scalar * x +
+        sqrt_two * exp_x - context.exponential(-x);
+    if(mixed_exact_laurent_result.status != risch_status::elementary ||
+       mixed_exact_laurent_result.remainder != context.integer(0) ||
+       context.simplify(mixed_exact_laurent_result.elementary_part -
+                        mixed_exact_laurent_expected) != context.integer(0)){
+        std::cerr << "mixed exact Laurent coefficients were not integrated: "
+                  << mixed_exact_laurent_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_quadratic_exponential = scalar * exp_x2;
+    risch_result symbolic_quadratic_exponential_result =
+        context.integrate_elementary(symbolic_quadratic_exponential, x);
+    if(symbolic_quadratic_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       symbolic_quadratic_exponential_result.remainder !=
+           symbolic_quadratic_exponential ||
+       symbolic_quadratic_exponential_result.conditions.size() != 0){
+        std::cerr << "symbolic constant was not propagated through the "
+                     "non-elementary quadratic RDE: "
+                  << symbolic_quadratic_exponential_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr unconstrained_scalar = context.symbol("unconstrained_scalar");
+    exact_expr unknown_quadratic_exponential = unconstrained_scalar * exp_x2;
+    risch_result unknown_quadratic_exponential_result =
+        context.integrate_elementary(unknown_quadratic_exponential, x);
+    if(unknown_quadratic_exponential_result.status !=
+           risch_status::proven_nonelementary ||
+       unknown_quadratic_exponential_result.remainder !=
+           unknown_quadratic_exponential ||
+       unknown_quadratic_exponential_result.conditions.size() != 1 ||
+       unknown_quadratic_exponential_result.conditions[0] !=
+           unconstrained_scalar){
+        std::cerr << "unknown constant was not retained as a nonzero "
+                     "condition for the quadratic exponential: "
+                  << unknown_quadratic_exponential_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_slope = context.symbol("slope");
+    exact_expr symbolic_slope_exponential = context.exponential(
+        symbolic_slope * x + context.integer(1));
+    risch_result symbolic_slope_result = context.integrate_elementary(
+        symbolic_slope_exponential, x);
+    exact_expr symbolic_slope_expected = symbolic_slope_exponential /
+        symbolic_slope;
+    if(symbolic_slope_result.status != risch_status::elementary ||
+       symbolic_slope_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_slope_result.elementary_part -
+                        symbolic_slope_expected) != context.integer(0) ||
+       symbolic_slope_result.conditions.size() != 1 ||
+       symbolic_slope_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic affine exponential slope was not handled: "
+                  << symbolic_slope_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_slope_laurent = symbolic_slope_exponential +
+        context.power(symbolic_slope_exponential, context.integer(-1));
+    risch_result symbolic_slope_laurent_result = context.integrate_elementary(
+        symbolic_slope_laurent, x);
+    exact_expr symbolic_slope_laurent_error = context.simplify(context.expand(
+        context.differentiate(symbolic_slope_laurent_result.elementary_part,
+                              x) - symbolic_slope_laurent, 100000));
+    if(symbolic_slope_laurent_result.status != risch_status::elementary ||
+       symbolic_slope_laurent_result.remainder != context.integer(0) ||
+       symbolic_slope_laurent_error != context.integer(0) ||
+       symbolic_slope_laurent_result.conditions.size() != 1){
+        std::cerr << "symbolic affine exponential Laurent RDE failed: "
+                  << symbolic_slope_laurent_result.diagnostic
+                  << " status=" << (int)symbolic_slope_laurent_result.status
+                  << " primitive="
+                  << symbolic_slope_laurent_result.elementary_part.to_string()
+                  << " remainder="
+                  << symbolic_slope_laurent_result.remainder.to_string()
+                  << " conditions="
+                  << symbolic_slope_laurent_result.conditions.size() << '\n';
+        return 1;
+    }
     exact_expr conditional_scaled_rational_exponential = unconstrained_scalar *
         rational_exponential;
     risch_result conditional_scaled_rational_exponential_result =
