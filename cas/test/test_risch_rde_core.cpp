@@ -803,6 +803,89 @@ int main(){
                   << symbolic_slope_result.diagnostic << '\n';
         return 1;
     }
+    exact_expr symbolic_logistic_input = context.integer(1) /
+        (context.integer(1) + context.exponential(symbolic_slope * x));
+    risch_result symbolic_logistic_result = context.integrate_elementary(
+        symbolic_logistic_input, x);
+    exact_expr symbolic_logistic_expected =
+        (symbolic_slope * x - context.natural_logarithm(context.integer(1) +
+            context.exponential(symbolic_slope * x))) / symbolic_slope;
+    if(symbolic_logistic_result.status != risch_status::elementary ||
+       symbolic_logistic_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_logistic_result.elementary_part -
+                        symbolic_logistic_expected) != context.integer(0) ||
+       symbolic_logistic_result.conditions.size() != 1 ||
+       symbolic_logistic_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic-slope rational exponential integral failed: "
+                  << symbolic_logistic_result.diagnostic
+                  << " primitive="
+                  << symbolic_logistic_result.elementary_part.to_string()
+                  << " conditions="
+                  << symbolic_logistic_result.conditions.size() << '\n';
+        return 1;
+    }
+    exact_expr symbolic_logistic_numerator =
+        context.exponential(symbolic_slope * x) /
+        (context.integer(1) + context.exponential(symbolic_slope * x));
+    risch_result symbolic_logistic_numerator_result =
+        context.integrate_elementary(symbolic_logistic_numerator, x);
+    exact_expr symbolic_logistic_numerator_expected =
+        context.natural_logarithm(context.integer(1) +
+            context.exponential(symbolic_slope * x)) / symbolic_slope;
+    if(symbolic_logistic_numerator_result.status != risch_status::elementary ||
+       symbolic_logistic_numerator_result.remainder != context.integer(0) ||
+       context.simplify(symbolic_logistic_numerator_result.elementary_part -
+                        symbolic_logistic_numerator_expected) !=
+           context.integer(0) ||
+       symbolic_logistic_numerator_result.conditions.size() != 1 ||
+       symbolic_logistic_numerator_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic-slope exponential numerator integral failed: "
+                  << symbolic_logistic_numerator_result.diagnostic
+                  << " primitive="
+                  << symbolic_logistic_numerator_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr symbolic_exp_parameter =
+        context.exponential(symbolic_slope * x);
+    exact_expr symbolic_quadratic_denominator = context.integer(1) +
+        symbolic_exp_parameter +
+        context.power(symbolic_exp_parameter, context.integer(2));
+    exact_expr symbolic_quadratic_input = symbolic_exp_parameter /
+        symbolic_quadratic_denominator;
+    risch_result symbolic_quadratic_result = context.integrate_elementary(
+        symbolic_quadratic_input, x);
+    if(symbolic_quadratic_result.status != risch_status::elementary ||
+       symbolic_quadratic_result.remainder != context.integer(0) ||
+       symbolic_quadratic_result.conditions.size() != 1 ||
+       symbolic_quadratic_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic-slope quadratic exponential integral failed: "
+                  << symbolic_quadratic_result.diagnostic
+                  << " primitive="
+                  << symbolic_quadratic_result.elementary_part.to_string()
+                  << " conditions="
+                  << symbolic_quadratic_result.conditions.size() << '\n';
+        return 1;
+    }
+    exact_expr symbolic_cubic_denominator =
+        symbolic_quadratic_denominator +
+        context.power(symbolic_exp_parameter, context.integer(3));
+    exact_expr symbolic_cubic_input = context.integer(1) /
+        symbolic_cubic_denominator;
+    risch_result symbolic_cubic_result = context.integrate_elementary(
+        symbolic_cubic_input, x);
+    if(symbolic_cubic_result.status != risch_status::elementary ||
+       symbolic_cubic_result.remainder != context.integer(0) ||
+       symbolic_cubic_result.conditions.size() != 1 ||
+       symbolic_cubic_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic-slope cubic exponential rational integral failed: "
+                  << symbolic_cubic_result.diagnostic
+                  << " primitive="
+                  << symbolic_cubic_result.elementary_part.to_string()
+                  << " conditions="
+                  << symbolic_cubic_result.conditions.size() << '\n';
+        return 1;
+    }
     exact_expr symbolic_slope_polynomial = x * x + context.integer(2) * x +
         context.integer(3);
     exact_expr symbolic_slope_polynomial_input = symbolic_slope_polynomial *

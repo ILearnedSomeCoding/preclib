@@ -17839,6 +17839,62 @@ risch_result exact_context::integrate_elementary_impl(
                                 return candidate;
                             }
                         }
+                        // For higher-degree rational functions of the
+                        // exponential generator, remove the symbolic slope
+                        // from dt/dx and reuse the exact Q(t) integrator.
+                        // The candidate is accepted only after differentiating
+                        // it in the original variable and proving the identity.
+                        exact_expr parameter;
+                        for(size_t suffix = 0;; ++suffix){
+                            parameter = symbol("_risch_exp_rational_t_" +
+                                               std::to_string(suffix));
+                            if(parameter != variable &&
+                               !integration_depends_on(expression, parameter))
+                                break;
+                        }
+                        exact_expr scaled_integrand =
+                            substitute(expression, generator, parameter) /
+                            parameter;
+                        if(!integration_depends_on(scaled_integrand, variable)){
+                            integration_poly rational_numerator,
+                                             rational_denominator;
+                            if(integration_parse_rational(scaled_integrand,
+                                    parameter, rational_numerator,
+                                    rational_denominator, degree_budget,
+                                    degree_budget) &&
+                               rational_denominator.size() > 3){
+                                exact_expr scaled_primitive =
+                                    integration_rational_antiderivative(
+                                        *this, scaled_integrand, parameter,
+                                        degree_budget,
+                                        options.maximum_rothstein_degree,
+                                        options.maximum_matrix_entries);
+                                if(scaled_primitive.valid()){
+                                    exact_expr candidate = simplify(
+                                        scaled_primitive / slope);
+                                    exact_expr error = simplify(expand(
+                                        differentiate(candidate, variable) -
+                                        expression,
+                                        verification_expansion_budget));
+                                    if(error == integer(0)){
+                                        result.conditions.clear();
+                                        bool known_nonzero =
+                                            integration_strictly_positive_constant(
+                                                slope) ||
+                                            integration_strictly_positive_constant(
+                                                -slope) ||
+                                            (slope.operation() ==
+                                                 exact_opcode::symbol &&
+                                             storage_->has_assumption(
+                                                 slope.root_,
+                                                 exact_storage::assumed_positive));
+                                        if(!known_nonzero)
+                                            result.conditions.push_back(slope);
+                                        return candidate;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -17972,6 +18028,8 @@ risch_result exact_context::integrate_elementary_impl(
             }
             if(!primitive.valid()) return exact_expr();
             exact_expr candidate = substitute(primitive, parameter, generator);
+            if(candidate.reachable_node_count() > options.maximum_nodes)
+                return exact_expr();
             return candidate;
         };
         exact_expr affine_candidate = affine_exponential_candidate();
