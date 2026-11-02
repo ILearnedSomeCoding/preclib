@@ -886,6 +886,23 @@ int main(){
                   << symbolic_cubic_result.conditions.size() << '\n';
         return 1;
     }
+    exact_expr symbolic_repeated_pole_input = symbolic_exp_parameter /
+        context.power(context.integer(1) + symbolic_exp_parameter,
+                      context.integer(3));
+    risch_result symbolic_repeated_pole_result = context.integrate_elementary(
+        symbolic_repeated_pole_input, x);
+    if(symbolic_repeated_pole_result.status != risch_status::elementary ||
+       symbolic_repeated_pole_result.remainder != context.integer(0) ||
+       symbolic_repeated_pole_result.conditions.size() != 1 ||
+       symbolic_repeated_pole_result.conditions[0] != symbolic_slope){
+        std::cerr << "symbolic-slope repeated-pole exponential integral failed: "
+                  << symbolic_repeated_pole_result.diagnostic
+                  << " primitive="
+                  << symbolic_repeated_pole_result.elementary_part.to_string()
+                  << " conditions="
+                  << symbolic_repeated_pole_result.conditions.size() << '\n';
+        return 1;
+    }
     exact_expr symbolic_slope_polynomial = x * x + context.integer(2) * x +
         context.integer(3);
     exact_expr symbolic_slope_polynomial_input = symbolic_slope_polynomial *
