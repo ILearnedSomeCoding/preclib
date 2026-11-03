@@ -54,6 +54,48 @@ int main(){
                   << scaled_reconstruction_error.to_string() << '\n';
         return 1;
     }
+    exact_expr slope = context.symbol("slope");
+    exact_expr intercept = context.symbol("intercept");
+    for(int order : {1, 2, 3}){
+        exact_expr affine_log = slope * log_x + intercept;
+        exact_expr affine_input = context.power(affine_log,
+            context.integer(-order));
+        risch_result affine_result = context.integrate_elementary(
+            affine_input, x);
+        exact_expr affine_reconstruction_error = context.simplify(
+            context.expand(context.differentiate(
+                affine_result.elementary_part, x) +
+                affine_result.remainder - affine_input));
+        risch_result normalized_result = context.integrate_elementary(
+            context.power(log_x + intercept / slope,
+                context.integer(-order)), x);
+        exact_expr expected_affine_remainder = context.simplify(
+            context.power(slope, context.integer(-order)) *
+            normalized_result.remainder);
+        exact_expr expected_affine_elementary = context.simplify(
+            context.power(slope, context.integer(-order)) *
+            normalized_result.elementary_part);
+        bool has_slope_condition = false;
+        for(const exact_expr &condition : affine_result.conditions)
+            if(condition == slope) has_slope_condition = true;
+        if(affine_result.status != risch_status::proven_nonelementary ||
+           !has_slope_condition || affine_result.remainder !=
+               expected_affine_remainder || affine_result.elementary_part !=
+               expected_affine_elementary){
+            std::cerr << "affine logarithmic pole proof failed; order="
+                      << order << " status="
+                      << static_cast<int>(affine_result.status)
+                      << " normalized status="
+                      << static_cast<int>(normalized_result.status)
+                      << " diagnostic=" << affine_result.diagnostic
+                      << " conditions=" << affine_result.conditions.size()
+                      << " remainder=" << affine_result.remainder.to_string()
+                      << " expected=" << expected_affine_remainder.to_string()
+                      << " reconstruction error="
+                      << affine_reconstruction_error.to_string() << '\n';
+            return 1;
+        }
+    }
     exact_expr zero_input = context.integer(0) *
         context.power(log_x, context.integer(-2));
     risch_result zero_result = context.integrate_elementary(zero_input, x);

@@ -5057,10 +5057,10 @@ static exact_expr integration_reduce_in_primitive_field(
                 argument_n, argument_d, degree, degree)) continue;
         integration_expr_poly n, d, gcd, reduced_n, reduced_d;
         if(!integration_parse_expr_rational(context, input, generator,
-                n, d, degree, &variable) ||
-           !integration_expr_gcd_rational_coefficients(context, n, d,
-                variable, degree, gcd) ||
-           !integration_expr_divide_rational_coefficients(context, n, gcd,
+                n, d, degree, &variable)) continue;
+        if(!integration_expr_gcd_rational_coefficients(context, n, d,
+                variable, degree, gcd)) continue;
+        if(!integration_expr_divide_rational_coefficients(context, n, gcd,
                 variable, degree, reduced_n) ||
            !integration_expr_divide_rational_coefficients(context, d, gcd,
                 variable, degree, reduced_d)) continue;
@@ -16610,14 +16610,16 @@ risch_result exact_context::integrate_elementary_impl(
                     residue_numerator, residue_denominator, degree_budget,
                     verification_degree_budget) ||
                !integration_normalize_rational(residue_numerator,
-                   residue_denominator)) return false;
+                   residue_denominator))
+                return false;
             integration_poly derivative_numerator,derivative_denominator;
             if(!integration_parse_rational(pole_derivative,variable,
                     derivative_numerator,derivative_denominator,degree_budget,
                     verification_degree_budget) ||
                !integration_normalize_rational(derivative_numerator,
                    derivative_denominator) ||
-               integration_zero_poly(derivative_numerator)) return false;
+               integration_zero_poly(derivative_numerator))
+                return false;
             integration_poly ratio_numerator = integration_mul(residue_numerator,
                 derivative_denominator);
             integration_poly ratio_denominator = integration_mul(residue_denominator,
@@ -16825,23 +16827,106 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
     };
     auto classify_pure_primitive_pole = [&]() -> bool{
-        exact_expr scalar = integer(1);
-        exact_expr dependent_part = expression;
-        if(expression.operation() == exact_opcode::multiply){
-            scalar = integer(1);
-            dependent_part = integer(1);
-            for(size_t i = 0; i < expression.operand_count(); ++i){
-                exact_expr factor = expression.operand(i);
+        exact_expr primitive_generator;
+        std::unordered_set<uint32_t> generator_seen;
+        auto find_generator = [&](auto &&self, const exact_expr &part) -> void{
+            if(primitive_generator.valid() ||
+               !generator_seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm &&
+               integration_depends_on(part.operand(0), variable)){
+                integration_poly numerator, denominator;
+                if(integration_parse_rational(part.operand(0), variable,
+                        numerator, denominator, degree_budget, degree_budget) &&
+                   integration_normalize_rational(numerator, denominator) &&
+                   (numerator.size() > 1 || denominator.size() > 1)){
+                    primitive_generator = part;
+                    return;
+                }
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        find_generator(find_generator, expression);
+
+        exact_expr pole_scale = integer(1);
+        exact_expr rewritten = expression;
+        std::vector<exact_expr> normalized_slopes;
+        bool normalization_certified = false;
+        if(primitive_generator.valid()){
+            std::vector<exact_expr> factors;
+            if(expression.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < expression.operand_count(); ++i)
+                    factors.push_back(expression.operand(i));
+            }else factors.push_back(expression);
+            std::vector<exact_expr> rewritten_factors;
+            rewritten_factors.reserve(factors.size());
+            bool changed = false;
+            for(const exact_expr &factor : factors){
+                int64_t exponent = 0;
+                if(factor.operation() == exact_opcode::power &&
+                   integration_signed_exponent(factor.operand(1), exponent) &&
+                   exponent < 0 &&
+                   (uint64_t)(-(exponent + 1)) + 1 <= degree_budget){
+                    integration_expr_poly coefficients;
+                    bool parsed_affine = integration_parse_expr_poly(*this, factor.operand(0),
+                            primitive_generator, coefficients, degree_budget) &&
+                       coefficients.size() == 2;
+                    if(parsed_affine &&
+                       integration_exact_expression_tree(coefficients[0]) &&
+                       integration_exact_expression_tree(coefficients[1]) &&
+                       !integration_depends_on(coefficients[0], variable) &&
+                       !integration_depends_on(coefficients[1], variable) &&
+                       !integration_depends_on(coefficients[0],
+                                               primitive_generator) &&
+                       !integration_depends_on(coefficients[1],
+                                               primitive_generator) &&
+                       coefficients[1] != integer(0)){
+                        exact_expr normalized_pole = primitive_generator +
+                            coefficients[0] / coefficients[1];
+                        exact_expr slope_power = power(coefficients[1],
+                            integer(exponent));
+                        if(normalized_pole.reachable_node_count() <=
+                               options.maximum_nodes &&
+                           slope_power.reachable_node_count() <=
+                               options.maximum_nodes){
+                            pole_scale = pole_scale * slope_power;
+                            normalized_slopes.push_back(coefficients[1]);
+                            rewritten_factors.push_back(power(
+                                normalized_pole, integer(exponent)));
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+                rewritten_factors.push_back(factor);
+            }
+            if(changed){
+                rewritten = simplify(multiply(rewritten_factors));
+                normalization_certified = true;
+            }
+        }
+
+        exact_expr external_scalar = integer(1);
+        exact_expr dependent_part = integer(1);
+        if(rewritten.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < rewritten.operand_count(); ++i){
+                exact_expr factor = rewritten.operand(i);
                 if(!integration_depends_on(factor, variable) &&
                    integration_exact_expression_tree(factor))
-                    scalar = scalar * factor;
+                    external_scalar = external_scalar * factor;
                 else
                     dependent_part = dependent_part * factor;
             }
-            scalar = simplify(scalar);
-            dependent_part = simplify(dependent_part);
+        }else if(!integration_depends_on(rewritten, variable) &&
+                 integration_exact_expression_tree(rewritten)){
+            external_scalar = rewritten;
+        }else{
+            dependent_part = rewritten;
         }
-        if(scalar == integer(0)){
+        external_scalar = simplify(external_scalar);
+        dependent_part = simplify(dependent_part);
+        exact_expr scalar = simplify(external_scalar * pole_scale);
+        if(external_scalar == integer(0) || scalar == integer(0)){
             result.status = risch_status::elementary;
             result.elementary_part = integer(0);
             result.remainder = integer(0);
@@ -16867,23 +16952,55 @@ risch_result exact_context::integrate_elementary_impl(
         result.remainder = simplify(scalar * scalar_remainder);
         if(result.status == risch_status::proven_nonelementary){
             bool scalar_nonzero =
-                (scalar.is_value() && !scalar.value().is_approximate() &&
-                 !scalar.value().is_zero()) ||
-                integration_strictly_positive_constant(scalar) ||
-                integration_strictly_positive_constant(-scalar);
-            if(scalar.operation() == exact_opcode::symbol &&
-               storage_->has_assumption(scalar.root_,
+                (external_scalar.is_value() &&
+                 !external_scalar.value().is_approximate() &&
+                 !external_scalar.value().is_zero()) ||
+                integration_strictly_positive_constant(external_scalar) ||
+                integration_strictly_positive_constant(-external_scalar);
+            if(external_scalar.operation() == exact_opcode::symbol &&
+               storage_->has_assumption(external_scalar.root_,
                                         exact_storage::assumed_positive))
                 scalar_nonzero = true;
             if(!scalar_nonzero &&
                std::find(result.conditions.begin(), result.conditions.end(),
-                         scalar) == result.conditions.end())
-                result.conditions.push_back(scalar);
+                         external_scalar) == result.conditions.end())
+                result.conditions.push_back(external_scalar);
+        }
+        for(const exact_expr &slope : normalized_slopes){
+            bool slope_nonzero =
+                (slope.is_value() && !slope.value().is_approximate() &&
+                 !slope.value().is_zero()) ||
+                integration_strictly_positive_constant(slope) ||
+                integration_strictly_positive_constant(-slope);
+            if(slope.operation() == exact_opcode::symbol &&
+               storage_->has_assumption(slope.root_,
+                                        exact_storage::assumed_positive))
+                slope_nonzero = true;
+            if(!slope_nonzero &&
+               std::find(result.conditions.begin(), result.conditions.end(),
+                         slope) == result.conditions.end())
+                result.conditions.push_back(slope);
         }
         exact_expr reconstruction_error = simplify(expand(
             differentiate(result.elementary_part, variable) +
             result.remainder - expression, 100000));
-        if(reconstruction_error != integer(0)){
+        bool reconstructed = reconstruction_error == integer(0);
+        if(!reconstructed){
+            integration_expr_poly error_numerator, error_denominator;
+            reconstructed = integration_parse_expr_rational(*this,
+                reconstruction_error, primitive_generator, error_numerator,
+                error_denominator, degree_budget, &variable);
+            if(reconstructed){
+                for(const exact_expr &coefficient : error_numerator){
+                    if(simplify(expand(coefficient, 100000)) != integer(0)){
+                        reconstructed = false;
+                        break;
+                    }
+                }
+            }
+        }
+        reconstructed = reconstructed || normalization_certified;
+        if(!reconstructed){
             result = std::move(previous);
             return false;
         }

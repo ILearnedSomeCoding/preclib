@@ -41,3 +41,9 @@
 - `feat`: 有理换元现在可提出精确且与积分变量无关的乘法系数；换元后的有理式允许多项式项与真分式项相加，并支持当前 R0 表达式系数域内的符号参数分子。
 - `test`: RDE 核心回归通过，增加符号系数正弦换元和 `ln(x)` 参数的混合有理换元验证。
 - 已推送提交：`eddabc7` (`feat: support symbolic rational chain substitutions`)。
+
+### Follow-up: 2026-11-03
+
+- `fix`: primitive-pole 判定现在识别精确符号常数平移，如 `ln(x)+a`，并能对 `(ln(x)+a)^(-m)` 给出经重构验证的非初等证书；外乘未知常数时保留非零条件，零倍数仍返回零原函数。
+- `test`: 新增平移对数 pole 回归，覆盖数值/符号偏移、多个 pole 阶、未知符号缩放与零缩放；focused suite 和 RDE 核心回归均通过。
+- 已推送提交：`ea5ae69` (`fix: certify shifted logarithmic poles with parameters`)。
