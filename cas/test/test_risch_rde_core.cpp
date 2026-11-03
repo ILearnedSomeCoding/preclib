@@ -1017,6 +1017,41 @@ int main(){
                   << '\n';
         return 1;
     }
+    exact_expr rational_sine_chain = context.cosine(x) /
+        (context.integer(1) + context.power(context.sine(x), context.integer(2)));
+    risch_result rational_sine_chain_result = context.integrate_elementary(
+        rational_sine_chain, x);
+    exact_expr rational_sine_chain_expected = context.arc_tangent(
+        context.sine(x));
+    if(rational_sine_chain_result.status != risch_status::elementary ||
+       rational_sine_chain_result.remainder != context.integer(0) ||
+       !rational_sine_chain_result.conditions.empty() ||
+       context.simplify(rational_sine_chain_result.elementary_part -
+                        rational_sine_chain_expected) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           rational_sine_chain_result.elementary_part, x) -
+           rational_sine_chain) != context.integer(0)){
+        std::cerr << "rational chain substitution integral failed: "
+                  << rational_sine_chain_result.diagnostic << " primitive="
+                  << rational_sine_chain_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr logarithmic_chain_parameter = context.natural_logarithm(x);
+    exact_expr rational_logarithmic_chain = context.integer(1) / x /
+        (context.integer(1) + context.power(logarithmic_chain_parameter,
+                                             context.integer(2)));
+    risch_result rational_logarithmic_chain_result =
+        context.integrate_elementary(rational_logarithmic_chain, x);
+    if(rational_logarithmic_chain_result.status != risch_status::elementary ||
+       rational_logarithmic_chain_result.remainder != context.integer(0)){
+        std::cerr << "logarithmic rational chain substitution failed: "
+                  << rational_logarithmic_chain_result.diagnostic
+                  << " primitive="
+                  << rational_logarithmic_chain_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
     exact_expr ordinary_negative_chain =
         context.differentiate(ordinary_chain_argument, x) /
         context.power(ordinary_chain_argument, context.integer(3));

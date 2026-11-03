@@ -13673,6 +13673,150 @@ risch_result exact_context::integrate_elementary_impl(
         return result;
     }
     if(hermite_partial.status == risch_status::proven_nonelementary) return hermite_partial;
+    // Pull back a supported rational primitive through an exact differential
+    // factor: D(p)*R(p) dx = R(t) dt with t=p(x).
+    auto try_rational_chain_substitution = [&]() -> bool{
+        if(expression.operation() != exact_opcode::multiply ||
+           expression.operand_count() < 2) return false;
+        std::vector<exact_expr> factors;
+        factors.reserve(expression.operand_count());
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            factors.push_back(expression.operand(i));
+
+        auto contains_node = [&](const exact_expr &root,
+                                 const exact_expr &target){
+            std::unordered_set<uint32_t> visited;
+            auto walk = [&](auto &&self, const exact_expr &part) -> bool{
+                if(part == target) return true;
+                if(!visited.insert(part.id()).second) return false;
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    if(self(self, part.operand(i))) return true;
+                return false;
+            };
+            return walk(walk, root);
+        };
+        std::unordered_set<uint32_t> candidate_ids;
+        std::vector<exact_expr> candidates;
+        for(const exact_expr &factor : factors){
+            auto collect = [&](auto &&self, const exact_expr &part) -> void{
+                if(!candidate_ids.insert(part.id()).second) return;
+                if(part != variable && integration_depends_on(part, variable) &&
+                   integration_exact_expression_tree(part))
+                    candidates.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect(collect, factor);
+        }
+        if(candidates.empty()) return false;
+
+        for(size_t derivative_index = 0;
+            derivative_index < factors.size(); ++derivative_index){
+            const exact_expr &derivative_factor = factors[derivative_index];
+            if(!integration_depends_on(derivative_factor, variable)) continue;
+            exact_expr residual = integer(1);
+            for(size_t i = 0; i < factors.size(); ++i)
+                if(i != derivative_index) residual = residual * factors[i];
+            if(residual.reachable_node_count() > options.maximum_nodes) continue;
+
+            for(const exact_expr &parameter : candidates){
+                if(!contains_node(residual, parameter)) continue;
+                exact_expr parameter_derivative = simplify(
+                    differentiate(parameter, variable));
+                if(parameter_derivative == integer(0) ||
+                   simplify(parameter_derivative - derivative_factor) != integer(0))
+                    continue;
+
+                exact_expr integration_variable;
+                for(size_t suffix = 0;; ++suffix){
+                    integration_variable = symbol("_risch_subst_" +
+                        std::to_string(suffix));
+                    if(integration_variable != variable &&
+                       !contains_node(expression, integration_variable)) break;
+                    if(suffix == SIZE_MAX) return false;
+                }
+                exact_expr parameter_integrand = substitute(
+                    residual, parameter, integration_variable);
+                if(integration_depends_on(parameter_integrand, variable) ||
+                   parameter_integrand.reachable_node_count() >
+                       options.maximum_nodes)
+                    continue;
+                bool parameter_nonzero_required = false;
+                std::unordered_set<uint32_t> power_nodes;
+                auto inspect_parameter_powers = [&](auto &&self,
+                        const exact_expr &part) -> void{
+                    if(!power_nodes.insert(part.id()).second) return;
+                    if(part.operation() == exact_opcode::power &&
+                       part.operand_count() == 2 &&
+                       part.operand(0) == integration_variable){
+                        int64_t exponent = 0;
+                        if(integration_signed_exponent(part.operand(1), exponent) &&
+                           exponent < 0)
+                            parameter_nonzero_required = true;
+                    }
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                inspect_parameter_powers(inspect_parameter_powers,
+                                         parameter_integrand);
+                risch_result parameter_result = integrate_elementary(
+                    parameter_integrand, integration_variable, options);
+                if(parameter_result.status != risch_status::elementary ||
+                   parameter_result.remainder != integer(0) ||
+                   !parameter_result.elementary_part.valid())
+                    continue;
+
+                exact_expr candidate = substitute(
+                    parameter_result.elementary_part, integration_variable,
+                    parameter);
+                if(candidate.reachable_node_count() > options.maximum_nodes)
+                    continue;
+                exact_expr error = simplify(expand(
+                    differentiate(candidate, variable) - expression,
+                    verification_expansion_budget));
+                if(error != integer(0)) continue;
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                for(const exact_expr &condition : parameter_result.conditions){
+                    exact_expr pulled_back = substitute(condition,
+                        integration_variable, parameter);
+                    if(std::find(result.conditions.begin(),
+                                 result.conditions.end(), pulled_back) ==
+                       result.conditions.end())
+                        result.conditions.push_back(std::move(pulled_back));
+                }
+                std::unordered_set<uint32_t> logarithms;
+                auto collect_log_conditions = [&](auto &&self,
+                        const exact_expr &part) -> void{
+                    if(!logarithms.insert(part.id()).second) return;
+                    if(part.operation() == exact_opcode::natural_logarithm &&
+                       part.operand_count() == 1 &&
+                       integration_depends_on(part.operand(0),
+                                              integration_variable)){
+                        exact_expr pulled_back = substitute(part.operand(0),
+                            integration_variable, parameter);
+                        if(std::find(result.conditions.begin(),
+                                     result.conditions.end(), pulled_back) ==
+                           result.conditions.end())
+                            result.conditions.push_back(std::move(pulled_back));
+                    }
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                collect_log_conditions(collect_log_conditions,
+                                       parameter_result.elementary_part);
+                if(parameter_nonzero_required &&
+                   std::find(result.conditions.begin(), result.conditions.end(),
+                             parameter) == result.conditions.end())
+                    result.conditions.push_back(parameter);
+                result.diagnostic.clear();
+                return true;
+            }
+        }
+        return false;
+    };
+    if(try_rational_chain_substitution()) return result;
     // Recognize sums of exact differentials c*D(p)*p^m. Each summand is
     // certified independently, then the complete sum is checked.
     auto classify_tower_logarithmic_derivative = [&]() -> bool{
