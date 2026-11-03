@@ -16523,7 +16523,8 @@ risch_result exact_context::integrate_elementary_impl(
                 "logarithmic hyperexponential RDE has no rational solution";
         return true;
     };
-    auto classify_pure_primitive_pole = [&]() -> bool{
+    auto classify_pure_primitive_pole_core = [&](
+        const exact_expr &pole_input) -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
         auto find = [&](auto &&self, const exact_expr &part) -> void{
@@ -16545,7 +16546,7 @@ risch_result exact_context::integrate_elementary_impl(
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self, part.operand(i));
         };
-        find(find, expression);
+        find(find, pole_input);
         if(!generator.valid()) return false;
         std::vector<exact_expr> poles{generator};
         std::unordered_set<uint32_t> pole_seen;
@@ -16555,17 +16556,23 @@ risch_result exact_context::integrate_elementary_impl(
                integration_depends_on(part,generator)){
                 exact_expr shift = simplify(part-generator);
                 integration_poly numerator,denominator;
-                if(integration_parse_rational(shift,variable,numerator,
+                bool rational_shift =
+                    integration_parse_rational(shift,variable,numerator,
                         denominator,degree_budget,degree_budget) &&
-                   integration_normalize_rational(numerator,denominator))
+                    integration_normalize_rational(numerator,denominator);
+                bool exact_constant_shift =
+                    integration_exact_expression_tree(shift) &&
+                    !integration_depends_on(shift,variable) &&
+                    shift.reachable_node_count() <= options.maximum_nodes;
+                if(rational_shift || exact_constant_shift)
                     poles.push_back(part);
             }
             for(size_t i = 0; i < part.operand_count(); ++i)
                 self(self,part.operand(i));
         };
-        collect_poles(collect_poles,expression);
+        collect_poles(collect_poles,pole_input);
         auto classify_pole = [&](const exact_expr &pole) -> bool{
-            exact_expr residue = expression;
+            exact_expr residue = pole_input;
             size_t pole_order = 0;
             for(size_t order = 1; order <= options.maximum_degree; ++order){
                 residue = simplify(residue * pole);
@@ -16592,7 +16599,7 @@ risch_result exact_context::integrate_elementary_impl(
                     power(pole, integer((long long)order - 1));
                 elementary_part = simplify(elementary_part + term);
                 exact_expr remainder = simplify(expand(
-                    expression - differentiate(elementary_part, variable), 100000));
+                    pole_input - differentiate(elementary_part, variable), 100000));
                 residue = remainder;
                 for(size_t i = 0; i + 1 < order; ++i)
                     residue = simplify(residue * pole);
@@ -16627,7 +16634,7 @@ risch_result exact_context::integrate_elementary_impl(
                 exact_expr candidate = simplify(elementary_part +
                     logarithmic_residue * natural_logarithm(pole));
                 exact_expr error = simplify(expand(
-                    differentiate(candidate, variable) - expression, 100000));
+                    differentiate(candidate, variable) - pole_input, 100000));
                 if(error == integer(0)){
                     result.status = risch_status::elementary;
                     result.elementary_part = std::move(candidate);
@@ -16642,7 +16649,7 @@ risch_result exact_context::integrate_elementary_impl(
             }
             result.status = risch_status::proven_nonelementary;
             result.elementary_part = std::move(elementary_part);
-            result.remainder = simplify(expression -
+            result.remainder = simplify(pole_input -
                 differentiate(result.elementary_part, variable));
             result.diagnostic =
                 "primitive pole has a nonconstant logarithmic residue";
@@ -16651,7 +16658,7 @@ risch_result exact_context::integrate_elementary_impl(
         for(const exact_expr &pole : poles)
             if(classify_pole(pole)) return true;
         integration_expr_poly numerator,denominator;
-        if(!integration_parse_expr_rational(*this,expression,generator,
+        if(!integration_parse_expr_rational(*this,pole_input,generator,
                 numerator,denominator,degree_budget,&variable)) return false;
         integration_expr_poly polynomial,proper;
         if(!integration_expr_divmod_rational_coefficients(*this,numerator,
@@ -16786,7 +16793,7 @@ risch_result exact_context::integrate_elementary_impl(
                 value(ratio_n[0]/ratio_d[0]) *
                 natural_logarithm(factor.expression);
         }
-        if(!rational_identity(expression -
+        if(!rational_identity(pole_input -
                 integration_expr_poly_expr(*this,polynomial,generator) -
                 principal_part) ||
            !rational_identity(principal_part-differentiate(rational_part,
@@ -16794,7 +16801,7 @@ risch_result exact_context::integrate_elementary_impl(
         if(nonconstant_residue){
             result.status = risch_status::proven_nonelementary;
             result.elementary_part = integer(0);
-            result.remainder = expression;
+            result.remainder = pole_input;
             result.diagnostic =
                 "a normal primitive pole has a nonconstant logarithmic residue";
             return true;
@@ -16809,12 +16816,77 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr candidate = simplify(polynomial_part+logarithmic_part+
             rational_part);
         if(candidate.reachable_node_count() > options.maximum_nodes) return false;
-        if(!rational_identity(differentiate(candidate,variable)-expression))
+        if(!rational_identity(differentiate(candidate,variable)-pole_input))
             return false;
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);
         result.diagnostic.clear();
+        return true;
+    };
+    auto classify_pure_primitive_pole = [&]() -> bool{
+        exact_expr scalar = integer(1);
+        exact_expr dependent_part = expression;
+        if(expression.operation() == exact_opcode::multiply){
+            scalar = integer(1);
+            dependent_part = integer(1);
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr factor = expression.operand(i);
+                if(!integration_depends_on(factor, variable) &&
+                   integration_exact_expression_tree(factor))
+                    scalar = scalar * factor;
+                else
+                    dependent_part = dependent_part * factor;
+            }
+            scalar = simplify(scalar);
+            dependent_part = simplify(dependent_part);
+        }
+        if(scalar == integer(0)){
+            result.status = risch_status::elementary;
+            result.elementary_part = integer(0);
+            result.remainder = integer(0);
+            result.diagnostic.clear();
+            return true;
+        }
+        if(dependent_part == integer(1) || scalar == integer(1))
+            return classify_pure_primitive_pole_core(expression);
+
+        risch_result previous = result;
+        if(!classify_pure_primitive_pole_core(dependent_part)){
+            result = std::move(previous);
+            return false;
+        }
+        if(result.status != risch_status::elementary &&
+           result.status != risch_status::proven_nonelementary){
+            result = std::move(previous);
+            return false;
+        }
+        exact_expr scalar_result = result.elementary_part;
+        exact_expr scalar_remainder = result.remainder;
+        result.elementary_part = simplify(scalar * scalar_result);
+        result.remainder = simplify(scalar * scalar_remainder);
+        if(result.status == risch_status::proven_nonelementary){
+            bool scalar_nonzero =
+                (scalar.is_value() && !scalar.value().is_approximate() &&
+                 !scalar.value().is_zero()) ||
+                integration_strictly_positive_constant(scalar) ||
+                integration_strictly_positive_constant(-scalar);
+            if(scalar.operation() == exact_opcode::symbol &&
+               storage_->has_assumption(scalar.root_,
+                                        exact_storage::assumed_positive))
+                scalar_nonzero = true;
+            if(!scalar_nonzero &&
+               std::find(result.conditions.begin(), result.conditions.end(),
+                         scalar) == result.conditions.end())
+                result.conditions.push_back(scalar);
+        }
+        exact_expr reconstruction_error = simplify(expand(
+            differentiate(result.elementary_part, variable) +
+            result.remainder - expression, 100000));
+        if(reconstruction_error != integer(0)){
+            result = std::move(previous);
+            return false;
+        }
         return true;
     };
     if(classify_pure_primitive_pole()) return result;

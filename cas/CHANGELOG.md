@@ -35,3 +35,9 @@
 - `feat`: 增加受限的有理换元积分：匹配精确 `D(p)` 因子，对 `p -> t` 后仅依赖 `t` 的有理式调用严格积分器，回代后验证完整导数恒等式；传播子问题条件，并为对数参数与负幂补充非零条件。
 - `test`: RDE 核心回归通过，覆盖 `cos(x)/(1+sin(x)^2)`、`1/(x*(1+ln(x)^2))`，以及混合塔对数和负幂的条件保留。
 - 已推送提交：`ce5638b` (`feat: integrate rational functions through exact substitutions`)。
+
+### Follow-up: 2026-11-03
+
+- `feat`: 有理换元现在可提出精确且与积分变量无关的乘法系数；换元后的有理式允许多项式项与真分式项相加，并支持当前 R0 表达式系数域内的符号参数分子。
+- `test`: RDE 核心回归通过，增加符号系数正弦换元和 `ln(x)` 参数的混合有理换元验证。
+- 已推送提交：`eddabc7` (`feat: support symbolic rational chain substitutions`)。
