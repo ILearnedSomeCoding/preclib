@@ -13719,8 +13719,36 @@ risch_result exact_context::integrate_elementary_impl(
                 if(i != derivative_index) residual = residual * factors[i];
             if(residual.reachable_node_count() > options.maximum_nodes) continue;
 
+            exact_expr constant_coefficient = integer(1);
+            exact_expr variable_residual = integer(1);
+            std::vector<exact_expr> residual_factors;
+            if(residual.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < residual.operand_count(); ++i)
+                    residual_factors.push_back(residual.operand(i));
+            }else{
+                residual_factors.push_back(residual);
+            }
+            bool exact_coefficient = true;
+            for(const exact_expr &factor : residual_factors){
+                if(!integration_depends_on(factor, variable)){
+                    if(!integration_exact_expression_tree(factor)){
+                        exact_coefficient = false;
+                        break;
+                    }
+                    constant_coefficient = constant_coefficient * factor;
+                }else{
+                    variable_residual = variable_residual * factor;
+                }
+            }
+            if(!exact_coefficient ||
+               constant_coefficient.reachable_node_count() >
+                   options.maximum_nodes ||
+               variable_residual.reachable_node_count() >
+                   options.maximum_nodes)
+                continue;
+
             for(const exact_expr &parameter : candidates){
-                if(!contains_node(residual, parameter)) continue;
+                if(!contains_node(variable_residual, parameter)) continue;
                 exact_expr parameter_derivative = simplify(
                     differentiate(parameter, variable));
                 if(parameter_derivative == integer(0) ||
@@ -13736,7 +13764,7 @@ risch_result exact_context::integrate_elementary_impl(
                     if(suffix == SIZE_MAX) return false;
                 }
                 exact_expr parameter_integrand = substitute(
-                    residual, parameter, integration_variable);
+                    variable_residual, parameter, integration_variable);
                 if(integration_depends_on(parameter_integrand, variable) ||
                    parameter_integrand.reachable_node_count() >
                        options.maximum_nodes)
@@ -13768,7 +13796,7 @@ risch_result exact_context::integrate_elementary_impl(
 
                 exact_expr candidate = substitute(
                     parameter_result.elementary_part, integration_variable,
-                    parameter);
+                    parameter) * constant_coefficient;
                 if(candidate.reachable_node_count() > options.maximum_nodes)
                     continue;
                 exact_expr error = simplify(expand(

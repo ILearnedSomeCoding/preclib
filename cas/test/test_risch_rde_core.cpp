@@ -1037,7 +1037,64 @@ int main(){
                   << '\n';
         return 1;
     }
+    exact_expr symbolic_chain_scale = context.symbol("a");
+    exact_expr scaled_rational_sine_chain =
+        symbolic_chain_scale * rational_sine_chain;
+    risch_result scaled_rational_sine_chain_result =
+        context.integrate_elementary(scaled_rational_sine_chain, x);
+    exact_expr scaled_rational_sine_chain_expected = symbolic_chain_scale *
+        rational_sine_chain_expected;
+    if(scaled_rational_sine_chain_result.status != risch_status::elementary ||
+       scaled_rational_sine_chain_result.remainder != context.integer(0) ||
+       context.simplify(scaled_rational_sine_chain_result.elementary_part -
+                        scaled_rational_sine_chain_expected) !=
+           context.integer(0) ||
+       context.simplify(context.differentiate(
+           scaled_rational_sine_chain_result.elementary_part, x) -
+           scaled_rational_sine_chain) != context.integer(0)){
+        std::cerr << "symbolically scaled rational chain substitution failed: "
+                  << scaled_rational_sine_chain_result.diagnostic
+                  << " primitive="
+                  << scaled_rational_sine_chain_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr symbolic_numerator_chain = context.cosine(x) *
+        (symbolic_chain_scale + context.sine(x)) /
+        (context.integer(1) + context.power(context.sine(x),
+                                              context.integer(2)));
+    risch_result symbolic_numerator_chain_result = context.integrate_elementary(
+        symbolic_numerator_chain, x);
+    if(symbolic_numerator_chain_result.status != risch_status::elementary ||
+       symbolic_numerator_chain_result.remainder != context.integer(0)){
+        std::cerr << "symbolic rational numerator chain substitution failed: "
+                  << symbolic_numerator_chain_result.diagnostic
+                  << " primitive="
+                  << symbolic_numerator_chain_result.elementary_part.to_string()
+                  << '\n';
+        return 1;
+    }
     exact_expr logarithmic_chain_parameter = context.natural_logarithm(x);
+    exact_expr mixed_rational_chain =
+        context.differentiate(logarithmic_chain_parameter, x) *
+        (logarithmic_chain_parameter + context.integer(1) /
+            (context.integer(1) + logarithmic_chain_parameter));
+    risch_result mixed_rational_chain_result = context.integrate_elementary(
+        mixed_rational_chain, x);
+    exact_expr mixed_rational_chain_error = context.simplify(context.expand(
+        context.differentiate(mixed_rational_chain_result.elementary_part, x) -
+        mixed_rational_chain));
+    if(mixed_rational_chain_result.status != risch_status::elementary ||
+       mixed_rational_chain_result.remainder != context.integer(0) ||
+       mixed_rational_chain_error != context.integer(0)){
+        std::cerr << "mixed rational chain substitution failed: "
+                  << mixed_rational_chain_result.diagnostic << " primitive="
+                  << mixed_rational_chain_result.elementary_part.to_string()
+                  << " derivative error="
+                  << mixed_rational_chain_error.to_string()
+                  << '\n';
+        return 1;
+    }
     exact_expr rational_logarithmic_chain = context.integer(1) / x /
         (context.integer(1) + context.power(logarithmic_chain_parameter,
                                              context.integer(2)));

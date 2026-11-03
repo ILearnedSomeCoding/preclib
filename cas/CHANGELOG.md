@@ -29,3 +29,9 @@
 - `feat`: 将精确链式幂识别扩展到普通复合参数；普通 `integrate()` 在严格验证时使用调用者的紧凑输入，避免旧化简器先展开而漏掉链式结构。单层指数仍走专用分派，负幂条件不会被普通入口丢弃。
 - `test`: RDE 核心回归通过；新增正/负整数幂复合参数验证，并确认普通 `context.integrate()` 返回已验证的无条件原函数。
 - 已推送提交：`6bb6fa3` (`feat: generalize exact chain-power integration`)。
+
+### Follow-up: 2026-11-03
+
+- `feat`: 增加受限的有理换元积分：匹配精确 `D(p)` 因子，对 `p -> t` 后仅依赖 `t` 的有理式调用严格积分器，回代后验证完整导数恒等式；传播子问题条件，并为对数参数与负幂补充非零条件。
+- `test`: RDE 核心回归通过，覆盖 `cos(x)/(1+sin(x)^2)`、`1/(x*(1+ln(x)^2))`，以及混合塔对数和负幂的条件保留。
+- 已推送提交：`ce5638b` (`feat: integrate rational functions through exact substitutions`)。
