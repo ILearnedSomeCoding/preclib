@@ -5,7 +5,8 @@
 
 static bool verified_primitive(exact_context &context,
                                const exact_expr &integrand,
-                               const exact_expr &variable){
+                               const exact_expr &variable,
+                               const exact_expr &variable_value){
     risch_result result = context.integrate_elementary(integrand, variable);
     if(result.status != risch_status::elementary ||
        result.remainder != context.integer(0)){
@@ -15,7 +16,7 @@ static bool verified_primitive(exact_context &context,
     }
     exact_expr error = context.simplify(context.substitute(
         context.differentiate(result.elementary_part, variable) - integrand,
-        variable, context.integer(0)));
+        variable, variable_value));
     if(error != context.integer(0))
         std::cerr << "strict derivative verification returned "
                   << error.to_string() << " for " << integrand.to_string() << '\n';
@@ -37,12 +38,59 @@ int main(){
     exact_expr rational_rhs = exp_x * x /
         context.power(x + context.integer(1), context.integer(2));
     exact_expr polynomial_rate_rhs = context.integer(2) * x * exp_x2;
-    if(!verified_primitive(context, polynomial_rhs, x) ||
-       !verified_primitive(context, rational_rhs, x) ||
-       !verified_primitive(context, polynomial_rate_rhs, x)){
+    exact_expr negative_exponential_polynomial_rhs =
+        x * context.exponential(-x);
+    exact_expr negative_base_power_polynomial_rhs = x /
+        context.power(context.integer(2), x);
+    if(!verified_primitive(context, polynomial_rhs, x, context.integer(0)) ||
+       !verified_primitive(context, rational_rhs, x, context.integer(0)) ||
+       !verified_primitive(context, polynomial_rate_rhs, x, context.integer(0))){
         std::cerr << "a constructive polynomial RDE case failed\n";
         return 1;
     }
+    auto verify_negative_rate = [&](const exact_expr &integrand,
+                                    const exact_expr &normalized_integrand,
+                                    const exact_expr &expected,
+                                    const exact_expr &factor){
+        risch_result result = context.integrate_elementary(integrand, x);
+        if(result.status != risch_status::elementary ||
+           result.remainder != context.integer(0) ||
+           context.simplify(result.elementary_part - expected) !=
+               context.integer(0)){
+            std::cerr << "negative-rate exponential polynomial RDE failed: "
+                      << result.diagnostic << " primitive="
+                      << result.elementary_part.to_string() << '\n';
+            return false;
+        }
+        exact_expr error = context.simplify((
+            context.differentiate(result.elementary_part, x) -
+            normalized_integrand) / factor);
+        if(error != context.integer(0))
+            error = context.simplify(context.expand(error));
+        if(error != context.integer(0))
+            error = context.simplify(context.factor(error));
+        if(error != context.integer(0))
+            std::cerr << "negative-rate derivative identity failed: "
+                      << error.to_string() << '\n';
+        return error == context.integer(0);
+    };
+    exact_expr negative_exponential_factor = context.exponential(-x);
+    if(!verify_negative_rate(negative_exponential_polynomial_rhs,
+            negative_exponential_polynomial_rhs,
+            -(x + context.integer(1)) * negative_exponential_factor,
+            negative_exponential_factor)) return 1;
+    exact_expr log_two = context.natural_logarithm(context.integer(2));
+    exact_expr negative_base_power_factor =
+        context.power(context.integer(2), -x);
+    exact_expr negative_base_power_primitive = negative_base_power_factor *
+        (-x / log_two - context.integer(1) /
+            context.power(log_two, context.integer(2)));
+    exact_expr normalized_negative_base_power_rhs =
+        x * negative_base_power_factor;
+    if(!verify_negative_rate(negative_base_power_polynomial_rhs,
+            normalized_negative_base_power_rhs,
+            negative_base_power_primitive, negative_base_power_factor))
+        return 1;
     exact_expr shifted_laurent_rhs = context.integer(1) /
         (context.exponential(context.integer(3) * x) +
          context.exponential(context.integer(2) * x + context.integer(1)));
@@ -164,6 +212,56 @@ int main(){
                   << symbolic_mixed_cubic_result.elementary_part.to_string()
                   << " status=" << (int)symbolic_mixed_cubic_result.status
                   << " diagnostic=" << symbolic_mixed_cubic_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr mixed_tower_log_argument = context.integer(1) + exp_x * log_x;
+    exact_expr mixed_tower_log_derivative =
+        context.differentiate(mixed_tower_log_argument, x) /
+        mixed_tower_log_argument;
+    risch_result mixed_tower_log_result = context.integrate_elementary(
+        mixed_tower_log_derivative, x);
+    exact_expr mixed_tower_log_error = context.integer(1);
+    if(mixed_tower_log_result.status == risch_status::elementary)
+        mixed_tower_log_error = context.simplify(
+            context.differentiate(mixed_tower_log_result.elementary_part, x) -
+            mixed_tower_log_derivative);
+    if(mixed_tower_log_result.status != risch_status::elementary ||
+       mixed_tower_log_result.remainder != context.integer(0) ||
+       mixed_tower_log_result.elementary_part !=
+           context.natural_logarithm(mixed_tower_log_argument) ||
+       mixed_tower_log_result.conditions.size() != 1 ||
+       mixed_tower_log_result.conditions[0] != mixed_tower_log_argument ||
+       mixed_tower_log_error != context.integer(0)){
+        std::cerr << "mixed-tower logarithmic derivative failed: "
+                  << mixed_tower_log_result.diagnostic
+                  << " primitive="
+                  << mixed_tower_log_result.elementary_part.to_string()
+                  << " conditions="
+                  << mixed_tower_log_result.conditions.size()
+                  << " derivative error=" << mixed_tower_log_error.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr scaled_mixed_tower_log_derivative =
+        context.integer(3) * mixed_tower_log_derivative;
+    risch_result scaled_mixed_tower_log_result = context.integrate_elementary(
+        scaled_mixed_tower_log_derivative, x);
+    if(scaled_mixed_tower_log_result.status != risch_status::elementary ||
+       scaled_mixed_tower_log_result.remainder != context.integer(0) ||
+       scaled_mixed_tower_log_result.elementary_part !=
+           context.integer(3) *
+               context.natural_logarithm(mixed_tower_log_argument) ||
+       scaled_mixed_tower_log_result.conditions.size() != 1 ||
+       scaled_mixed_tower_log_result.conditions[0] !=
+           mixed_tower_log_argument ||
+       context.simplify(context.differentiate(
+           scaled_mixed_tower_log_result.elementary_part, x) -
+           scaled_mixed_tower_log_derivative) != context.integer(0)){
+        std::cerr << "scaled mixed-tower logarithmic derivative failed: "
+                  << scaled_mixed_tower_log_result.diagnostic
+                  << " primitive="
+                  << scaled_mixed_tower_log_result.elementary_part.to_string()
+                  << '\n';
         return 1;
     }
     exact_expr logarithmic_exponential_rhs = logarithmic_exponential *
@@ -844,6 +942,36 @@ int main(){
                   << " primitive="
                   << symbolic_logistic_numerator_result.elementary_part.to_string()
                   << '\n';
+        return 1;
+    }
+    exact_expr second_mixed_tower_log_argument = context.integer(1) +
+        context.exponential(x) * context.natural_logarithm(x + context.integer(1));
+    exact_expr sum_mixed_tower_log_derivatives = a * (
+        context.differentiate(mixed_tower_log_argument, x) /
+            mixed_tower_log_argument +
+        context.integer(2) *
+            context.differentiate(second_mixed_tower_log_argument, x) /
+            second_mixed_tower_log_argument);
+    risch_result sum_mixed_tower_log_result = context.integrate_elementary(
+        sum_mixed_tower_log_derivatives, x);
+    exact_expr sum_mixed_tower_log_expected =
+        a * (context.natural_logarithm(mixed_tower_log_argument) +
+             context.integer(2) * context.natural_logarithm(
+                 second_mixed_tower_log_argument));
+    if(sum_mixed_tower_log_result.status != risch_status::elementary ||
+       sum_mixed_tower_log_result.remainder != context.integer(0) ||
+       context.simplify(sum_mixed_tower_log_result.elementary_part -
+                        sum_mixed_tower_log_expected) != context.integer(0) ||
+       sum_mixed_tower_log_result.conditions.size() != 2 ||
+       context.simplify(context.differentiate(
+           sum_mixed_tower_log_result.elementary_part, x) -
+           sum_mixed_tower_log_derivatives) != context.integer(0)){
+        std::cerr << "sum of mixed-tower logarithmic derivatives failed: "
+                  << sum_mixed_tower_log_result.diagnostic
+                  << " primitive="
+                  << sum_mixed_tower_log_result.elementary_part.to_string()
+                  << " conditions="
+                  << sum_mixed_tower_log_result.conditions.size() << '\n';
         return 1;
     }
     exact_expr symbolic_exp_parameter =

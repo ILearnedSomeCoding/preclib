@@ -13670,6 +13670,119 @@ risch_result exact_context::integrate_elementary_impl(
         return result;
     }
     if(hermite_partial.status == risch_status::proven_nonelementary) return hermite_partial;
+    // Recognize sums of logarithmic derivatives from mixed logarithmic towers.
+    // Each summand must independently match c*D(p)/p, and the full sum is
+    // verified again before its primitive is accepted.
+    auto classify_tower_logarithmic_derivative = [&]() -> bool{
+        std::vector<exact_expr> terms;
+        if(expression.operation() == exact_opcode::add){
+            for(size_t i = 0; i < expression.operand_count(); ++i)
+                terms.push_back(expression.operand(i));
+        }else if(expression.operation() == exact_opcode::multiply){
+            exact_expr additive_factor;
+            exact_expr constant_factor = integer(1);
+            bool eligible = true;
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                const exact_expr &factor = expression.operand(i);
+                if(factor.operation() == exact_opcode::add &&
+                   !additive_factor.valid()){
+                    additive_factor = factor;
+                }else if(integration_depends_on(factor, variable) ||
+                         !integration_exact_expression_tree(factor)){
+                    eligible = false;
+                    break;
+                }else{
+                    constant_factor = constant_factor * factor;
+                }
+            }
+            if(eligible && additive_factor.valid()){
+                for(size_t i = 0; i < additive_factor.operand_count(); ++i)
+                    terms.push_back(constant_factor *
+                                    additive_factor.operand(i));
+            }else{
+                terms.push_back(expression);
+            }
+        }else{
+            terms.push_back(expression);
+        }
+        exact_expr candidate = integer(0);
+        std::vector<exact_expr> conditions;
+        for(const exact_expr &term : terms){
+            std::vector<exact_expr> arguments;
+            std::unordered_set<uint32_t> visited;
+            auto collect = [&](auto &&self, const exact_expr &part) -> void{
+                if(!visited.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::power &&
+                   part.operand_count() == 2){
+                    int64_t exponent = 0;
+                    const exact_expr &base = part.operand(0);
+                    if(integration_signed_exponent(part.operand(1), exponent) &&
+                       exponent == -1 && base != integer(0) &&
+                       integration_depends_on(base, variable))
+                        arguments.push_back(base);
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect(collect, term);
+            bool classified = false;
+            for(const exact_expr &argument : arguments){
+                bool has_log_generator = false;
+                std::unordered_set<uint32_t> argument_visited;
+                auto inspect_argument = [&](auto &&self,
+                                            const exact_expr &part) -> void{
+                    if(!argument_visited.insert(part.id()).second) return;
+                    exact_opcode op = part.operation();
+                    if(op == exact_opcode::natural_logarithm ||
+                       op == exact_opcode::logarithm_base_2 ||
+                       op == exact_opcode::logarithm_base_10){
+                        has_log_generator = true;
+                        return;
+                    }
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                };
+                inspect_argument(inspect_argument, argument);
+                if(!has_log_generator) continue;
+                exact_expr logarithm = natural_logarithm(argument);
+                exact_expr logarithmic_derivative = simplify(
+                    differentiate(logarithm, variable));
+                if(logarithmic_derivative == integer(0)) continue;
+                exact_expr coefficient = simplify(
+                    term / logarithmic_derivative);
+                if(coefficient == integer(0) ||
+                   integration_depends_on(coefficient, variable) ||
+                   !integration_exact_expression_tree(coefficient)) continue;
+                exact_expr term_candidate = coefficient == integer(1) ?
+                    logarithm : simplify(coefficient * logarithm);
+                if(term_candidate.reachable_node_count() >
+                   options.maximum_nodes) continue;
+                exact_expr term_error = simplify(expand(
+                    differentiate(term_candidate, variable) - term,
+                    verification_expansion_budget));
+                if(term_error != integer(0)) continue;
+                candidate = candidate + term_candidate;
+                if(std::find(conditions.begin(), conditions.end(), argument) ==
+                   conditions.end()) conditions.push_back(argument);
+                classified = true;
+                break;
+            }
+            if(!classified) return false;
+        }
+        if(candidate.reachable_node_count() > options.maximum_nodes)
+            return false;
+        exact_expr error = simplify(expand(
+            differentiate(candidate, variable) - expression,
+            verification_expansion_budget));
+        if(error != integer(0)) return false;
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.conditions = std::move(conditions);
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_tower_logarithmic_derivative()) return result;
     auto try_verified_elementary = [&]() -> bool{
         auto verify_candidate = [&](exact_expr candidate) -> bool{
         if(!candidate.valid() ||
