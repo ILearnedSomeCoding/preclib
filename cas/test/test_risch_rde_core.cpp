@@ -983,6 +983,87 @@ int main(){
                   << sum_mixed_tower_derivative_error.to_string() << '\n';
         return 1;
     }
+    exact_expr ordinary_chain_argument = context.sine(x) +
+        context.power(x + context.integer(1), context.integer(2));
+    exact_expr ordinary_positive_chain =
+        context.differentiate(ordinary_chain_argument, x) *
+        context.power(ordinary_chain_argument, context.integer(4));
+    risch_result ordinary_positive_chain_result = context.integrate_elementary(
+        ordinary_positive_chain, x);
+    exact_expr ordinary_positive_chain_expected =
+        context.power(ordinary_chain_argument, context.integer(5)) /
+        context.integer(5);
+    exact_expr ordinary_positive_chain_public = context.integrate(
+        ordinary_positive_chain, x);
+    if(ordinary_positive_chain_result.status != risch_status::elementary ||
+       ordinary_positive_chain_result.remainder != context.integer(0) ||
+       context.simplify(ordinary_positive_chain_result.elementary_part -
+                        ordinary_positive_chain_expected) !=
+           context.integer(0) ||
+       context.simplify(ordinary_positive_chain_public -
+                        ordinary_positive_chain_expected) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           ordinary_positive_chain_result.elementary_part, x) -
+           ordinary_positive_chain) != context.integer(0)){
+        std::cerr << "ordinary composite positive-power integral failed: "
+                  << ordinary_positive_chain_result.diagnostic << " primitive="
+                  << ordinary_positive_chain_result.elementary_part.to_string()
+                  << " strict conditions="
+                  << ordinary_positive_chain_result.conditions.size()
+                  << " public=" << ordinary_positive_chain_public.to_string()
+                  << " public difference="
+                  << context.simplify(ordinary_positive_chain_public -
+                      ordinary_positive_chain_expected).to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr ordinary_negative_chain =
+        context.differentiate(ordinary_chain_argument, x) /
+        context.power(ordinary_chain_argument, context.integer(3));
+    risch_result ordinary_negative_chain_result = context.integrate_elementary(
+        ordinary_negative_chain, x);
+    exact_expr ordinary_negative_chain_expected =
+        -context.integer(1) /
+        (context.integer(2) * context.power(ordinary_chain_argument,
+                                             context.integer(2)));
+    exact_expr ordinary_negative_chain_derivative_error = context.simplify(
+        context.expand(context.differentiate(
+            ordinary_negative_chain_result.elementary_part, x) -
+            ordinary_negative_chain));
+    if(ordinary_negative_chain_result.status != risch_status::elementary ||
+       ordinary_negative_chain_result.remainder != context.integer(0) ||
+       context.simplify(ordinary_negative_chain_result.elementary_part -
+                        ordinary_negative_chain_expected) !=
+           context.integer(0) ||
+       ordinary_negative_chain_result.conditions.size() != 1 ||
+       context.simplify(ordinary_negative_chain_result.conditions[0] -
+                        ordinary_chain_argument) != context.integer(0) ||
+       ordinary_negative_chain_derivative_error != context.integer(0)){
+        std::cerr << "ordinary composite negative-power integral failed: "
+                  << ordinary_negative_chain_result.diagnostic << " primitive="
+                  << ordinary_negative_chain_result.elementary_part.to_string()
+                  << " conditions="
+                  << ordinary_negative_chain_result.conditions.size();
+        if(!ordinary_negative_chain_result.conditions.empty())
+            std::cerr << " condition="
+                      << ordinary_negative_chain_result.conditions[0].to_string()
+                      << " expected=" << ordinary_chain_argument.to_string()
+                      << " condition difference="
+                      << context.simplify(
+                          ordinary_negative_chain_result.conditions[0] -
+                          ordinary_chain_argument).to_string();
+        std::cerr << " status=" << (int)ordinary_negative_chain_result.status
+                  << " remainder="
+                  << ordinary_negative_chain_result.remainder.to_string()
+                  << " primitive difference="
+                  << context.simplify(
+                      ordinary_negative_chain_result.elementary_part -
+                      ordinary_negative_chain_expected).to_string()
+                  << " derivative error="
+                  << ordinary_negative_chain_derivative_error.to_string();
+        std::cerr << '\n';
+        return 1;
+    }
     exact_expr pure_exponential_log_argument = context.integer(1) +
         context.exponential(context.exponential(x));
     exact_expr pure_exponential_log_derivative =

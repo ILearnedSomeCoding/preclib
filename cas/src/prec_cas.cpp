@@ -11975,7 +11975,10 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                algebraic.conditions.empty() && algebraic.elementary_part != integer(0))
                 return simplify(algebraic.elementary_part + unresolved(algebraic.remainder.id()));
         }else{
-            auto strict = integrate_elementary(normalized, variable);
+            // Keep the caller's compact form for Risch recognition. The
+            // legacy simplifier can expand a chain-rule product before the
+            // exact tower recognizer sees it.
+            auto strict = integrate_elementary(expression, variable);
             if(strict.status == risch_status::elementary &&
                strict.remainder == integer(0) && strict.conditions.empty())
                 return simplify(strict.elementary_part);
@@ -13670,8 +13673,8 @@ risch_result exact_context::integrate_elementary_impl(
         return result;
     }
     if(hermite_partial.status == risch_status::proven_nonelementary) return hermite_partial;
-    // Recognize sums of exact differentials c*D(p)*p^m from supported towers.
-    // Each summand is certified independently, then the complete sum is checked.
+    // Recognize sums of exact differentials c*D(p)*p^m. Each summand is
+    // certified independently, then the complete sum is checked.
     auto classify_tower_logarithmic_derivative = [&]() -> bool{
         std::vector<exact_expr> terms;
         if(expression.operation() == exact_opcode::add){
@@ -13736,6 +13739,7 @@ risch_result exact_context::integrate_elementary_impl(
                 const exact_expr &argument = entry.first;
                 int64_t denominator_exponent = entry.second;
                 bool has_log_generator = false;
+                bool has_exponential = false;
                 bool has_nested_exponential = false;
                 std::unordered_set<uint64_t> argument_visited;
                 auto inspect_argument = [&](auto &&self,
@@ -13750,6 +13754,7 @@ risch_result exact_context::integrate_elementary_impl(
                        op == exact_opcode::logarithm_base_10)
                         has_log_generator = true;
                     if(op == exact_opcode::exponential){
+                        has_exponential = true;
                         if(inside_exponential)
                             has_nested_exponential = true;
                         for(size_t i = 0; i < part.operand_count(); ++i)
@@ -13760,7 +13765,8 @@ risch_result exact_context::integrate_elementary_impl(
                         self(self, part.operand(i), inside_exponential);
                 };
                 inspect_argument(inspect_argument, argument, false);
-                if(!has_log_generator && !has_nested_exponential) continue;
+                if(has_exponential && !has_log_generator &&
+                   !has_nested_exponential) continue;
                 exact_expr unit_primitive;
                 if(denominator_exponent == -1){
                     unit_primitive = natural_logarithm(argument);
@@ -13773,8 +13779,11 @@ risch_result exact_context::integrate_elementary_impl(
                 exact_expr unit_derivative = simplify(
                     differentiate(unit_primitive, variable));
                 if(unit_derivative == integer(0)) continue;
-                exact_expr coefficient = simplify(
-                    term / unit_derivative);
+                exact_expr coefficient =
+                    simplify(expand(term - unit_derivative,
+                                    verification_expansion_budget)) == integer(0)
+                        ? integer(1)
+                        : simplify(term / unit_derivative);
                 if(coefficient == integer(0) ||
                    integration_depends_on(coefficient, variable) ||
                    !integration_exact_expression_tree(coefficient)) continue;
