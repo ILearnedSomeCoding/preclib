@@ -946,32 +946,67 @@ int main(){
     }
     exact_expr second_mixed_tower_log_argument = context.integer(1) +
         context.exponential(x) * context.natural_logarithm(x + context.integer(1));
-    exact_expr sum_mixed_tower_log_derivatives = a * (
+    exact_expr mixed_tower_pole_argument = context.integer(2) +
+        context.exponential(context.exponential(x)) *
+            context.natural_logarithm(x + context.integer(2));
+    exact_expr mixed_tower_power_argument = context.integer(3) +
+        context.exponential(context.exponential(context.exponential(x)));
+    exact_expr sum_mixed_tower_differentials = a * (
         context.differentiate(mixed_tower_log_argument, x) /
             mixed_tower_log_argument +
         context.integer(2) *
             context.differentiate(second_mixed_tower_log_argument, x) /
-            second_mixed_tower_log_argument);
+            second_mixed_tower_log_argument +
+        context.integer(5) *
+            context.differentiate(mixed_tower_pole_argument, x) /
+            context.power(mixed_tower_pole_argument, context.integer(3)) +
+        context.integer(7) *
+            context.differentiate(mixed_tower_power_argument, x) *
+            context.power(mixed_tower_power_argument, context.integer(4)));
     risch_result sum_mixed_tower_log_result = context.integrate_elementary(
-        sum_mixed_tower_log_derivatives, x);
-    exact_expr sum_mixed_tower_log_expected =
-        a * (context.natural_logarithm(mixed_tower_log_argument) +
-             context.integer(2) * context.natural_logarithm(
-                 second_mixed_tower_log_argument));
+        sum_mixed_tower_differentials, x);
+    exact_expr sum_mixed_tower_derivative_error = context.simplify(
+        context.expand(context.differentiate(
+            sum_mixed_tower_log_result.elementary_part, x) -
+            sum_mixed_tower_differentials));
     if(sum_mixed_tower_log_result.status != risch_status::elementary ||
        sum_mixed_tower_log_result.remainder != context.integer(0) ||
-       context.simplify(sum_mixed_tower_log_result.elementary_part -
-                        sum_mixed_tower_log_expected) != context.integer(0) ||
-       sum_mixed_tower_log_result.conditions.size() != 2 ||
-       context.simplify(context.differentiate(
-           sum_mixed_tower_log_result.elementary_part, x) -
-           sum_mixed_tower_log_derivatives) != context.integer(0)){
+       sum_mixed_tower_log_result.conditions.size() != 3 ||
+       sum_mixed_tower_derivative_error != context.integer(0)){
         std::cerr << "sum of mixed-tower logarithmic derivatives failed: "
                   << sum_mixed_tower_log_result.diagnostic
                   << " primitive="
                   << sum_mixed_tower_log_result.elementary_part.to_string()
                   << " conditions="
-                  << sum_mixed_tower_log_result.conditions.size() << '\n';
+                  << sum_mixed_tower_log_result.conditions.size()
+                  << " derivative error="
+                  << sum_mixed_tower_derivative_error.to_string() << '\n';
+        return 1;
+    }
+    exact_expr pure_exponential_log_argument = context.integer(1) +
+        context.exponential(context.exponential(x));
+    exact_expr pure_exponential_log_derivative =
+        context.differentiate(pure_exponential_log_argument, x) /
+        pure_exponential_log_argument;
+    risch_result pure_exponential_log_result = context.integrate_elementary(
+        pure_exponential_log_derivative, x);
+    if(pure_exponential_log_result.status != risch_status::elementary ||
+       pure_exponential_log_result.remainder != context.integer(0) ||
+       context.simplify(pure_exponential_log_result.elementary_part -
+           context.natural_logarithm(pure_exponential_log_argument)) !=
+           context.integer(0) ||
+       pure_exponential_log_result.conditions.size() != 1 ||
+       pure_exponential_log_result.conditions[0] !=
+           pure_exponential_log_argument ||
+       context.simplify(context.differentiate(
+           pure_exponential_log_result.elementary_part, x) -
+           pure_exponential_log_derivative) != context.integer(0)){
+        std::cerr << "pure exponential tower logarithmic derivative failed: "
+                  << pure_exponential_log_result.diagnostic
+                  << " primitive="
+                  << pure_exponential_log_result.elementary_part.to_string()
+                  << " conditions="
+                  << pure_exponential_log_result.conditions.size() << '\n';
         return 1;
     }
     exact_expr symbolic_exp_parameter =

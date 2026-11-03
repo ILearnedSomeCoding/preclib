@@ -13670,9 +13670,8 @@ risch_result exact_context::integrate_elementary_impl(
         return result;
     }
     if(hermite_partial.status == risch_status::proven_nonelementary) return hermite_partial;
-    // Recognize sums of logarithmic derivatives from mixed logarithmic towers.
-    // Each summand must independently match c*D(p)/p, and the full sum is
-    // verified again before its primitive is accepted.
+    // Recognize sums of exact differentials c*D(p)*p^m from supported towers.
+    // Each summand is certified independently, then the complete sum is checked.
     auto classify_tower_logarithmic_derivative = [&]() -> bool{
         std::vector<exact_expr> terms;
         if(expression.operation() == exact_opcode::add){
@@ -13708,7 +13707,7 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr candidate = integer(0);
         std::vector<exact_expr> conditions;
         for(const exact_expr &term : terms){
-            std::vector<exact_expr> arguments;
+            std::vector<std::pair<exact_expr, int64_t>> arguments;
             std::unordered_set<uint32_t> visited;
             auto collect = [&](auto &&self, const exact_expr &part) -> void{
                 if(!visited.insert(part.id()).second) return;
@@ -13717,44 +13716,71 @@ risch_result exact_context::integrate_elementary_impl(
                     int64_t exponent = 0;
                     const exact_expr &base = part.operand(0);
                     if(integration_signed_exponent(part.operand(1), exponent) &&
-                       exponent == -1 && base != integer(0) &&
+                       exponent != 0 &&
+                       exponent != INT64_MAX &&
+                       (exponent < 0
+                            ? static_cast<uint64_t>(0) -
+                                  static_cast<uint64_t>(exponent)
+                            : static_cast<uint64_t>(exponent)) <=
+                           options.maximum_degree &&
+                       base != integer(0) &&
                        integration_depends_on(base, variable))
-                        arguments.push_back(base);
+                        arguments.emplace_back(base, exponent);
                 }
                 for(size_t i = 0; i < part.operand_count(); ++i)
                     self(self, part.operand(i));
             };
             collect(collect, term);
             bool classified = false;
-            for(const exact_expr &argument : arguments){
+            for(const auto &entry : arguments){
+                const exact_expr &argument = entry.first;
+                int64_t denominator_exponent = entry.second;
                 bool has_log_generator = false;
-                std::unordered_set<uint32_t> argument_visited;
+                bool has_nested_exponential = false;
+                std::unordered_set<uint64_t> argument_visited;
                 auto inspect_argument = [&](auto &&self,
-                                            const exact_expr &part) -> void{
-                    if(!argument_visited.insert(part.id()).second) return;
+                        const exact_expr &part, bool inside_exponential) -> void{
+                    uint64_t visit_key =
+                        (static_cast<uint64_t>(part.id()) << 1) |
+                        (inside_exponential ? 1u : 0u);
+                    if(!argument_visited.insert(visit_key).second) return;
                     exact_opcode op = part.operation();
                     if(op == exact_opcode::natural_logarithm ||
                        op == exact_opcode::logarithm_base_2 ||
-                       op == exact_opcode::logarithm_base_10){
+                       op == exact_opcode::logarithm_base_10)
                         has_log_generator = true;
+                    if(op == exact_opcode::exponential){
+                        if(inside_exponential)
+                            has_nested_exponential = true;
+                        for(size_t i = 0; i < part.operand_count(); ++i)
+                            self(self, part.operand(i), true);
                         return;
                     }
                     for(size_t i = 0; i < part.operand_count(); ++i)
-                        self(self, part.operand(i));
+                        self(self, part.operand(i), inside_exponential);
                 };
-                inspect_argument(inspect_argument, argument);
-                if(!has_log_generator) continue;
-                exact_expr logarithm = natural_logarithm(argument);
-                exact_expr logarithmic_derivative = simplify(
-                    differentiate(logarithm, variable));
-                if(logarithmic_derivative == integer(0)) continue;
+                inspect_argument(inspect_argument, argument, false);
+                if(!has_log_generator && !has_nested_exponential) continue;
+                exact_expr unit_primitive;
+                if(denominator_exponent == -1){
+                    unit_primitive = natural_logarithm(argument);
+                }else{
+                    int64_t primitive_exponent = denominator_exponent + 1;
+                    unit_primitive = power(argument,
+                        integer(primitive_exponent)) /
+                        integer(primitive_exponent);
+                }
+                exact_expr unit_derivative = simplify(
+                    differentiate(unit_primitive, variable));
+                if(unit_derivative == integer(0)) continue;
                 exact_expr coefficient = simplify(
-                    term / logarithmic_derivative);
+                    term / unit_derivative);
                 if(coefficient == integer(0) ||
                    integration_depends_on(coefficient, variable) ||
                    !integration_exact_expression_tree(coefficient)) continue;
-                exact_expr term_candidate = coefficient == integer(1) ?
-                    logarithm : simplify(coefficient * logarithm);
+                exact_expr term_candidate = coefficient == integer(1)
+                    ? unit_primitive
+                    : simplify(coefficient * unit_primitive);
                 if(term_candidate.reachable_node_count() >
                    options.maximum_nodes) continue;
                 exact_expr term_error = simplify(expand(
@@ -13762,8 +13788,10 @@ risch_result exact_context::integrate_elementary_impl(
                     verification_expansion_budget));
                 if(term_error != integer(0)) continue;
                 candidate = candidate + term_candidate;
-                if(std::find(conditions.begin(), conditions.end(), argument) ==
-                   conditions.end()) conditions.push_back(argument);
+                if(denominator_exponent < 0 &&
+                   std::find(conditions.begin(), conditions.end(), argument) ==
+                       conditions.end())
+                    conditions.push_back(argument);
                 classified = true;
                 break;
             }
@@ -13782,7 +13810,6 @@ risch_result exact_context::integrate_elementary_impl(
         result.diagnostic.clear();
         return true;
     };
-    if(classify_tower_logarithmic_derivative()) return result;
     auto try_verified_elementary = [&]() -> bool{
         auto verify_candidate = [&](exact_expr candidate) -> bool{
         if(!candidate.valid() ||
@@ -20939,6 +20966,7 @@ risch_result exact_context::integrate_elementary_impl(
         };
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
+            if(classify_tower_logarithmic_derivative()) return result;
             if(try_verified_elementary()) return result;
             bool linear_resource_limited = false;
             exact_expr linear_primitive =

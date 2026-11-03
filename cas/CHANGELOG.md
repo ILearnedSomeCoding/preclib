@@ -11,3 +11,9 @@
 - `test`: 增加符号斜率高次有理分母的重复极点回归，覆盖 `exp(a*x)/(1+exp(a*x))^3`；更新 `cas/RISCH.md` 中支持范围。
 - `test`: 重新构建并运行 RDE 核心回归，通过，输出 `risch core RDE cases ok`。
 - 已推送提交：`47b591d` (`test: cover symbolic-slope rational poles`)。
+
+### Follow-up: 2026-11-03
+
+- `feat`: 混合对数塔支持识别多个 `c*D(p)/p` 项之和，并接受乘在整个和外面的精确变量无关因子；逐项及总式均经精确导数恒等式验证，保留去重后的 `p!=0` 条件。
+- `test`: RDE 核心测试通过；新增负增长率 `x/e^x` 与 `x/2^x` 回归并检查预期闭式。
+- 已推送提交：`1c6c8ba` (`feat: integrate sums of mixed-tower log derivatives`)。
