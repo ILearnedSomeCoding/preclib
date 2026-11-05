@@ -47,3 +47,9 @@
 - `fix`: primitive-pole 判定现在识别精确符号常数平移，如 `ln(x)+a`，并能对 `(ln(x)+a)^(-m)` 给出经重构验证的非初等证书；外乘未知常数时保留非零条件，零倍数仍返回零原函数。
 - `test`: 新增平移对数 pole 回归，覆盖数值/符号偏移、多个 pole 阶、未知符号缩放与零缩放；focused suite 和 RDE 核心回归均通过。
 - 已推送提交：`ea5ae69` (`fix: certify shifted logarithmic poles with parameters`)。
+
+### Follow-up: 2026-11-03
+
+- `feat`: 将 primitive-pole 归约扩展到 `A*ln(x)+B` 的有限阶负幂，精确归一化斜率并保留 `A != 0` 条件。
+- `test`: 覆盖符号斜率/截距及 `m=1,2,3`；shifted-log pole suite 与 RDE core suite 均通过。
+- 已推送提交：`9ab5a01` (`feat: normalize affine logarithmic primitive poles`)。

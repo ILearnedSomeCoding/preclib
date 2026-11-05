@@ -96,6 +96,80 @@ int main(){
             return 1;
         }
     }
+    exact_expr inner_variable = context.symbol("_risch_affine_log_0");
+    std::vector<exact_expr> affine_arguments{
+        x + context.integer(1), context.integer(2) * x + context.integer(3)};
+    for(const exact_expr &argument : affine_arguments){
+        exact_expr inner_log = context.natural_logarithm(inner_variable);
+        exact_expr outer_log = context.natural_logarithm(argument);
+        for(int order : {1, 2, 3}){
+            exact_expr inner_input = context.power(
+                slope * inner_log + intercept, context.integer(-order));
+            exact_expr input = context.power(
+                slope * outer_log + intercept, context.integer(-order));
+            risch_result inner_result = context.integrate_elementary(
+                inner_input, inner_variable);
+            risch_result result = context.integrate_elementary(input, x);
+            exact_expr expected_scale = argument == x + context.integer(1)
+                ? context.integer(1)
+                : context.integer(1) / context.integer(2);
+            exact_expr expected_elementary = context.simplify(
+                context.substitute(inner_result.elementary_part, inner_variable,
+                    argument) * expected_scale);
+            exact_expr expected_remainder = context.simplify(
+                context.substitute(inner_result.remainder, inner_variable,
+                    argument) * expected_scale);
+            bool has_log_slope_condition = false;
+            for(const exact_expr &condition : result.conditions)
+                if(condition == slope) has_log_slope_condition = true;
+            if(result.status != risch_status::proven_nonelementary ||
+               !has_log_slope_condition ||
+               result.elementary_part != expected_elementary ||
+               result.remainder != expected_remainder){
+                std::cerr << "affine-inner logarithm pole failed; argument="
+                          << argument.to_string() << " order=" << order
+                          << " status=" << static_cast<int>(result.status)
+                          << " diagnostic=" << result.diagnostic << '\n';
+                return 1;
+            }
+        }
+    }
+    exact_expr argument_slope = context.symbol("argument_slope");
+    exact_expr argument_intercept = context.symbol("argument_intercept");
+    exact_expr symbolic_argument = argument_slope * x + argument_intercept;
+    for(int order : {1, 2, 3}){
+        exact_expr inner_input = context.power(
+            slope * context.natural_logarithm(inner_variable) + intercept,
+            context.integer(-order));
+        exact_expr input = context.power(
+            slope * context.natural_logarithm(symbolic_argument) + intercept,
+            context.integer(-order));
+        risch_result inner_result = context.integrate_elementary(
+            inner_input, inner_variable);
+        risch_result result = context.integrate_elementary(input, x);
+        exact_expr expected_scale = context.integer(1) / argument_slope;
+        exact_expr expected_elementary = context.simplify(
+            context.substitute(inner_result.elementary_part, inner_variable,
+                symbolic_argument) * expected_scale);
+        exact_expr expected_remainder = context.simplify(
+            context.substitute(inner_result.remainder, inner_variable,
+                symbolic_argument) * expected_scale);
+        bool has_log_slope_condition = false;
+        bool has_argument_slope_condition = false;
+        for(const exact_expr &condition : result.conditions){
+            if(condition == slope) has_log_slope_condition = true;
+            if(condition == argument_slope) has_argument_slope_condition = true;
+        }
+        if(result.status != risch_status::proven_nonelementary ||
+           !has_log_slope_condition || !has_argument_slope_condition ||
+           result.elementary_part != expected_elementary ||
+           result.remainder != expected_remainder){
+            std::cerr << "symbolic affine-log substitution failed; order="
+                      << order << " status=" << static_cast<int>(result.status)
+                      << " diagnostic=" << result.diagnostic << '\n';
+            return 1;
+        }
+    }
     exact_expr zero_input = context.integer(0) *
         context.power(log_x, context.integer(-2));
     risch_result zero_result = context.integrate_elementary(zero_input, x);

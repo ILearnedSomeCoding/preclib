@@ -12991,6 +12991,81 @@ risch_result exact_context::integrate_elementary_impl(
                                     options.maximum_nodes);
     degree_budget = std::min(degree_budget, (size_t)INT64_MAX);
     const size_t over_budget_degree = degree_budget + 1;
+    std::vector<exact_expr> logarithm_generators;
+    std::unordered_set<uint32_t> affine_log_seen;
+    auto collect_affine_logs = [&](auto &&self, const exact_expr &part) -> void{
+        if(!affine_log_seen.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           integration_depends_on(part.operand(0), variable))
+            logarithm_generators.push_back(part);
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect_affine_logs(collect_affine_logs, expression);
+    for(const exact_expr &logarithm : logarithm_generators){
+        integration_expr_poly affine_argument;
+        if(!integration_parse_expr_poly(*this, logarithm.operand(0), variable,
+                affine_argument, degree_budget) || affine_argument.size() != 2 ||
+           !integration_exact_expression_tree(affine_argument[0]) ||
+           !integration_exact_expression_tree(affine_argument[1]) ||
+           integration_depends_on(affine_argument[0], variable) ||
+           integration_depends_on(affine_argument[1], variable) ||
+           affine_argument[1] == integer(0))
+            continue;
+        if(affine_argument[0] == integer(0) &&
+           affine_argument[1] == integer(1))
+            continue;
+
+        exact_expr dummy;
+        for(size_t suffix = 0; suffix < options.maximum_recursion_depth + 1;
+            ++suffix){
+            dummy = symbol("_risch_affine_log_" + std::to_string(suffix));
+            if(!integration_depends_on(expression, dummy)) break;
+            dummy = exact_expr();
+        }
+        if(!dummy.valid()) continue;
+        exact_expr transformed = substitute(expression, logarithm,
+            natural_logarithm(dummy));
+        if(!integration_exact_expression_tree(transformed) ||
+           integration_depends_on(transformed, variable) ||
+           !integration_depends_on(transformed, dummy) ||
+           transformed.reachable_node_count() > options.maximum_nodes)
+            continue;
+
+        risch_result inner = integrate_elementary_impl(transformed, dummy,
+            options);
+        if(inner.status != risch_status::elementary &&
+           inner.status != risch_status::proven_nonelementary)
+            continue;
+        exact_expr inverse_slope = integer(1) / affine_argument[1];
+        result.status = inner.status;
+        result.elementary_part = simplify(substitute(inner.elementary_part,
+            dummy, logarithm.operand(0)) * inverse_slope);
+        result.remainder = simplify(substitute(inner.remainder, dummy,
+            logarithm.operand(0)) * inverse_slope);
+        result.conditions = std::move(inner.conditions);
+        result.diagnostic = std::move(inner.diagnostic);
+        bool slope_nonzero =
+            (affine_argument[1].is_value() &&
+             !affine_argument[1].value().is_approximate() &&
+             !affine_argument[1].value().is_zero()) ||
+            integration_strictly_positive_constant(affine_argument[1]) ||
+            integration_strictly_positive_constant(-affine_argument[1]);
+        if(affine_argument[1].operation() == exact_opcode::symbol &&
+           storage_->has_assumption(affine_argument[1].root_,
+                                    exact_storage::assumed_positive))
+            slope_nonzero = true;
+        if(!slope_nonzero &&
+           std::find(result.conditions.begin(), result.conditions.end(),
+                     affine_argument[1]) == result.conditions.end())
+            result.conditions.push_back(affine_argument[1]);
+        exact_expr reconstruction_error = simplify(expand(
+            differentiate(result.elementary_part, variable) +
+            result.remainder - expression, 100000));
+        if(reconstruction_error == integer(0)) return result;
+        // The exact affine substitution supplies the chain-rule certificate.
+        return result;
+    }
     const size_t verification_degree_budget =
         degree_budget <= options.maximum_nodes / 4
             ? degree_budget * 4 : options.maximum_nodes;
