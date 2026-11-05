@@ -346,6 +346,72 @@ int main(){
         return 1;
     }
 
+    exact_expr quadratic_log_exponential = context.exponential(
+        context.power(log_x, context.integer(2)));
+    exact_expr gaussian_log_pullback = quadratic_log_exponential / x;
+    risch_result gaussian_log_result = context.integrate_elementary(
+        gaussian_log_pullback, x);
+    if(gaussian_log_result.status != risch_status::proven_nonelementary ||
+       gaussian_log_result.elementary_part != context.integer(0) ||
+       gaussian_log_result.remainder != gaussian_log_pullback ||
+       !gaussian_log_result.conditions.empty() ||
+       context.simplify(context.differentiate(
+           gaussian_log_result.elementary_part, x) +
+           gaussian_log_result.remainder - gaussian_log_pullback) !=
+           context.integer(0)){
+        std::cerr << "quadratic logarithmic exponential was not certified: "
+                  << gaussian_log_result.diagnostic << " status="
+                  << static_cast<int>(gaussian_log_result.status) << '\n';
+        return 1;
+    }
+    exact_expr rational_log_argument =
+        (context.power(x, context.integer(2)) + context.integer(1)) /
+        (x + context.integer(2));
+    exact_expr rational_log = context.natural_logarithm(
+        rational_log_argument);
+    exact_expr rational_log_pullback = context.exponential(
+        context.power(rational_log, context.integer(2))) *
+        context.differentiate(rational_log, x);
+    risch_result rational_log_result = context.integrate_elementary(
+        rational_log_pullback, x);
+    if(rational_log_result.status != risch_status::proven_nonelementary ||
+       rational_log_result.remainder != rational_log_pullback ||
+       !rational_log_result.conditions.empty()){
+        std::cerr << "rational-log exponential was not certified: "
+                  << rational_log_result.diagnostic << " status="
+                  << static_cast<int>(rational_log_result.status) << '\n';
+        return 1;
+    }
+    exact_expr elementary_log_exponential = context.exponential(log_x) / x;
+    risch_result elementary_log_result = context.integrate_elementary(
+        elementary_log_exponential, x);
+    if(elementary_log_result.status != risch_status::elementary ||
+       elementary_log_result.remainder != context.integer(0) ||
+       context.simplify(context.differentiate(
+           elementary_log_result.elementary_part, x) -
+           elementary_log_exponential) != context.integer(0)){
+        std::cerr << "linear logarithmic exponential was misclassified: "
+                  << elementary_log_result.diagnostic << " status="
+                  << static_cast<int>(elementary_log_result.status) << '\n';
+        return 1;
+    }
+    exact_expr elementary_quadratic_cofactor = log_x *
+        quadratic_log_exponential / x;
+    risch_result elementary_quadratic_result = context.integrate_elementary(
+        elementary_quadratic_cofactor, x);
+    if(elementary_quadratic_result.status != risch_status::elementary ||
+       elementary_quadratic_result.remainder != context.integer(0) ||
+       context.simplify(context.differentiate(
+           elementary_quadratic_result.elementary_part, x) -
+           elementary_quadratic_cofactor) != context.integer(0)){
+        std::cerr << "integrable quadratic logarithmic exponential was "
+                     "misclassified: "
+                  << elementary_quadratic_result.diagnostic << " status="
+                  << static_cast<int>(elementary_quadratic_result.status)
+                  << '\n';
+        return 1;
+    }
+
     exact_expr nested_log_derivative = context.integer(1) /
         (x * log_x);
     risch_result nested_log_result = context.integrate_elementary(

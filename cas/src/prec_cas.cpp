@@ -13627,6 +13627,101 @@ risch_result exact_context::integrate_elementary_impl(
         return false;
     };
     if(classify_logarithmic_hyperexponential()) return result;
+    auto classify_logarithmic_polynomial_exponential = [&]() -> bool{
+        std::vector<exact_expr> exponential_factors;
+        std::unordered_set<uint32_t> visited;
+        auto collect_exponentials = [&](auto &&self,
+                const exact_expr &part) -> void{
+            if(!visited.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential)
+                exponential_factors.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect_exponentials(collect_exponentials, expression);
+        if(exponential_factors.size() != 1) return false;
+        exact_expr exponential_factor;
+        exponential_factor = exponential_factors[0];
+
+        std::vector<exact_expr> logarithms;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::natural_logarithm)
+                logarithms.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, exponential_factor.operand(0));
+        if(logarithms.empty()) return false;
+        exact_expr cofactor = simplify(expression / exponential_factor);
+        for(const exact_expr &logarithm : logarithms){
+            integration_expr_poly exponent;
+            if(!integration_parse_expr_poly(*this,
+                    exponential_factor.operand(0), logarithm, exponent,
+                    degree_budget))
+                continue;
+            integration_expr_trim(*this, exponent);
+            if(exponent.size() < 3) continue;
+            bool rational_coefficients = true;
+            for(const exact_expr &coefficient : exponent)
+                if(!coefficient.is_value() ||
+                   !(coefficient.value().is_rational() ||
+                     coefficient.value().is_integer())){
+                    rational_coefficients = false;
+                    break;
+                }
+            if(!rational_coefficients) continue;
+
+            integration_poly log_numerator, log_denominator;
+            if(!integration_parse_rational(logarithm.operand(0), variable,
+                    log_numerator, log_denominator, degree_budget,
+                    degree_budget) ||
+               !integration_normalize_rational(log_numerator,
+                    log_denominator))
+                continue;
+            integration_poly log_derivative_numerator = integration_sub(
+                integration_mul(integration_derivative_poly(log_numerator),
+                    log_denominator),
+                integration_mul(log_numerator,
+                    integration_derivative_poly(log_denominator)));
+            if(integration_zero_poly(log_derivative_numerator)) continue;
+
+            exact_expr logarithm_derivative = simplify(
+                differentiate(logarithm, variable));
+            if(logarithm_derivative == integer(0)) continue;
+            exact_expr scale = cofactor == logarithm_derivative ||
+                simplify(cofactor - logarithm_derivative) == integer(0)
+                ? integer(1)
+                : simplify(cofactor / logarithm_derivative);
+            if(!scale.is_value() ||
+               !(scale.value().is_rational() || scale.value().is_integer()) ||
+               scale.value().is_zero())
+                continue;
+            exact_expr reconstruction_error = simplify(expand(
+                expression - scale * exponential_factor *
+                    logarithm_derivative,
+                std::min(options.maximum_nodes, (size_t)100000)));
+            if(reconstruction_error != integer(0)) continue;
+
+            // With t=log(g(x)), this is a rational pullback of
+            // scale*exp(P(t))*dt. For a rational R(t), a pole in t would
+            // create an uncancelled higher-order pole in R' + P'*R, so R
+            // must be polynomial. Since deg(P') >= 1, its leading term
+            // raises the degree and cannot equal the constant right side.
+            // The hyperexponential Liouville criterion therefore rules out
+            // an elementary primitive in this supported rational-log tower.
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "polynomial exponential of a rational logarithm has no "
+                "elementary primitive when its logarithmic rate is nonconstant";
+            return true;
+        }
+        return false;
+    };
+    if(classify_logarithmic_polynomial_exponential()) return result;
     auto is_real_constant_expression = [&](auto &&self,
             const exact_expr &part) -> bool{
         if(part.is_value() || part.operation() == exact_opcode::constant_e ||

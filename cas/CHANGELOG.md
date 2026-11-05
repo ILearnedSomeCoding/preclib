@@ -59,3 +59,9 @@
 - `feat`: 对只依赖 `log(a*x+b)` 的精确输入执行仿射内层换元，递归积分后回代，并保留未证明非零的换元斜率条件。
 - `test`: 覆盖 `x+1`、`2*x+3`、符号 `a*x+b` 的对数 pole（阶数 1 到 3）；focused pole suite 与 RDE core suite 均通过。
 - 已推送提交：`02ed54f` (`feat: substitute affine logarithm arguments in Risch`)。
+
+### Follow-up: 2026-11-05
+
+- `feat`: 将仿射对数换元扩展到其余部分也依赖积分变量的精确被积式，并在内层变量中递归求解后严格回代。
+- `test`: 覆盖 `x^k*log(x+1)`、`x*log(x+1)^n`、非单位仿射斜率和 `log(x)^n`（`n=1..64`）；仿射对数回归与 RDE 核心回归通过。
+- 已推送提交：`a48d87d` (`feat: extend affine log substitution in Risch`)。
