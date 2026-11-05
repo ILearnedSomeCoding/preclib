@@ -13002,6 +13002,7 @@ risch_result exact_context::integrate_elementary_impl(
             self(self, part.operand(i));
     };
     collect_affine_logs(collect_affine_logs, expression);
+    if(logarithm_generators.size() != 1) logarithm_generators.clear();
     for(const exact_expr &logarithm : logarithm_generators){
         integration_expr_poly affine_argument;
         if(!integration_parse_expr_poly(*this, logarithm.operand(0), variable,
@@ -13026,6 +13027,9 @@ risch_result exact_context::integrate_elementary_impl(
         if(!dummy.valid()) continue;
         exact_expr transformed = substitute(expression, logarithm,
             natural_logarithm(dummy));
+        exact_expr inverse_affine = (dummy - affine_argument[0]) /
+            affine_argument[1];
+        transformed = substitute(transformed, variable, inverse_affine);
         if(!integration_exact_expression_tree(transformed) ||
            integration_depends_on(transformed, variable) ||
            !integration_depends_on(transformed, dummy) ||
@@ -13037,6 +13041,13 @@ risch_result exact_context::integrate_elementary_impl(
         if(inner.status != risch_status::elementary &&
            inner.status != risch_status::proven_nonelementary)
             continue;
+        bool valid_inner_conditions = true;
+        for(const exact_expr &condition : inner.conditions)
+            if(integration_depends_on(condition, dummy)){
+                valid_inner_conditions = false;
+                break;
+            }
+        if(!valid_inner_conditions) continue;
         exact_expr inverse_slope = integer(1) / affine_argument[1];
         result.status = inner.status;
         result.elementary_part = simplify(substitute(inner.elementary_part,
@@ -13059,10 +13070,6 @@ risch_result exact_context::integrate_elementary_impl(
            std::find(result.conditions.begin(), result.conditions.end(),
                      affine_argument[1]) == result.conditions.end())
             result.conditions.push_back(affine_argument[1]);
-        exact_expr reconstruction_error = simplify(expand(
-            differentiate(result.elementary_part, variable) +
-            result.remainder - expression, 100000));
-        if(reconstruction_error == integer(0)) return result;
         // The exact affine substitution supplies the chain-rule certificate.
         return result;
     }

@@ -53,3 +53,9 @@
 - `feat`: 将 primitive-pole 归约扩展到 `A*ln(x)+B` 的有限阶负幂，精确归一化斜率并保留 `A != 0` 条件。
 - `test`: 覆盖符号斜率/截距及 `m=1,2,3`；shifted-log pole suite 与 RDE core suite 均通过。
 - 已推送提交：`9ab5a01` (`feat: normalize affine logarithmic primitive poles`)。
+
+### Follow-up: 2026-11-05
+
+- `feat`: 对只依赖 `log(a*x+b)` 的精确输入执行仿射内层换元，递归积分后回代，并保留未证明非零的换元斜率条件。
+- `test`: 覆盖 `x+1`、`2*x+3`、符号 `a*x+b` 的对数 pole（阶数 1 到 3）；focused pole suite 与 RDE core suite 均通过。
+- 已推送提交：`02ed54f` (`feat: substitute affine logarithm arguments in Risch`)。

@@ -170,6 +170,104 @@ int main(){
             return 1;
         }
     }
+    for(int degree = 1; degree <= 3; ++degree){
+        exact_expr mixed_inner = context.power(
+            inner_variable - context.integer(1), context.integer(degree)) *
+            context.natural_logarithm(inner_variable);
+        exact_expr mixed_outer = context.power(x, context.integer(degree)) *
+            context.natural_logarithm(x + context.integer(1));
+        risch_result mixed_inner_result = context.integrate_elementary(
+            mixed_inner, inner_variable);
+        risch_result mixed_result = context.integrate_elementary(mixed_outer, x);
+        exact_expr mixed_expected = context.simplify(context.substitute(
+            mixed_inner_result.elementary_part, inner_variable,
+            x + context.integer(1)));
+        if(mixed_inner_result.status != risch_status::elementary ||
+           mixed_result.status != risch_status::elementary ||
+           mixed_result.elementary_part != mixed_expected ||
+           mixed_result.remainder != context.integer(0)){
+            std::cerr << "affine-log substitution failed with x^"
+                      << degree << " cofactor; status="
+                      << static_cast<int>(mixed_result.status)
+                      << " diagnostic=" << mixed_result.diagnostic << '\n';
+            return 1;
+        }
+    }
+    for(int logarithm_power = 1; logarithm_power <= 4;
+        ++logarithm_power){
+        exact_expr inner_log_power = context.power(
+            context.natural_logarithm(inner_variable),
+            context.integer(logarithm_power));
+        exact_expr outer_log_power = context.power(
+            context.natural_logarithm(x + context.integer(1)),
+            context.integer(logarithm_power));
+        exact_expr mixed_inner = (inner_variable - context.integer(1)) *
+            inner_log_power;
+        exact_expr mixed_outer = x * outer_log_power;
+        risch_result mixed_inner_result = context.integrate_elementary(
+            mixed_inner, inner_variable);
+        risch_result mixed_result = context.integrate_elementary(mixed_outer, x);
+        exact_expr mixed_expected = context.simplify(context.substitute(
+            mixed_inner_result.elementary_part, inner_variable,
+            x + context.integer(1)));
+        if(mixed_inner_result.status != risch_status::elementary ||
+           mixed_result.status != risch_status::elementary ||
+           mixed_result.elementary_part != mixed_expected ||
+           mixed_result.remainder != context.integer(0)){
+            std::cerr << "affine-log mixed power failed; log power="
+                      << logarithm_power << " status="
+                      << static_cast<int>(mixed_result.status)
+                      << " diagnostic=" << mixed_result.diagnostic << '\n';
+            return 1;
+        }
+    }
+    exact_expr scaled_mixed_inner =
+        (inner_variable - context.integer(3)) / context.integer(2) *
+        context.natural_logarithm(inner_variable);
+    exact_expr scaled_mixed_outer = x * context.natural_logarithm(
+        context.integer(2) * x + context.integer(3));
+    risch_result scaled_mixed_inner_result = context.integrate_elementary(
+        scaled_mixed_inner, inner_variable);
+    risch_result scaled_mixed_result = context.integrate_elementary(
+        scaled_mixed_outer, x);
+    exact_expr scaled_mixed_expected = context.simplify(
+        context.substitute(scaled_mixed_inner_result.elementary_part,
+            inner_variable, context.integer(2) * x + context.integer(3)) /
+        context.integer(2));
+    if(scaled_mixed_inner_result.status != risch_status::elementary ||
+       scaled_mixed_result.status != risch_status::elementary ||
+       scaled_mixed_result.elementary_part != scaled_mixed_expected ||
+       scaled_mixed_result.remainder != context.integer(0)){
+        std::cerr << "scaled affine-log substitution failed with x cofactor; status="
+                  << static_cast<int>(scaled_mixed_result.status)
+                  << " diagnostic=" << scaled_mixed_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr logarithm = context.natural_logarithm(x);
+    exact_expr expected_log_primitive = x;
+    for(int exponent = 1; exponent <= 64; ++exponent){
+        expected_log_primitive = x * context.power(logarithm,
+            context.integer(exponent)) - context.integer(exponent) *
+            expected_log_primitive;
+        exact_expr input = context.power(logarithm,
+            context.integer(exponent));
+        risch_result result = context.integrate_elementary(input, x);
+        exact_expr error = context.simplify(context.expand(
+            context.differentiate(result.elementary_part, x) +
+            result.remainder - input));
+        exact_expr recurrence_error = context.simplify(context.expand(
+            context.differentiate(expected_log_primitive, x) - input));
+        if(result.status != risch_status::elementary ||
+           result.remainder != context.integer(0) ||
+           error != context.integer(0) ||
+           recurrence_error != context.integer(0)){
+            std::cerr << "logarithm power RDE failed; exponent=" << exponent
+                      << " status=" << static_cast<int>(result.status)
+                      << " diagnostic=" << result.diagnostic
+                      << " verification error=" << error.to_string() << '\n';
+            return 1;
+        }
+    }
     exact_expr zero_input = context.integer(0) *
         context.power(log_x, context.integer(-2));
     risch_result zero_result = context.integrate_elementary(zero_input, x);
