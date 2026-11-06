@@ -13690,33 +13690,120 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr logarithm_derivative = simplify(
                 differentiate(logarithm, variable));
             if(logarithm_derivative == integer(0)) continue;
-            exact_expr scale = cofactor == logarithm_derivative ||
-                simplify(cofactor - logarithm_derivative) == integer(0)
-                ? integer(1)
-                : simplify(cofactor / logarithm_derivative);
-            if(!scale.is_value() ||
-               !(scale.value().is_rational() || scale.value().is_integer()) ||
-               scale.value().is_zero())
+            exact_expr forcing_expression = simplify(
+                cofactor / logarithm_derivative);
+            integration_expr_poly forcing, rate =
+                integration_expr_derivative(*this, exponent);
+            if(!integration_parse_expr_poly(*this, forcing_expression,
+                    logarithm, forcing, degree_budget))
                 continue;
+            integration_expr_trim(*this, forcing);
+            integration_expr_trim(*this, rate);
+            if(forcing.empty() ||
+               (forcing.size() == 1 &&
+                integration_expr_zero(*this, forcing[0])) ||
+               rate.size() < 2 ||
+               rate.size() - 1 > degree_budget)
+                continue;
+            bool rational_forcing = true;
+            for(const exact_expr &coefficient : forcing)
+                if(!coefficient.is_value() ||
+                   !(coefficient.value().is_rational() ||
+                     coefficient.value().is_integer())){
+                    rational_forcing = false;
+                    break;
+                }
+            if(!rational_forcing) continue;
             exact_expr reconstruction_error = simplify(expand(
-                expression - scale * exponential_factor *
-                    logarithm_derivative,
+                expression - exponential_factor * logarithm_derivative *
+                    integration_expr_poly_expr(*this, forcing, logarithm),
                 std::min(options.maximum_nodes, (size_t)100000)));
             if(reconstruction_error != integer(0)) continue;
 
-            // With t=log(g(x)), this is a rational pullback of
-            // scale*exp(P(t))*dt. For a rational R(t), a pole in t would
-            // create an uncancelled higher-order pole in R' + P'*R, so R
-            // must be polynomial. Since deg(P') >= 1, its leading term
-            // raises the degree and cannot equal the constant right side.
-            // The hyperexponential Liouville criterion therefore rules out
-            // an elementary primitive in this supported rational-log tower.
-            result.status = risch_status::proven_nonelementary;
-            result.elementary_part = integer(0);
-            result.remainder = expression;
-            result.diagnostic =
-                "polynomial exponential of a rational logarithm has no "
-                "elementary primitive when its logarithmic rate is nonconstant";
+            auto set_non_elementary_remainder = [&](){
+                result.status = risch_status::proven_nonelementary;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.diagnostic = "logarithmic hyperexponential RDE has "
+                    "no polynomial solution within its degree bound";
+            };
+
+            const size_t rate_degree = rate.size() - 1;
+            const size_t forcing_degree = forcing.size() - 1;
+            if(forcing_degree >= rate_degree){
+                const size_t solution_degree = forcing_degree - rate_degree;
+                if(solution_degree > degree_budget) continue;
+                integration_expr_poly solution(solution_degree + 1,
+                    integer(0));
+                for(size_t k = solution_degree + 1; k-- > 0;){
+                    const size_t target = k + rate_degree;
+                    exact_expr residual = target < forcing.size()
+                        ? forcing[target] : integer(0);
+                    if(target + 1 < solution.size())
+                        residual = residual - integer(target + 1) *
+                            solution[target + 1];
+                    for(size_t j = 0; j < rate_degree; ++j){
+                        if(j > target) continue;
+                        const size_t index = target - j;
+                        if(index < solution.size())
+                            residual = residual - rate[j] * solution[index];
+                    }
+                    solution[k] = simplify(residual / rate[rate_degree]);
+                    if(solution[k].reachable_node_count() >
+                       options.maximum_nodes){
+                        result.status = risch_status::resource_limit;
+                        result.diagnostic = "logarithmic hyperexponential RDE "
+                            "solution node budget exceeded";
+                        break;
+                    }
+                }
+                if(result.status == risch_status::resource_limit) return true;
+                integration_expr_poly lhs = integration_expr_add(*this,
+                    integration_expr_derivative(*this, solution),
+                    integration_expr_mul(*this, rate, solution));
+                bool rde_verified = true;
+                const size_t check_size = std::max(lhs.size(), forcing.size());
+                for(size_t i = 0; i < check_size; ++i){
+                    exact_expr left = i < lhs.size() ? lhs[i] : integer(0);
+                    exact_expr right = i < forcing.size()
+                        ? forcing[i] : integer(0);
+                    if(!integration_expr_zero(*this,
+                            simplify(left - right))){
+                        rde_verified = false;
+                        break;
+                    }
+                }
+                if(!rde_verified){
+                    set_non_elementary_remainder();
+                    return true;
+                }
+                exact_expr candidate = integration_expr_poly_expr(*this,
+                    solution, logarithm) * exponential_factor;
+                exact_expr derivative_error = simplify(expand(
+                    differentiate(candidate, variable) - expression,
+                    std::min(options.maximum_nodes, (size_t)100000)));
+                if(derivative_error != integer(0)){
+                    result.status = risch_status::verification_failed;
+                    result.diagnostic = "logarithmic hyperexponential RDE "
+                        "candidate failed derivative verification";
+                    return true;
+                }
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return true;
+            }
+
+            // For t=log(g(x)), D(t)=g'/g has nonzero residues. Hence no
+            // polynomial in t is special and a rational RDE solution cannot
+            // have a denominator in t: differentiating a pole raises its
+            // order without cancellation. A polynomial solution to
+            // R'+P'*R=Q must have degree deg(Q)-deg(P'). The recurrence above
+            // exhausts that bound; if deg(Q)<deg(P') or the low-degree
+            // equations fail, the hyperexponential Liouville criterion
+            // certifies that no elementary primitive exists in this tower.
+            set_non_elementary_remainder();
             return true;
         }
         return false;

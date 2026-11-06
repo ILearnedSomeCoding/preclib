@@ -411,6 +411,55 @@ int main(){
                   << '\n';
         return 1;
     }
+    exact_expr polynomial_log_cofactor =
+        context.integer(2) * context.power(log_x, context.integer(3)) +
+        context.integer(6) * context.power(log_x, context.integer(2)) +
+        context.integer(10) * log_x + context.integer(3);
+    exact_expr polynomial_log_input = polynomial_log_cofactor *
+        quadratic_log_exponential / x;
+    exact_expr polynomial_log_primitive =
+        (context.power(log_x, context.integer(2)) +
+         context.integer(3) * log_x + context.integer(4)) *
+        quadratic_log_exponential;
+    risch_result polynomial_log_result = context.integrate_elementary(
+        polynomial_log_input, x);
+    exact_expr polynomial_log_derivative_error = context.simplify(
+        context.expand(context.differentiate(
+            polynomial_log_result.elementary_part, x) -
+            polynomial_log_input, 100000));
+    if(polynomial_log_result.status != risch_status::elementary ||
+       polynomial_log_result.remainder != context.integer(0) ||
+       context.simplify(polynomial_log_result.elementary_part -
+                        polynomial_log_primitive) != context.integer(0) ||
+       polynomial_log_derivative_error != context.integer(0)){
+        std::cerr << "polynomial logarithmic hyperexponential RDE failed: "
+                  << polynomial_log_result.diagnostic << " status="
+                  << static_cast<int>(polynomial_log_result.status)
+                  << " result="
+                  << polynomial_log_result.elementary_part.to_string()
+                  << " expected=" << polynomial_log_primitive.to_string()
+                  << " difference=" << context.simplify(
+                      polynomial_log_result.elementary_part -
+                      polynomial_log_primitive).to_string()
+                  << " derivative error="
+                  << polynomial_log_derivative_error.to_string()
+                  << " remainder="
+                  << polynomial_log_result.remainder.to_string() << '\n';
+        return 1;
+    }
+    exact_expr incompatible_log_input =
+        context.power(log_x, context.integer(2)) *
+        quadratic_log_exponential / x;
+    risch_result incompatible_log_result = context.integrate_elementary(
+        incompatible_log_input, x);
+    if(incompatible_log_result.status != risch_status::proven_nonelementary ||
+       incompatible_log_result.remainder != incompatible_log_input ||
+       !incompatible_log_result.conditions.empty()){
+        std::cerr << "incompatible logarithmic RDE was not certified: "
+                  << incompatible_log_result.diagnostic << " status="
+                  << static_cast<int>(incompatible_log_result.status) << '\n';
+        return 1;
+    }
 
     exact_expr nested_log_derivative = context.integer(1) /
         (x * log_x);

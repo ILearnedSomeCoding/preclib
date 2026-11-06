@@ -65,3 +65,9 @@
 - `feat`: 将仿射对数换元扩展到其余部分也依赖积分变量的精确被积式，并在内层变量中递归求解后严格回代。
 - `test`: 覆盖 `x^k*log(x+1)`、`x*log(x+1)^n`、非单位仿射斜率和 `log(x)^n`（`n=1..64`）；仿射对数回归与 RDE 核心回归通过。
 - 已推送提交：`a48d87d` (`feat: extend affine log substitution in Risch`)。
+
+### Follow-up: 2026-11-05
+
+- `feat`: 对 `exp(P(log(g(x))))*D(log(g(x)))` 的有理系数多项式指数（`deg(P)>=2`）增加严格非初等性证书。
+- `test`: 覆盖 `exp(ln(x)^2)/x`、有理对数内层，以及线性/二次可积退化对照；RDE 核心与仿射对数回归通过。
+- 已推送提交：`77fc961` (`feat: certify logarithmic polynomial exponentials`)。
