@@ -19293,7 +19293,49 @@ risch_result exact_context::integrate_elementary_impl(
             if(!factors.empty()) cofactor = multiply(factors);
         }else return false;
 
+        auto certify_nested_exponential_ei_kernel = [&]() -> bool{
+            if(cofactor != integer(1) ||
+               (!outer_scale.is_integer() && !outer_scale.is_rational()) ||
+               outer_scale.is_zero() ||
+               inner.operation() != exact_opcode::exponential)
+                return false;
+            integration_poly argument_numerator, argument_denominator;
+            if(!integration_parse_rational(inner.operand(0), variable,
+                    argument_numerator, argument_denominator, degree_budget,
+                    degree_budget) ||
+               !integration_normalize_rational(argument_numerator,
+                    argument_denominator) || argument_numerator.size() != 2 ||
+               argument_denominator.size() != 1 ||
+               argument_denominator[0].is_zero())
+                return false;
+            for(const numeric_value &coefficient : argument_numerator)
+                if(coefficient.is_approximate()) return false;
+            for(const numeric_value &coefficient : argument_denominator)
+                if(coefficient.is_approximate()) return false;
+            numeric_value slope = argument_numerator[1] /
+                                  argument_denominator[0];
+            if(slope.is_zero()) return false;
+
+            // For t=exp(a*x+b), a nonzero rational, a rational solution of
+            // D(y)+c*a*t*y=1 cannot have a pole at a nonzero finite t-root:
+            // differentiation raises that pole order unless the root solves
+            // alpha'=a*alpha, which has no nonzero algebraic solution over
+            // Q(x). Thus y is Laurent in t. Comparing the largest power
+            // forces its top exponent to be -1; the lowest negative power
+            // then requires r'_m+m*a*r_m=0, whose nonzero solutions are not
+            // in Q(x). This rules out a rational RDE solution in Q(x,t). The
+            // hyperexponential Liouville criterion and trace descent rule out
+            // an elementary primitive in an algebraic extension as well.
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "affine nested exponential Ei kernel has no rational RDE solution";
+            return true;
+        };
+
         auto try_nested_chain_rational = [&]() -> bool{
+            if(certify_nested_exponential_ei_kernel()) return true;
             exact_expr inner_derivative = simplify(expand(
                 differentiate(inner, variable),
                 std::min(options.maximum_nodes, (size_t)100000)));
@@ -19466,6 +19508,7 @@ risch_result exact_context::integrate_elementary_impl(
                               argument_denominator[0];
         if(slope.is_zero() || slope.is_approximate())
             return try_nested_chain_rational();
+        if(certify_nested_exponential_ei_kernel()) return true;
 
         integration_poly numerator, denominator;
         if(!integration_parse_rational(cofactor, inner, numerator, denominator,

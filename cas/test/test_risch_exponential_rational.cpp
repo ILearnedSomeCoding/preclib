@@ -1030,8 +1030,31 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         x_over_e_power_legacy, x) - normalized_e_reciprocal,
         100000)) == context.integer(0));
-    exact_expr nested_e_power = context.power(context.e(),
-        context.power(context.e(), x));
+    exact_expr nested_e_power = context.exponential(context.exponential(x));
+    risch_result nested_e_ei_kernel = context.integrate_elementary(
+        nested_e_power, x);
+    assert(nested_e_ei_kernel.status == risch_status::proven_nonelementary);
+    assert(nested_e_ei_kernel.elementary_part == context.integer(0));
+    assert(nested_e_ei_kernel.conditions.empty());
+    assert(context.simplify(context.differentiate(
+        nested_e_ei_kernel.elementary_part, x) +
+        nested_e_ei_kernel.remainder - nested_e_power) == context.integer(0));
+
+    exact_expr shifted_nested_inner = context.exponential(
+        context.integer(2) * x + context.integer(1));
+    exact_expr scaled_nested_outer = context.exponential(
+        context.integer(3) * shifted_nested_inner);
+    risch_result scaled_nested_ei_kernel = context.integrate_elementary(
+        scaled_nested_outer, x);
+    assert(scaled_nested_ei_kernel.status ==
+        risch_status::proven_nonelementary);
+    assert(scaled_nested_ei_kernel.elementary_part == context.integer(0));
+    assert(scaled_nested_ei_kernel.conditions.empty());
+    assert(context.simplify(context.differentiate(
+        scaled_nested_ei_kernel.elementary_part, x) +
+        scaled_nested_ei_kernel.remainder - scaled_nested_outer) ==
+        context.integer(0));
+
     exact_expr nested_e_power_input = nested_e_power *
         context.power(context.e(), x);
     risch_result nested_e_power_result = context.integrate_elementary(
