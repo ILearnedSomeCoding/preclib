@@ -11200,6 +11200,41 @@ exact_expr exact_context::integrate(const exact_expr &expression,
             }
         }
         if(!result.valid() && node.op == exact_opcode::exponential){
+            exact_expr inner(storage_, args[0]);
+            std::vector<exact_expr> nested_exponentials;
+            std::unordered_set<uint32_t> nested_seen;
+            auto collect_nested = [&](auto &&self, const exact_expr &part) -> void{
+                if(!nested_seen.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::exponential &&
+                   depends(depends, part.operand(0).root_))
+                    nested_exponentials.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_nested(collect_nested, inner);
+            for(const exact_expr &nested : nested_exponentials){
+                exact_expr scale;
+                if(!constant_ratio(inner, nested, scale) ||
+                   !scale.is_value() || scale.value().is_approximate() ||
+                   scale.value().is_zero() ||
+                   !(scale.value().is_integer() || scale.value().is_rational()))
+                    continue;
+                exact_expr rate = simplify(differentiate(
+                    nested.operand(0), variable));
+                bool exact_nonzero_rate = rate.is_value() &&
+                    !rate.value().is_approximate() &&
+                    !rate.value().is_zero() &&
+                    (rate.value().is_integer() || rate.value().is_rational());
+                if(!exact_nonzero_rate) continue;
+                exact_expr candidate = exponential_integral(inner) / rate;
+                if(simplify(expand(differentiate(candidate, variable) -
+                        source, 100000)) == integer(0)){
+                    result = std::move(candidate);
+                    break;
+                }
+            }
+        }
+        if(!result.valid() && node.op == exact_opcode::exponential){
             // exp(c*x^2) is the first non-elementary hyperexponential
             // extension.  Detect it through f'/x = 2c, then verify f=c*x^2
             // before selecting erf (c<0) or erfi (otherwise).
@@ -12924,6 +12959,9 @@ risch_result exact_context::integrate_elementary(
     std::vector<exact_expr> unresolved_conditions;
     unresolved_conditions.reserve(result.conditions.size());
     for(const exact_expr &condition : result.conditions){
+        // Singularities depending on the integration variable are already
+        // part of the integrand's domain, not assumptions on its parameters.
+        if(integration_depends_on(condition, variable)) continue;
         if(known_nonzero(condition)) continue;
         if(condition.is_value() && !condition.value().is_approximate() &&
            condition.value().is_zero()){

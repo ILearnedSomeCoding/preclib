@@ -1031,6 +1031,24 @@ int main(){
         x_over_e_power_legacy, x) - normalized_e_reciprocal,
         100000)) == context.integer(0));
     exact_expr nested_e_power = context.exponential(context.exponential(x));
+    exact_expr nested_ei_primitive = context.integrate(nested_e_power, x);
+    assert(nested_ei_primitive ==
+        context.exponential_integral(context.exponential(x)));
+    assert(context.simplify(context.differentiate(
+        nested_ei_primitive, x) - nested_e_power) == context.integer(0));
+    exact_expr nonlinear_nested_argument = context.power(x,
+        context.integer(2));
+    exact_expr nonlinear_nested_generator = context.exponential(
+        nonlinear_nested_argument);
+    exact_expr nonlinear_nested_integrand = context.integer(2)*x *
+        context.exponential(nonlinear_nested_generator);
+    exact_expr nonlinear_nested_primitive = context.integrate(
+        nonlinear_nested_integrand, x);
+    assert(nonlinear_nested_primitive ==
+        context.exponential_integral(nonlinear_nested_generator));
+    assert(context.simplify(context.differentiate(
+        nonlinear_nested_primitive, x) - nonlinear_nested_integrand) ==
+        context.integer(0));
     risch_result nested_e_ei_kernel = context.integrate_elementary(
         nested_e_power, x);
     assert(nested_e_ei_kernel.status == risch_status::proven_nonelementary);
@@ -1044,6 +1062,23 @@ int main(){
         context.integer(2) * x + context.integer(1));
     exact_expr scaled_nested_outer = context.exponential(
         context.integer(3) * shifted_nested_inner);
+    exact_expr scaled_nested_primitive = context.integrate(
+        scaled_nested_outer, x);
+    assert(scaled_nested_primitive == context.exponential_integral(
+        context.integer(3) * shifted_nested_inner) / context.integer(2));
+    assert(context.simplify(context.differentiate(
+        scaled_nested_primitive, x) - scaled_nested_outer) ==
+        context.integer(0));
+    exact_expr scaled_nested_integrand = context.exponential(
+        shifted_nested_inner);
+    exact_expr affine_nested_primitive = context.integrate(
+        scaled_nested_integrand, x);
+    assert(affine_nested_primitive ==
+        context.exponential_integral(shifted_nested_inner) /
+            context.integer(2));
+    assert(context.simplify(context.differentiate(
+        affine_nested_primitive, x) - scaled_nested_integrand) ==
+        context.integer(0));
     risch_result scaled_nested_ei_kernel = context.integrate_elementary(
         scaled_nested_outer, x);
     assert(scaled_nested_ei_kernel.status ==
