@@ -698,6 +698,51 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         symbolic_rate_exponential_result.elementary_part, x) -
         symbolic_rate_exponential, 100000)) == context.integer(0));
+    exact_expr symbolic_rate_quadratic =
+        context.power(x, context.integer(2)) * context.exponential(a*x+b);
+    risch_result symbolic_rate_quadratic_result = context.integrate_elementary(
+        symbolic_rate_quadratic, x);
+    exact_expr symbolic_rate_quadratic_expected = context.exponential(a*x+b) *
+        (context.power(x, context.integer(2))/a -
+         context.integer(2)*x/context.power(a, context.integer(2)) +
+         context.integer(2)/context.power(a, context.integer(3)));
+    assert(symbolic_rate_quadratic_result.status ==
+        risch_status::elementary);
+    assert(symbolic_rate_quadratic_result.remainder == context.integer(0));
+    assert(symbolic_rate_quadratic_result.conditions.size() == 1);
+    assert(symbolic_rate_quadratic_result.conditions[0] == a);
+    assert(context.simplify(context.expand(
+        symbolic_rate_quadratic_result.elementary_part -
+        symbolic_rate_quadratic_expected, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_quadratic_result.elementary_part, x) -
+        symbolic_rate_quadratic, 100000)) == context.integer(0));
+    exact_expr cubic_coefficient = context.symbol("cubic_coefficient");
+    exact_expr linear_coefficient = context.symbol("linear_coefficient");
+    exact_expr symbolic_rate_cubic =
+        (cubic_coefficient*context.power(x, context.integer(3)) +
+         linear_coefficient*x) * context.exponential(a*x+b);
+    risch_result symbolic_rate_cubic_result = context.integrate_elementary(
+        symbolic_rate_cubic, x);
+    exact_expr symbolic_rate_cubic_expected = context.exponential(a*x+b) *
+        (cubic_coefficient*context.power(x, context.integer(3))/a -
+         context.integer(3)*cubic_coefficient*context.power(x,
+             context.integer(2))/context.power(a, context.integer(2)) +
+         (linear_coefficient/a + context.integer(6)*cubic_coefficient/
+             context.power(a, context.integer(3)))*x -
+         linear_coefficient/context.power(a, context.integer(2)) -
+         context.integer(6)*cubic_coefficient/context.power(a,
+             context.integer(4)));
+    assert(symbolic_rate_cubic_result.status == risch_status::elementary);
+    assert(symbolic_rate_cubic_result.remainder == context.integer(0));
+    assert(symbolic_rate_cubic_result.conditions.size() == 1);
+    assert(symbolic_rate_cubic_result.conditions[0] == a);
+    assert(context.simplify(context.expand(
+        symbolic_rate_cubic_result.elementary_part -
+        symbolic_rate_cubic_expected, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_cubic_result.elementary_part, x) -
+        symbolic_rate_cubic, 100000)) == context.integer(0));
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
         context.exponential(second_rate * x);
     risch_result sum_of_symbolic_rates_result = context.integrate_elementary(

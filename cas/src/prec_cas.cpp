@@ -16263,6 +16263,122 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
     };
     if(classify_constant_coefficient_exponential_rational()) return result;
+    auto classify_symbolic_exponential_polynomial = [&]() -> bool{
+        exact_expr generator;
+        std::unordered_set<uint32_t> seen;
+        bool multiple_generators = false;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::exponential &&
+               integration_depends_on(part.operand(0), variable)){
+                if(generator.valid() && generator != part)
+                    multiple_generators = true;
+                else generator = part;
+            }
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        };
+        collect(collect, expression);
+        if(!generator.valid() || multiple_generators) return false;
+
+        exact_expr cofactor;
+        if(expression == generator){
+            cofactor = integer(1);
+        }else if(expression.operation() == exact_opcode::multiply){
+            std::vector<exact_expr> factors;
+            bool removed = false;
+            for(size_t i = 0; i < expression.operand_count(); ++i){
+                exact_expr factor = expression.operand(i);
+                if(!removed && factor == generator){
+                    removed = true;
+                    continue;
+                }
+                factors.push_back(factor);
+            }
+            if(!removed) return false;
+            cofactor = factors.empty() ? integer(1) : multiply(factors);
+        }else{
+            return false;
+        }
+
+        exact_expr slope = simplify(differentiate(generator.operand(0),
+                                                   variable));
+        if(integration_depends_on(slope, variable) ||
+           integration_formal_constant_zero(*this, slope, variable,
+               verification_degree_budget) ||
+           !integration_exact_expression_tree(slope)) return false;
+
+        integration_expr_poly numerator, denominator;
+        if(!integration_parse_expr_rational(*this, cofactor, variable,
+                numerator, denominator, degree_budget) ||
+           denominator.size() != 1 || numerator.empty() ||
+           integration_expr_zero(*this, denominator[0])) return false;
+        for(const exact_expr &coefficient : numerator)
+            if(integration_depends_on(coefficient, variable) ||
+               !integration_exact_expression_tree(coefficient)) return false;
+        if(!integration_exact_expression_tree(denominator[0])) return false;
+
+        integration_expr_poly rhs = numerator;
+        for(exact_expr &coefficient : rhs)
+            coefficient = simplify(coefficient / denominator[0]);
+        integration_expr_trim(*this, rhs);
+        if(rhs.size() == 1 && integration_expr_zero(*this, rhs[0]))
+            return false;
+
+        // Solve Q' + slope*Q = P from the leading coefficient downward.
+        integration_expr_poly primitive(rhs.size(), integer(0));
+        for(size_t i = rhs.size(); i-- > 0;){
+            exact_expr derivative_term = i + 1 < primitive.size()
+                ? integer(i + 1) * primitive[i + 1] : integer(0);
+            primitive[i] = simplify((rhs[i] - derivative_term) / slope);
+        }
+        integration_expr_poly rde = integration_expr_add(*this,
+            integration_expr_derivative(*this, primitive),
+            integration_expr_mul(*this, primitive,
+                integration_expr_poly{ slope }));
+        size_t coefficient_count = std::max(rde.size(), rhs.size());
+        rde.resize(coefficient_count, integer(0));
+        rhs.resize(coefficient_count, integer(0));
+        for(size_t i = 0; i < coefficient_count; ++i)
+            if(!integration_formal_constant_zero(*this,
+                    rde[i] - rhs[i], variable, verification_degree_budget))
+                return false;
+        if(simplify(differentiate(generator, variable) -
+                    slope * generator) != integer(0)) return false;
+
+        exact_expr polynomial = integration_expr_poly_expr(*this, primitive,
+                                                            variable);
+        exact_expr candidate = generator * polynomial;
+        if(candidate.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "symbolic exponential-polynomial result node budget exceeded";
+            return true;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        auto require_nonzero = [&](const exact_expr &constant){
+            bool known_nonzero = constant.is_value() &&
+                !constant.value().is_approximate() &&
+                !constant.value().is_zero();
+            known_nonzero = known_nonzero ||
+                integration_strictly_positive_constant(constant) ||
+                integration_strictly_positive_constant(-constant) ||
+                constant.operation() == exact_opcode::exponential;
+            if(!known_nonzero &&
+               std::find(result.conditions.begin(), result.conditions.end(),
+                         constant) == result.conditions.end())
+                result.conditions.push_back(constant);
+        };
+        require_nonzero(slope);
+        require_nonzero(denominator[0]);
+        return true;
+    };
+    if(classify_symbolic_exponential_polynomial()) return result;
     auto classify_symbolic_constant_slope_exponential = [&]() -> bool{
         exact_expr generator;
         std::unordered_set<uint32_t> seen;
