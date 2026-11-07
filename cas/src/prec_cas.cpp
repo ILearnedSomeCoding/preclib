@@ -20845,6 +20845,56 @@ risch_result exact_context::integrate_elementary_impl(
             integration_expr_poly symbolic_rate =
                 integration_expr_derivative(*this, symbolic_inner);
             if(symbolic_rate.size() != 1){
+                exact_expr rate_scale;
+                integration_poly rational_rate;
+                bool rate_is_scalar_rational_polynomial = true;
+                for(const exact_expr &coefficient : symbolic_rate){
+                    if(integration_expr_zero(*this, coefficient)){
+                        rational_rate.push_back(numeric_value(0));
+                        continue;
+                    }
+                    if(!rate_scale.valid()) rate_scale = coefficient;
+                    exact_expr normalized = simplify(coefficient / rate_scale);
+                    if(!normalized.is_value() ||
+                       normalized.value().is_approximate() ||
+                       !(normalized.value().is_integer() ||
+                         normalized.value().is_rational())){
+                        rate_is_scalar_rational_polynomial = false;
+                        break;
+                    }
+                    rational_rate.push_back(normalized.value());
+                }
+                integration_trim(rational_rate);
+                integration_poly pole_numerator, pole_denominator;
+                bool squarefree_rational_pole = rate_is_scalar_rational_polynomial &&
+                    rate_scale.valid() &&
+                    !integration_depends_on(rate_scale, variable) &&
+                    integration_exact_expression_tree(rate_scale) &&
+                    integration_parse_rational(cofactor, variable,
+                        pole_numerator, pole_denominator,
+                        degree_budget, degree_budget) &&
+                    integration_normalize_rational(pole_numerator,
+                        pole_denominator) && pole_denominator.size() > 1 &&
+                    integration_gcd_poly(pole_numerator,
+                        pole_denominator).size() == 1 &&
+                    integration_gcd_poly(pole_denominator,
+                        integration_derivative_poly(pole_denominator)).size() == 1;
+                // A polynomial rate is regular at every finite pole. A
+                // rational RDE solution cannot have a pole there because its
+                // derivative raises the pole order, nor can it be regular
+                // when the reduced cofactor has a genuine simple pole.
+                if(squarefree_rational_pole &&
+                   !integration_zero_poly(rational_rate)){
+                    result.status = risch_status::proven_nonelementary;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    if(!is_provably_nonzero_constant(
+                           is_provably_nonzero_constant, rate_scale))
+                        result.conditions.push_back(rate_scale);
+                    result.diagnostic =
+                        "a squarefree rational pole obstructs the symbolic-rate RDE";
+                    return true;
+                }
                 integration_expr_poly polynomial_cofactor;
                 if(!integration_parse_expr_poly(*this, cofactor, variable,
                         polynomial_cofactor) ||

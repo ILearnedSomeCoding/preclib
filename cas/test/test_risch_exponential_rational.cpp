@@ -1124,6 +1124,73 @@ int main(){
         symbolic_nonlinear_rate_repeated_pole_result.elementary_part, x) -
         symbolic_nonlinear_rate_repeated_pole_integrand, 100000)) ==
         context.integer(0));
+    exact_expr symbolic_pole_parameter = context.symbol("symbolic_pole_parameter");
+    exact_expr symbolic_parameter_pole_primitive =
+        context.exponential(quadratic_exponent_rate *
+            context.power(x, context.integer(2)) + b) /
+        (context.power(x, context.integer(2)) + symbolic_pole_parameter);
+    exact_expr symbolic_parameter_pole_integrand = context.differentiate(
+        symbolic_parameter_pole_primitive, x);
+    risch_result symbolic_parameter_pole_result = context.integrate_elementary(
+        symbolic_parameter_pole_integrand, x);
+    assert(symbolic_parameter_pole_result.status == risch_status::elementary);
+    assert(symbolic_parameter_pole_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(
+        symbolic_parameter_pole_result.elementary_part -
+        symbolic_parameter_pole_primitive, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_parameter_pole_result.elementary_part, x) -
+        symbolic_parameter_pole_integrand, 100000)) == context.integer(0));
+    exact_expr symbolic_nonlinear_rate_simple_pole =
+        context.exponential(quadratic_exponent_rate *
+            context.power(x, context.integer(2)) + b) / x;
+    risch_result symbolic_nonlinear_rate_simple_pole_result =
+        context.integrate_elementary(symbolic_nonlinear_rate_simple_pole, x);
+    assert(symbolic_nonlinear_rate_simple_pole_result.status ==
+        risch_status::proven_nonelementary);
+    assert(context.simplify(symbolic_nonlinear_rate_simple_pole_result.remainder -
+        symbolic_nonlinear_rate_simple_pole) == context.integer(0));
+    assert(!symbolic_nonlinear_rate_simple_pole_result.conditions.empty());
+    bool pole_proof_excludes_zero_rate = false;
+    for(const exact_expr &condition :
+            symbolic_nonlinear_rate_simple_pole_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                quadratic_exponent_rate, context.integer(0))) ==
+           context.integer(0))
+            pole_proof_excludes_zero_rate = true;
+    assert(pole_proof_excludes_zero_rate);
+    exact_expr symbolic_nonlinear_rate_quadratic_pole =
+        context.exponential(quadratic_exponent_rate *
+            context.power(x, context.integer(2)) + b) /
+        (context.power(x, context.integer(2)) + context.integer(1));
+    risch_result symbolic_nonlinear_rate_quadratic_pole_result =
+        context.integrate_elementary(
+            symbolic_nonlinear_rate_quadratic_pole, x);
+    assert(symbolic_nonlinear_rate_quadratic_pole_result.status ==
+        risch_status::proven_nonelementary);
+    bool quadratic_pole_proof_excludes_zero_rate = false;
+    for(const exact_expr &condition :
+            symbolic_nonlinear_rate_quadratic_pole_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                quadratic_exponent_rate, context.integer(0))) ==
+           context.integer(0))
+            quadratic_pole_proof_excludes_zero_rate = true;
+    assert(quadratic_pole_proof_excludes_zero_rate);
+    exact_expr proportional_symbolic_rate_simple_pole =
+        context.exponential(quadratic_exponent_rate *
+            (context.power(x, context.integer(2)) + x) + b) / x;
+    risch_result proportional_symbolic_rate_simple_pole_result =
+        context.integrate_elementary(proportional_symbolic_rate_simple_pole, x);
+    assert(proportional_symbolic_rate_simple_pole_result.status ==
+        risch_status::proven_nonelementary);
+    bool proportional_rate_condition_found = false;
+    for(const exact_expr &condition :
+            proportional_symbolic_rate_simple_pole_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                quadratic_exponent_rate, context.integer(0))) ==
+           context.integer(0))
+            proportional_rate_condition_found = true;
+    assert(proportional_rate_condition_found);
     exact_expr symbolic_nonlinear_rate_polynomial_primitive = x *
         context.exponential(quadratic_exponent_rate *
             context.power(x, context.integer(2)) + b);
@@ -1144,6 +1211,50 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         symbolic_nonlinear_rate_polynomial_result.elementary_part, x) -
         symbolic_nonlinear_rate_polynomial_integrand, 100000)) ==
+        context.integer(0));
+    exact_expr symbolic_nonlinear_rate_conditional_integrand = x *
+        context.exponential(quadratic_exponent_rate *
+            context.power(x, context.integer(2)) + b);
+    risch_result symbolic_nonlinear_rate_conditional_result =
+        context.integrate_elementary(
+            symbolic_nonlinear_rate_conditional_integrand, x);
+    assert(symbolic_nonlinear_rate_conditional_result.status ==
+        risch_status::elementary);
+    assert(symbolic_nonlinear_rate_conditional_result.remainder ==
+        context.integer(0));
+    assert(!symbolic_nonlinear_rate_conditional_result.conditions.empty());
+    bool excludes_zero_quadratic_rate = false;
+    for(const exact_expr &condition :
+            symbolic_nonlinear_rate_conditional_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                quadratic_exponent_rate, context.integer(0))) ==
+           context.integer(0))
+            excludes_zero_quadratic_rate = true;
+    assert(excludes_zero_quadratic_rate);
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_nonlinear_rate_conditional_result.elementary_part, x) -
+        symbolic_nonlinear_rate_conditional_integrand, 100000)) ==
+        context.integer(0));
+    exact_expr cubic_exponent_rate = context.symbol("cubic_exponent_rate");
+    exact_expr symbolic_cubic_rate_polynomial_primitive = x *
+        context.exponential(cubic_exponent_rate *
+            context.power(x, context.integer(3)) + b);
+    exact_expr symbolic_cubic_rate_polynomial_integrand =
+        context.differentiate(symbolic_cubic_rate_polynomial_primitive, x);
+    risch_result symbolic_cubic_rate_polynomial_result =
+        context.integrate_elementary(
+            symbolic_cubic_rate_polynomial_integrand, x);
+    assert(symbolic_cubic_rate_polynomial_result.status ==
+        risch_status::elementary);
+    assert(symbolic_cubic_rate_polynomial_result.remainder ==
+        context.integer(0));
+    assert(context.simplify(context.expand(
+        symbolic_cubic_rate_polynomial_result.elementary_part -
+        symbolic_cubic_rate_polynomial_primitive, 100000)) ==
+        context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_cubic_rate_polynomial_result.elementary_part, x) -
+        symbolic_cubic_rate_polynomial_integrand, 100000)) ==
         context.integer(0));
     exact_expr x_over_e_power = x / context.power(context.e(), x);
     risch_result x_over_e_power_result = context.integrate_elementary(

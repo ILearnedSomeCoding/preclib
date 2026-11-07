@@ -82,3 +82,36 @@
 
 - `feat`: 将单对数超指数积分从多项式 cofactor 扩展到精确有理 cofactor，复用有理 RDE 分母界与矩阵求解。
 - `test`: 新增已知有理解的重复极点案例和无有理解的简单极点案例；`test_risch_rde_core` 通过。
+- 已推送提交：`7e143e1` (`feat: solve rational logarithmic hyperexponential RDEs`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 对 `exp(c*exp(a*x+b))` 的精确仿射 Ei 核加入有理 RDE 无解证明；非仿射输入不套用该证书。
+- `test`: 专项回归通过，覆盖两个非初等核、一个非仿射未认证核及一个可积邻例。完整测试首轮发现参数线性积分把 `a*x+b != 0` 错列为参数条件；该条件修复随后包含于 `b73453f`。
+- 已推送提交：`45471d4` (`feat: certify affine nested exponential Ei kernels`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 通用 `integrate()` 现可将仿射嵌套指数 Ei 核转换为 `Ei` 原函数，并支持显式链式 cofactor 下的非线性内层；候选均以精确求导验证。变量相关奇点不再混入 Risch 参数条件。
+- `test`: 重新编译并通过 `test_risch_exponential_rational`，覆盖直接、缩放仿射与非线性链式 Ei 原函数，以及参数条件过滤。
+- 已推送提交：`b73453f` (`feat: integrate nested exponential kernels with Ei`)。
+
+### Follow-up: 2026-11-07
+
+- `fix`: 保留混合超越塔原函数中显式出现的非零对数参数与极点基底条件；继续过滤普通有理变量极点，避免把 `a*x+b != 0` 误报为参数约束。
+- `docs`: 说明 `risch_result::conditions` 同时可携带这类超越塔表达式的定义域限制。
+- `test`: `test_risch_rde_core` 与 `test_risch_exponential_rational` 均重新编译并通过。
+- 已推送提交：`f09a344` (`fix: preserve mixed tower integration conditions`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 严格积分器递推求解符号常斜率指数乘精确多项式，`exp(g(x))*P(x)` 通过 `Q' + g'*Q = P` 构造原函数，并附带斜率非零条件。
+- `test`: 增加 `x^2*exp(a*x+b)` 与符号系数三次 cofactor 回归；`test_risch_exponential_rational` 和 `test_risch_rde_core` 均通过。
+- 已推送提交：`f0a0806` (`feat: integrate symbolic-slope exponential polynomials`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 显式 `exp(g(x))` 的严格积分新增精确非恒定多项式指数率下的多项式 cofactor RDE 路径；候选必须通过原被积式的精确导数验证。
+- `test`: 覆盖 `d[x*exp(k*x^2+b)]/dx`，并补充非仿射符号率的有理 cofactor 构造原函数；`test_risch_exponential_rational` 通过。
+- `docs`: 记录可验证支持子集及尚未完成的一般参数特化、极点界和无解证明。
+- 已推送提交：`6997dfb` (`feat: solve polynomial-rate exponential RDEs`)。
