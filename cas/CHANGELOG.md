@@ -71,3 +71,14 @@
 - `feat`: 对 `exp(P(log(g(x))))*D(log(g(x)))` 的有理系数多项式指数（`deg(P)>=2`）增加严格非初等性证书。
 - `test`: 覆盖 `exp(ln(x)^2)/x`、有理对数内层，以及线性/二次可积退化对照；RDE 核心与仿射对数回归通过。
 - 已推送提交：`77fc961` (`feat: certify logarithmic polynomial exponentials`)。
+
+### Follow-up: 2026-11-06
+
+- `feat`: 将 `exp(P(log(g(x))))*Q(log(g(x)))*D(log(g(x)))` 扩展为精确多项式 RDE；有解返回原函数，次数界内无解时返回非初等证书。
+- `test`: 覆盖兼容三次 cofactor、低次方程不相容、已有非初等与可积退化样例；RDE 核心与仿射对数回归通过。
+- 已推送提交：`fd40737` (`feat: solve logarithmic hyperexponential polynomial RDEs`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 将单对数超指数积分从多项式 cofactor 扩展到精确有理 cofactor，复用有理 RDE 分母界与矩阵求解。
+- `test`: 新增已知有理解的重复极点案例和无有理解的简单极点案例；`test_risch_rde_core` 通过。

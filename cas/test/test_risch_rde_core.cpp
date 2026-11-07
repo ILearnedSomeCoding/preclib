@@ -461,6 +461,47 @@ int main(){
         return 1;
     }
 
+    exact_expr rational_log_shift = log_x + context.integer(1);
+    exact_expr rational_log_solution = context.integer(1) /
+        rational_log_shift;
+    exact_expr rational_log_forcing =
+        -context.integer(1) /
+            context.power(rational_log_shift, context.integer(2)) +
+        context.integer(2) * log_x / rational_log_shift;
+    exact_expr rational_log_input = quadratic_log_exponential *
+        rational_log_forcing / x;
+    exact_expr rational_log_primitive = rational_log_solution *
+        quadratic_log_exponential;
+    risch_result rational_log_rde_result = context.integrate_elementary(
+        rational_log_input, x);
+    exact_expr rational_log_rde_error = context.simplify(context.expand(
+        context.differentiate(rational_log_rde_result.elementary_part, x) -
+        rational_log_input, 100000));
+    if(rational_log_rde_result.status != risch_status::elementary ||
+       rational_log_rde_result.remainder != context.integer(0) ||
+       rational_log_rde_error != context.integer(0) ||
+       context.simplify(rational_log_rde_result.elementary_part -
+                        rational_log_primitive) != context.integer(0)){
+        std::cerr << "rational logarithmic hyperexponential RDE failed: "
+                  << rational_log_rde_result.diagnostic << " result="
+                  << rational_log_rde_result.elementary_part.to_string()
+                  << " derivative error=" << rational_log_rde_error.to_string()
+                  << '\n';
+        return 1;
+    }
+    exact_expr no_rational_log_solution_input = quadratic_log_exponential /
+        (x * rational_log_shift);
+    risch_result no_rational_log_solution = context.integrate_elementary(
+        no_rational_log_solution_input, x);
+    if(no_rational_log_solution.status != risch_status::proven_nonelementary ||
+       no_rational_log_solution.remainder != no_rational_log_solution_input){
+        std::cerr << "rational logarithmic RDE without a rational solution "
+                     "was not certified: "
+                  << no_rational_log_solution.diagnostic << " status="
+                  << static_cast<int>(no_rational_log_solution.status) << '\n';
+        return 1;
+    }
+
     exact_expr nested_log_derivative = context.integer(1) /
         (x * log_x);
     risch_result nested_log_result = context.integrate_elementary(

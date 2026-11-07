@@ -13694,6 +13694,84 @@ risch_result exact_context::integrate_elementary_impl(
                 cofactor / logarithm_derivative);
             integration_expr_poly forcing, rate =
                 integration_expr_derivative(*this, exponent);
+            integration_poly rational_forcing_numerator;
+            integration_poly rational_forcing_denominator;
+            if(integration_parse_rational(forcing_expression, logarithm,
+                    rational_forcing_numerator,
+                    rational_forcing_denominator, degree_budget,
+                    degree_budget) &&
+               integration_normalize_rational(rational_forcing_numerator,
+                                               rational_forcing_denominator) &&
+               rational_forcing_denominator.size() > 1 &&
+               rate.size() >= 2 && rate.size() - 1 <= degree_budget){
+                integration_poly rational_rate;
+                bool exact_rational_rate = true;
+                for(const exact_expr &coefficient : rate){
+                    if(!coefficient.is_value() ||
+                       coefficient.value().is_approximate() ||
+                       !(coefficient.value().is_rational() ||
+                         coefficient.value().is_integer())){
+                        exact_rational_rate = false;
+                        break;
+                    }
+                    rational_rate.push_back(coefficient.value());
+                }
+                if(!exact_rational_rate) continue;
+
+                exact_expr rational_reconstruction = simplify(expand(
+                    expression - exponential_factor * logarithm_derivative *
+                        (integration_poly_expr(*this,
+                             rational_forcing_numerator, logarithm) /
+                         integration_poly_expr(*this,
+                             rational_forcing_denominator, logarithm)),
+                    std::min(options.maximum_nodes, (size_t)100000)));
+                if(rational_reconstruction != integer(0)) continue;
+
+                integration_rational_rde_result rde = integration_rde_rational(
+                    rational_forcing_numerator,
+                    rational_forcing_denominator, rational_rate,
+                    options.maximum_matrix_entries);
+                if(rde.status == integration_rde_status::solved){
+                    exact_expr rational_solution =
+                        integration_poly_expr(*this, rde.numerator, logarithm) /
+                        integration_poly_expr(*this, rde.denominator, logarithm);
+                    exact_expr candidate = rational_solution * exponential_factor;
+                    exact_expr derivative_error = simplify(expand(
+                        differentiate(candidate, variable) - expression,
+                        std::min(options.maximum_nodes, (size_t)100000)));
+                    if(derivative_error != integer(0)){
+                        result.status = risch_status::verification_failed;
+                        result.diagnostic =
+                            "rational logarithmic hyperexponential candidate "
+                            "failed derivative verification";
+                        return true;
+                    }
+                    result.status = risch_status::elementary;
+                    result.elementary_part = std::move(candidate);
+                    result.remainder = integer(0);
+                    result.diagnostic.clear();
+                    return true;
+                }
+                if(rde.status ==
+                   integration_rde_status::no_polynomial_solution){
+                    result.status = risch_status::proven_nonelementary;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "rational logarithmic hyperexponential RDE has no "
+                        "rational solution";
+                    return true;
+                }
+                result.status = rde.status == integration_rde_status::resource_limit
+                    ? risch_status::resource_limit
+                    : rde.status == integration_rde_status::unsupported
+                        ? risch_status::unsupported
+                        : risch_status::verification_failed;
+                result.diagnostic =
+                    "rational logarithmic hyperexponential RDE could not be "
+                    "completed";
+                return true;
+            }
             if(!integration_parse_expr_poly(*this, forcing_expression,
                     logarithm, forcing, degree_budget))
                 continue;
