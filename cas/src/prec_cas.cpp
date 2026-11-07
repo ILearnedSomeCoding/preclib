@@ -11201,6 +11201,28 @@ exact_expr exact_context::integrate(const exact_expr &expression,
         }
         if(!result.valid() && node.op == exact_opcode::exponential){
             exact_expr inner(storage_, args[0]);
+            bool exact_outer_argument =
+                integration_exact_expression_tree(inner);
+            std::vector<exact_expr> variable_terms, offset_terms;
+            auto split_inner = [&](auto &&self, const exact_expr &part) -> void{
+                if(part.operation() == exact_opcode::add){
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        self(self, part.operand(i));
+                }else if(depends(depends, part.root_)){
+                    variable_terms.push_back(part);
+                }else{
+                    offset_terms.push_back(part);
+                }
+            };
+            split_inner(split_inner, inner);
+            exact_expr variable_part = variable_terms.empty() ? integer(0)
+                : variable_terms.size() == 1 ? variable_terms[0]
+                                             : add(variable_terms);
+            exact_expr offset = offset_terms.empty() ? integer(0)
+                : offset_terms.size() == 1 ? offset_terms[0]
+                                          : add(offset_terms);
+            exact_expr offset_factor = offset_terms.empty() ? integer(1)
+                                                             : exponential(offset);
             std::vector<exact_expr> nested_exponentials;
             std::unordered_set<uint32_t> nested_seen;
             auto collect_nested = [&](auto &&self, const exact_expr &part) -> void{
@@ -11211,10 +11233,11 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                 for(size_t i = 0; i < part.operand_count(); ++i)
                     self(self, part.operand(i));
             };
-            collect_nested(collect_nested, inner);
+            collect_nested(collect_nested, variable_part);
             for(const exact_expr &nested : nested_exponentials){
+                if(!exact_outer_argument) break;
                 exact_expr scale;
-                if(!constant_ratio(inner, nested, scale) ||
+                if(!constant_ratio(variable_part, nested, scale) ||
                    !scale.is_value() || scale.value().is_approximate() ||
                    scale.value().is_zero() ||
                    !(scale.value().is_integer() || scale.value().is_rational()))
@@ -11226,9 +11249,18 @@ exact_expr exact_context::integrate(const exact_expr &expression,
                     !rate.value().is_zero() &&
                     (rate.value().is_integer() || rate.value().is_rational());
                 if(!exact_nonzero_rate) continue;
-                exact_expr candidate = exponential_integral(inner) / rate;
+                exact_expr logarithmic_rate;
+                if(simplify(variable_part + offset - inner) != integer(0) ||
+                   !constant_ratio(differentiate(variable_part, variable),
+                                   variable_part, logarithmic_rate) ||
+                   simplify(logarithmic_rate - rate) != integer(0))
+                    continue;
+                exact_expr candidate = offset_factor *
+                    exponential_integral(variable_part) / rate;
+                exact_expr factored_derivative = offset_factor *
+                    exponential(variable_part);
                 if(simplify(expand(differentiate(candidate, variable) -
-                        source, 100000)) == integer(0)){
+                        factored_derivative, 100000)) == integer(0)){
                     result = std::move(candidate);
                     break;
                 }
@@ -12956,12 +12988,38 @@ risch_result exact_context::integrate_elementary(
             self(self, part.operand(i));
     };
     collect(collect, result.elementary_part);
+    std::unordered_set<uint32_t> explicit_domain_arguments;
+    visited.clear();
+    auto collect_explicit_domain_arguments = [&](auto &&self,
+                                                  const exact_expr &part) -> void{
+        if(!visited.insert(part.id()).second) return;
+        if(part.operation() == exact_opcode::natural_logarithm &&
+           part.operand_count() == 1)
+            explicit_domain_arguments.insert(part.operand(0).id());
+        if(part.operation() == exact_opcode::power &&
+           part.operand_count() == 2){
+            int64_t exponent = 0;
+            if(integration_signed_exponent(part.operand(1), exponent) &&
+               exponent < 0)
+                explicit_domain_arguments.insert(part.operand(0).id());
+        }
+        for(size_t i = 0; i < part.operand_count(); ++i)
+            self(self, part.operand(i));
+    };
+    collect_explicit_domain_arguments(collect_explicit_domain_arguments,
+                                      result.elementary_part);
     std::vector<exact_expr> unresolved_conditions;
     unresolved_conditions.reserve(result.conditions.size());
     for(const exact_expr &condition : result.conditions){
-        // Singularities depending on the integration variable are already
-        // part of the integrand's domain, not assumptions on its parameters.
-        if(integration_depends_on(condition, variable)) continue;
+        // Ordinary rational singularities belong to the integrand's domain.
+        // Preserve explicit non-rational log/pole conditions from mixed towers.
+        if(integration_depends_on(condition, variable)){
+            if(!explicit_domain_arguments.count(condition.id())) continue;
+            integration_expr_poly condition_numerator, condition_denominator;
+            if(integration_parse_expr_rational(*this, condition, variable,
+                    condition_numerator, condition_denominator, 64))
+                continue;
+        }
         if(known_nonzero(condition)) continue;
         if(condition.is_value() && !condition.value().is_approximate() &&
            condition.value().is_zero()){

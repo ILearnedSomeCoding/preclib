@@ -1069,6 +1069,21 @@ int main(){
     assert(context.simplify(context.differentiate(
         scaled_nested_primitive, x) - scaled_nested_outer) ==
         context.integer(0));
+    exact_expr nested_offset = context.symbol("nested_offset");
+    exact_expr offset_nested_integrand = context.exponential(
+        nested_offset + context.integer(3) * shifted_nested_inner);
+    exact_expr offset_nested_primitive = context.integrate(
+        offset_nested_integrand, x);
+    exact_expr offset_nested_expected = context.exponential(nested_offset) *
+        context.exponential_integral(context.integer(3) * shifted_nested_inner) /
+            context.integer(2);
+    assert(context.simplify(offset_nested_primitive -
+        offset_nested_expected) == context.integer(0));
+    exact_expr offset_nested_factored = context.exponential(nested_offset) *
+        context.exponential(context.integer(3) * shifted_nested_inner);
+    assert(context.simplify(context.differentiate(
+        offset_nested_primitive, x) - offset_nested_factored) ==
+        context.integer(0));
     exact_expr scaled_nested_integrand = context.exponential(
         shifted_nested_inner);
     exact_expr affine_nested_primitive = context.integrate(
