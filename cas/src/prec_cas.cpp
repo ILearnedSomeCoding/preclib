@@ -20896,27 +20896,68 @@ risch_result exact_context::integrate_elementary_impl(
                     return true;
                 }
                 integration_expr_poly polynomial_cofactor;
-                if(!integration_parse_expr_poly(*this, cofactor, variable,
-                        polynomial_cofactor) ||
-                   polynomial_cofactor.size() > degree_budget + 1)
-                    return false;
-                for(const exact_expr &entry : polynomial_cofactor)
-                    if(!integration_exact_expression_tree(entry))
-                        return false;
-                exact_expr candidate = integration_hyperexponential_polynomial(
-                    *this, cofactor, exponential_factor.operand(0), variable);
-                if(!candidate.valid()) return false;
-                if(candidate.reachable_node_count() > options.maximum_nodes){
+                bool polynomial_coefficients =
+                    integration_parse_expr_poly(*this, cofactor, variable,
+                        polynomial_cofactor) &&
+                    polynomial_cofactor.size() <= degree_budget + 1;
+                if(polynomial_coefficients){
+                    for(const exact_expr &entry : polynomial_cofactor)
+                        if(!integration_exact_expression_tree(entry))
+                            return false;
+                    exact_expr candidate =
+                        integration_hyperexponential_polynomial(
+                            *this, cofactor, exponential_factor.operand(0),
+                            variable);
+                    if(candidate.valid()){
+                        if(candidate.reachable_node_count() >
+                           options.maximum_nodes){
+                            result.status = risch_status::resource_limit;
+                            result.diagnostic =
+                                "symbolic-rate polynomial RDE result node budget exceeded";
+                            return true;
+                        }
+                        exact_expr error = simplify(expand(
+                            differentiate(candidate, variable) - expression,
+                            100000));
+                        if(error == integer(0)){
+                            result.status = risch_status::elementary;
+                            result.elementary_part = std::move(candidate);
+                            result.remainder = integer(0);
+                            result.diagnostic.clear();
+                            return true;
+                        }
+                    }
+                }
+
+                // The polynomial recurrence above does not cover rational
+                // cofactors. Reuse the bounded rational RDE solver over the
+                // exact constant-expression field; only a candidate whose
+                // derivative reconstructs the input is accepted here.
+                bool rational_rde_limited = false;
+                exact_expr rational_candidate =
+                    integration_hyperexponential_rational(*this, cofactor,
+                        exponential_factor.operand(0), variable, true,
+                        options, &rational_rde_limited);
+                if(rational_rde_limited){
                     result.status = risch_status::resource_limit;
                     result.diagnostic =
-                        "symbolic-rate polynomial RDE result node budget exceeded";
+                        "symbolic-rate rational RDE matrix budget exceeded";
+                    return true;
+                }
+                if(!rational_candidate.valid()) return false;
+                if(rational_candidate.reachable_node_count() >
+                   options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "symbolic-rate rational RDE result node budget exceeded";
                     return true;
                 }
                 exact_expr error = simplify(expand(
-                    differentiate(candidate, variable) - expression, 100000));
+                    differentiate(rational_candidate, variable) - expression,
+                    100000));
                 if(error != integer(0)) return false;
                 result.status = risch_status::elementary;
-                result.elementary_part = std::move(candidate);
+                result.elementary_part = std::move(rational_candidate);
                 result.remainder = integer(0);
                 result.diagnostic.clear();
                 return true;

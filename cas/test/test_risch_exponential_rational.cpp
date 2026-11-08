@@ -743,6 +743,47 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         symbolic_rate_cubic_result.elementary_part, x) -
         symbolic_rate_cubic, 100000)) == context.integer(0));
+    // A nonconstant symbolic exponential rate with a rational cofactor must
+    // use the exact expression-coefficient rational RDE, not stop after the
+    // polynomial-cofactor fast path rejects its denominator.
+    exact_expr quadratic_rate = a * context.power(x, context.integer(2));
+    exact_expr rational_rde_candidate = context.exponential(quadratic_rate) /
+        (x + context.integer(1));
+    exact_expr rational_rde_cofactor = context.differentiate(
+        context.integer(1) / (x + context.integer(1)), x) +
+        context.differentiate(quadratic_rate, x) /
+            (x + context.integer(1));
+    exact_expr symbolic_quadratic_rational_input =
+        context.exponential(quadratic_rate) * rational_rde_cofactor;
+    risch_result symbolic_rate_rational_rde = context.integrate_elementary(
+        symbolic_quadratic_rational_input, x);
+    assert(symbolic_rate_rational_rde.status == risch_status::elementary);
+    assert(symbolic_rate_rational_rde.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_rational_rde.elementary_part, x) -
+        symbolic_quadratic_rational_input, 100000)) == context.integer(0));
+
+    exact_expr repeated_rational_rde_candidate =
+        context.exponential(quadratic_rate) /
+        context.power(x + context.integer(1), context.integer(2));
+    exact_expr repeated_rational_rde_cofactor = context.differentiate(
+        context.integer(1) /
+            context.power(x + context.integer(1), context.integer(2)), x) +
+        context.differentiate(quadratic_rate, x) /
+            context.power(x + context.integer(1), context.integer(2));
+    exact_expr repeated_symbolic_quadratic_rational_input = context.exponential(
+        quadratic_rate) * repeated_rational_rde_cofactor;
+    risch_result symbolic_rate_repeated_rational_rde =
+        context.integrate_elementary(
+            repeated_symbolic_quadratic_rational_input, x);
+    assert(symbolic_rate_repeated_rational_rde.status ==
+        risch_status::elementary);
+    assert(symbolic_rate_repeated_rational_rde.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_rate_repeated_rational_rde.elementary_part, x) -
+        repeated_symbolic_quadratic_rational_input, 100000)) ==
+        context.integer(0));
+
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
         context.exponential(second_rate * x);
     risch_result sum_of_symbolic_rates_result = context.integrate_elementary(
