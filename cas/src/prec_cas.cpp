@@ -20846,27 +20846,14 @@ risch_result exact_context::integrate_elementary_impl(
                 integration_expr_derivative(*this, symbolic_inner);
             if(symbolic_rate.size() != 1){
                 exact_expr rate_scale;
-                integration_poly rational_rate;
-                bool rate_is_scalar_rational_polynomial = true;
                 for(const exact_expr &coefficient : symbolic_rate){
                     if(integration_expr_zero(*this, coefficient)){
-                        rational_rate.push_back(numeric_value(0));
                         continue;
                     }
                     if(!rate_scale.valid()) rate_scale = coefficient;
-                    exact_expr normalized = simplify(coefficient / rate_scale);
-                    if(!normalized.is_value() ||
-                       normalized.value().is_approximate() ||
-                       !(normalized.value().is_integer() ||
-                         normalized.value().is_rational())){
-                        rate_is_scalar_rational_polynomial = false;
-                        break;
-                    }
-                    rational_rate.push_back(normalized.value());
                 }
-                integration_trim(rational_rate);
                 integration_poly pole_numerator, pole_denominator;
-                bool squarefree_rational_pole = rate_is_scalar_rational_polynomial &&
+                bool rational_cofactor_with_simple_poles =
                     rate_scale.valid() &&
                     !integration_depends_on(rate_scale, variable) &&
                     integration_exact_expression_tree(rate_scale) &&
@@ -20876,15 +20863,45 @@ risch_result exact_context::integrate_elementary_impl(
                     integration_normalize_rational(pole_numerator,
                         pole_denominator) && pole_denominator.size() > 1 &&
                     integration_gcd_poly(pole_numerator,
-                        pole_denominator).size() == 1 &&
-                    integration_gcd_poly(pole_denominator,
-                        integration_derivative_poly(pole_denominator)).size() == 1;
-                // A polynomial rate is regular at every finite pole. A
-                // rational RDE solution cannot have a pole there because its
-                // derivative raises the pole order, nor can it be regular
-                // when the reduced cofactor has a genuine simple pole.
-                if(squarefree_rational_pole &&
-                   !integration_zero_poly(rational_rate)){
+                        pole_denominator).size() == 1;
+                bool has_simple_pole = false;
+                if(rational_cofactor_with_simple_poles){
+                    // Yun's squarefree decomposition separates denominator
+                    // factors by multiplicity without factoring them. The
+                    // first layer consists exactly of the simple poles.
+                    integration_poly repeated = integration_gcd_poly(
+                        pole_denominator,
+                        integration_derivative_poly(pole_denominator));
+                    integration_poly layer;
+                    if(integration_divide_poly(pole_denominator, repeated,
+                                               layer)){
+                        for(size_t multiplicity = 1;
+                            multiplicity <= pole_denominator.size() &&
+                            layer.size() > 1; ++multiplicity){
+                            integration_poly common = integration_gcd_poly(
+                                layer, repeated);
+                            integration_poly exact_multiplicity;
+                            integration_poly next_repeated;
+                            if(!integration_divide_poly(layer, common,
+                                    exact_multiplicity) ||
+                               !integration_divide_poly(repeated, common,
+                                    next_repeated))
+                                break;
+                            if(multiplicity == 1 &&
+                               exact_multiplicity.size() > 1){
+                                has_simple_pole = true;
+                                break;
+                            }
+                            layer = std::move(common);
+                            repeated = std::move(next_repeated);
+                        }
+                    }
+                }
+                // At a simple pole of the cofactor, a rational RDE solution
+                // is impossible for nonzero polynomial g': a pole in R makes
+                // R' one order more singular than g'R, while a regular R
+                // cannot produce the pole on the right-hand side.
+                if(rational_cofactor_with_simple_poles && has_simple_pole){
                     result.status = risch_status::proven_nonelementary;
                     result.elementary_part = integer(0);
                     result.remainder = expression;

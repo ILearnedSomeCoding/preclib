@@ -824,6 +824,27 @@ int main(){
     assert(symbolic_rate_e_over_x_result.remainder == symbolic_rate_e_over_x);
     assert(symbolic_rate_e_over_x_result.conditions.size() == 1);
     assert(symbolic_rate_e_over_x_result.conditions[0] == a);
+    for(int repeated_order : {2, 3, 5}){
+        exact_expr mixed_multiplicity_symbolic_rate_pole =
+            context.exponential(a * context.power(x, context.integer(2))) /
+            (x * context.power(x + context.integer(1),
+                context.integer(repeated_order)));
+        risch_result mixed_multiplicity_symbolic_rate_result =
+            context.integrate_elementary(mixed_multiplicity_symbolic_rate_pole,
+                                         x);
+        assert(mixed_multiplicity_symbolic_rate_result.status ==
+            risch_status::proven_nonelementary);
+        assert(mixed_multiplicity_symbolic_rate_result.conditions.size() == 1);
+        assert(context.substitute(
+            mixed_multiplicity_symbolic_rate_result.conditions[0], a,
+            context.integer(0)) == context.integer(0));
+        assert(context.simplify(context.expand(
+            context.differentiate(
+                mixed_multiplicity_symbolic_rate_result.elementary_part, x) +
+            mixed_multiplicity_symbolic_rate_result.remainder -
+            mixed_multiplicity_symbolic_rate_pole, 100000)) ==
+            context.integer(0));
+    }
     for(int pole_order : {2, 3}){
         exact_expr repeated_symbolic_rate_pole =
             context.exponential(a * x) /

@@ -115,3 +115,16 @@
 - `test`: 覆盖 `d[x*exp(k*x^2+b)]/dx`，并补充非仿射符号率的有理 cofactor 构造原函数；`test_risch_exponential_rational` 通过。
 - `docs`: 记录可验证支持子集及尚未完成的一般参数特化、极点界和无解证明。
 - 已推送提交：`6997dfb` (`feat: solve polynomial-rate exponential RDEs`)。
+
+### Follow-up: 2026-11-07
+
+- `feat`: 为符号多项式指数率下的有理 cofactor 增加平方自由简单极点局部证书；标量率参数未知时返回非零条件，不满足证书前提时不作非初等断言。
+- `test`: `exp(k*x^2+b)/x`、`exp(k*x^2+b)/(x^2+1)` 与 `k*(2*x+1)` 率用例验证证明状态、参数退化和条件传播；指数有理回归与核心 RDE 测试均通过。
+- `docs`: 记录此证书的充分条件及重复分母等未覆盖范围。
+- 已推送提交：`0e4d4cc` (`feat: certify symbolic-rate simple-pole obstruction`)。
+
+### Follow-up: 2026-11-09
+
+- `feat`: 显式 `exp(g(x))` 的符号非恒定多项式率分支，在多项式 cofactor 不适用时改用有界的表达式系数有理 RDE 求解器；仍仅接受精确导数回代成功的候选，不把求解失败当作非初等证明。
+- `test`: 新增 `exp(a*x^2)` 乘简单与重复有理极点 cofactor 的构造原函数回归；`test_risch_exponential_rational` 通过。
+- 已推送提交：`b083a20` (`feat: solve rational RDEs for symbolic polynomial rates`)。
