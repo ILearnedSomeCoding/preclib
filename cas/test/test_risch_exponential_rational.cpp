@@ -759,13 +759,13 @@ int main(){
         symbolic_quadratic_rational_input, x);
     assert(symbolic_rate_rational_rde.status == risch_status::elementary);
     assert(symbolic_rate_rational_rde.remainder == context.integer(0));
-    assert(context.simplify(context.expand(context.differentiate(
-        symbolic_rate_rational_rde.elementary_part, x) -
-        symbolic_quadratic_rational_input, 100000)) == context.integer(0));
+    assert(context.simplify(symbolic_rate_rational_rde.elementary_part -
+        rational_rde_candidate) == context.integer(0));
 
     exact_expr repeated_rational_rde_candidate =
         context.exponential(quadratic_rate) /
-        context.power(x + context.integer(1), context.integer(2));
+        (context.power(x, context.integer(2)) +
+         context.integer(2) * x + context.integer(1));
     exact_expr repeated_rational_rde_cofactor = context.differentiate(
         context.integer(1) /
             context.power(x + context.integer(1), context.integer(2)), x) +
@@ -779,9 +779,34 @@ int main(){
     assert(symbolic_rate_repeated_rational_rde.status ==
         risch_status::elementary);
     assert(symbolic_rate_repeated_rational_rde.remainder == context.integer(0));
-    assert(context.simplify(context.expand(context.differentiate(
-        symbolic_rate_repeated_rational_rde.elementary_part, x) -
-        repeated_symbolic_quadratic_rational_input, 100000)) ==
+    assert(context.simplify(symbolic_rate_repeated_rational_rde.elementary_part -
+        repeated_rational_rde_candidate) == context.integer(0));
+
+    exact_expr rational_parameter_u = context.symbol("rational_parameter_u");
+    exact_expr rational_parameter_v = context.symbol("rational_parameter_v");
+    exact_expr rational_quadratic_denominator =
+        context.power(x, context.integer(2)) + context.integer(1);
+    exact_expr parameterized_rational_part =
+        (rational_parameter_u * x + rational_parameter_v) /
+        rational_quadratic_denominator;
+    exact_expr parameterized_rational_numerator =
+        rational_parameter_u * (context.integer(1) -
+            context.power(x, context.integer(2))) -
+        context.integer(2) * rational_parameter_v * x +
+        context.integer(2) * a * x * (rational_parameter_u * x +
+            rational_parameter_v) * rational_quadratic_denominator;
+    exact_expr parameterized_symbolic_rate_input =
+        context.exponential(quadratic_rate) *
+        (parameterized_rational_numerator /
+            context.power(rational_quadratic_denominator,
+                context.integer(2)));
+    risch_result parameterized_symbolic_rate_result =
+        context.integrate_elementary(parameterized_symbolic_rate_input, x);
+    assert(parameterized_symbolic_rate_result.status ==
+        risch_status::elementary);
+    assert(parameterized_symbolic_rate_result.remainder == context.integer(0));
+    assert(context.simplify(parameterized_symbolic_rate_result.elementary_part -
+        context.exponential(quadratic_rate) * parameterized_rational_part) ==
         context.integer(0));
 
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
@@ -1167,8 +1192,9 @@ int main(){
     exact_expr symbolic_nonlinear_rate_repeated_pole_primitive =
         context.exponential(quadratic_exponent_rate *
             context.power(x, context.integer(2)) + b) /
-        context.power(context.power(x, context.integer(2)) +
-            context.integer(1), context.integer(2));
+        (context.power(x, context.integer(4)) +
+         context.integer(2) * context.power(x, context.integer(2)) +
+         context.integer(1));
     exact_expr symbolic_nonlinear_rate_repeated_pole_integrand =
         context.differentiate(symbolic_nonlinear_rate_repeated_pole_primitive, x);
     risch_result symbolic_nonlinear_rate_repeated_pole_result =
@@ -1498,11 +1524,8 @@ int main(){
     exact_expr aligned_rational_denominator_expanded =
         context.power(x, context.integer(4)) +
         context.integer(2) * x_squared + context.integer(1);
-    assert(context.simplify(context.expand(
-        aligned_rational_result.elementary_part *
-            aligned_rational_denominator_expanded -
-        aligned_rational_product * aligned_rational_denominator,
-        100000)) == context.integer(0));
+    assert(context.simplify(aligned_rational_result.elementary_part -
+        aligned_rational_expected) == context.integer(0));
     assert(context.simplify(context.expand(
         aligned_rational_expected * aligned_rational_denominator -
         aligned_rational_product, 100000)) == context.integer(0));

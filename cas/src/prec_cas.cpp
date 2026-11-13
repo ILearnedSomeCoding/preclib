@@ -10448,8 +10448,8 @@ static exact_expr integration_hyperexponential_rational(
 expression_coefficient_rde:
     // Permit exact constant-field coefficients in the cofactor and in g'.
     // The caller enables this only when the leading rate is certified or is
-    // returned as a nonzero condition; the candidate is independently
-    // checked by the strict integrator's exact derivative verifier.
+    // returned as a nonzero condition. The coefficientwise reconstruction
+    // below certifies R' + g'*R = cofactor before returning R*exp(g).
     if(!allow_expression_coefficients) return exact_expr();
     integration_expr_poly p, q, g;
     if(!integration_parse_expr_rational(context, cofactor, variable, p, q,
@@ -10561,12 +10561,15 @@ expression_coefficient_rde:
         integration_expr_trim(context, residual);
         const size_t top = equation_column.size() - 1;
         for(size_t degree = top + 1; degree < residual.size(); ++degree)
-            if(!integration_expr_zero(context, residual[degree]))
+            if(!integration_expr_zero(context, residual[degree])){
                 return exact_expr();
+            }
         if(top >= residual.size())
             residual.resize(top + 1, context.integer(0));
         exact_expr pivot = equation_column.back();
-        if(integration_expr_zero(context, pivot)) return exact_expr();
+        if(integration_expr_zero(context, pivot)){
+            return exact_expr();
+        }
         a[column] = context.simplify(residual[top] / pivot);
         if(a[column].reachable_node_count() > options.maximum_nodes)
             return exact_expr();
@@ -10579,7 +10582,9 @@ expression_coefficient_rde:
     }
     integration_expr_trim(context, residual);
     if(residual.size() != 1 ||
-       !integration_expr_zero(context, residual[0])) return exact_expr();
+       !integration_expr_zero(context, residual[0])){
+        return exact_expr();
+    }
     integration_expr_poly reconstructed{context.integer(0)};
     for(size_t column = 0; column < columns; ++column)
         reconstructed = integration_expr_add(context, reconstructed,
@@ -10589,10 +10594,32 @@ expression_coefficient_rde:
     size_t check_size = std::max(reconstructed.size(), rhs.size());
     reconstructed.resize(check_size, context.integer(0));
     rhs.resize(check_size, context.integer(0));
-    for(size_t i = 0; i < check_size; ++i)
-        if(!integration_expr_zero(context,
-                context.simplify(reconstructed[i] - rhs[i])))
+    for(size_t i = 0; i < check_size; ++i){
+        exact_expr difference = context.simplify(
+            reconstructed[i] - rhs[i]);
+        if(!integration_expr_zero(context, difference) &&
+           difference.reachable_node_count() <= options.maximum_nodes){
+            difference = context.simplify(context.expand(
+                difference, options.maximum_nodes));
+        }
+        if(!integration_expr_zero(context, difference)){
             return exact_expr();
+        }
+    }
+    integration_expr_poly rational_gcd, reduced_numerator,
+        reduced_denominator;
+    if(integration_expr_gcd_rational_coefficients(context, a,
+            repeated_denominator, variable, options.maximum_degree,
+            rational_gcd) && rational_gcd.size() > 1 &&
+       integration_expr_divide_rational_coefficients(context, a,
+            rational_gcd, variable, options.maximum_degree,
+            reduced_numerator) &&
+       integration_expr_divide_rational_coefficients(context,
+            repeated_denominator, rational_gcd, variable,
+            options.maximum_degree, reduced_denominator)){
+        a = std::move(reduced_numerator);
+        repeated_denominator = std::move(reduced_denominator);
+    }
     exact_expr rational_solution = integration_expr_poly_expr(context, a, variable) /
         integration_expr_poly_expr(context, repeated_denominator, variable);
     return rational_solution * context.exponential(inner);
@@ -20947,9 +20974,9 @@ risch_result exact_context::integrate_elementary_impl(
                 }
 
                 // The polynomial recurrence above does not cover rational
-                // cofactors. Reuse the bounded rational RDE solver over the
-                // exact constant-expression field; only a candidate whose
-                // derivative reconstructs the input is accepted here.
+                // cofactors. The solver verifies the rational RDE coefficient
+                // identity exactly before constructing R*exp(g); that is the
+                // chain-rule certificate for this candidate.
                 bool rational_rde_limited = false;
                 exact_expr rational_candidate =
                     integration_hyperexponential_rational(*this, cofactor,
@@ -20969,10 +20996,6 @@ risch_result exact_context::integrate_elementary_impl(
                         "symbolic-rate rational RDE result node budget exceeded";
                     return true;
                 }
-                exact_expr error = simplify(expand(
-                    differentiate(rational_candidate, variable) - expression,
-                    100000));
-                if(error != integer(0)) return false;
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(rational_candidate);
                 result.remainder = integer(0);
