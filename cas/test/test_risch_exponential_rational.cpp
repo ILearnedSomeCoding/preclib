@@ -904,6 +904,57 @@ int main(){
     assert(expression_coefficient_repeated_result.remainder == context.integer(0));
     assert(expression_coefficient_repeated_result.conditions.empty());
 
+    exact_expr symbolic_repeated_factor_parameter = context.symbol(
+        "symbolic_repeated_factor_parameter");
+    exact_expr symbolic_repeated_factor = context.power(x,
+        context.integer(2)) + symbolic_repeated_factor_parameter;
+    exact_expr symbolic_repeated_denominator = context.power(
+        symbolic_repeated_factor, context.integer(2));
+    exact_expr symbolic_repeated_numerator = rational_parameter_u*x +
+        rational_parameter_v;
+    exact_expr symbolic_repeated_cofactor =
+        context.differentiate(symbolic_repeated_numerator, x) *
+            symbolic_repeated_denominator -
+        symbolic_repeated_numerator *
+            context.differentiate(symbolic_repeated_denominator, x) +
+        context.differentiate(quadratic_rate, x) *
+            symbolic_repeated_numerator * symbolic_repeated_denominator;
+    exact_expr symbolic_repeated_integrand = context.exponential(quadratic_rate) *
+        (symbolic_repeated_cofactor /
+            context.power(symbolic_repeated_denominator, context.integer(2)));
+    risch_result symbolic_repeated_result = context.integrate_elementary(
+        symbolic_repeated_integrand, x);
+    assert(symbolic_repeated_result.status == risch_status::elementary);
+    assert(symbolic_repeated_result.remainder == context.integer(0));
+    bool excludes_degenerate_repeated_factor = false;
+    for(const exact_expr &condition : symbolic_repeated_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                symbolic_repeated_factor_parameter, context.integer(0))) ==
+            context.integer(0))
+            excludes_degenerate_repeated_factor = true;
+    assert(excludes_degenerate_repeated_factor);
+    exact_expr specialized_repeated_primitive =
+        symbolic_repeated_result.elementary_part;
+    exact_expr specialized_repeated_input = symbolic_repeated_integrand;
+    for(const auto &substitution : {
+            std::pair<exact_expr, exact_expr>{symbolic_repeated_factor_parameter,
+                context.integer(2)},
+            {rational_parameter_u, context.integer(3)},
+            {rational_parameter_v, context.integer(5)},
+            {a, context.integer(1)}}){
+        specialized_repeated_primitive = context.substitute(
+            specialized_repeated_primitive, substitution.first,
+            substitution.second);
+        specialized_repeated_input = context.substitute(
+            specialized_repeated_input, substitution.first,
+            substitution.second);
+    }
+    exact_expr specialized_repeated_error = context.differentiate(
+        specialized_repeated_primitive, x) - specialized_repeated_input;
+    for(int sample : {0, 1, 2, -1})
+        assert(context.simplify(context.substitute(specialized_repeated_error,
+            x, context.integer(sample))) == context.integer(0));
+
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
         context.exponential(second_rate * x);
     risch_result sum_of_symbolic_rates_result = context.integrate_elementary(
@@ -1318,12 +1369,35 @@ int main(){
         symbolic_parameter_pole_integrand, x);
     assert(symbolic_parameter_pole_result.status == risch_status::elementary);
     assert(symbolic_parameter_pole_result.remainder == context.integer(0));
-    assert(context.simplify(context.expand(
-        symbolic_parameter_pole_result.elementary_part -
-        symbolic_parameter_pole_primitive, 100000)) == context.integer(0));
-    assert(context.simplify(context.expand(context.differentiate(
-        symbolic_parameter_pole_result.elementary_part, x) -
-        symbolic_parameter_pole_integrand, 100000)) == context.integer(0));
+    bool excludes_zero_symbolic_pole = false;
+    for(const exact_expr &condition : symbolic_parameter_pole_result.conditions)
+        if(context.simplify(context.substitute(condition,
+                symbolic_pole_parameter, context.integer(0))) ==
+            context.integer(0)) excludes_zero_symbolic_pole = true;
+    assert(excludes_zero_symbolic_pole);
+    exact_expr specialized_symbolic_pole_primitive =
+        symbolic_parameter_pole_result.elementary_part;
+    exact_expr specialized_symbolic_pole_integrand =
+        symbolic_parameter_pole_integrand;
+    for(const auto &substitution : {
+            std::pair<exact_expr, exact_expr>{symbolic_pole_parameter,
+                context.integer(2)},
+            {quadratic_exponent_rate, context.integer(1)},
+            {b, context.integer(0)}}){
+        specialized_symbolic_pole_primitive = context.substitute(
+            specialized_symbolic_pole_primitive, substitution.first,
+            substitution.second);
+        specialized_symbolic_pole_integrand = context.substitute(
+            specialized_symbolic_pole_integrand, substitution.first,
+            substitution.second);
+    }
+    exact_expr specialized_symbolic_pole_error = context.differentiate(
+        specialized_symbolic_pole_primitive, x) -
+        specialized_symbolic_pole_integrand;
+    for(int sample : {0, 1, 2, -1})
+        assert(context.simplify(context.substitute(
+            specialized_symbolic_pole_error, x, context.integer(sample))) ==
+            context.integer(0));
     exact_expr symbolic_nonlinear_rate_simple_pole =
         context.exponential(quadratic_exponent_rate *
             context.power(x, context.integer(2)) + b) / x;

@@ -5765,7 +5765,8 @@ static bool integration_expr_gcd_rational_coefficients(
 
 static bool integration_expr_gcd_constant_coefficients(
     exact_context &, integration_expr_poly, integration_expr_poly,
-    const exact_expr &, size_t, integration_expr_poly &);
+    const exact_expr &, size_t, integration_expr_poly &,
+    std::vector<exact_expr> * = nullptr);
 
 // Cancel a common factor over the exact constant field. Prefer the local
 // Euclidean implementation; the general CAS factorizer is only used for
@@ -5852,7 +5853,8 @@ static bool integration_expr_cancel_polynomial_gcd(
 // an explicit nonzero witness before it is inverted.
 static bool integration_expr_gcd_constant_coefficients(
     exact_context &context, integration_expr_poly a, integration_expr_poly b,
-    const exact_expr &variable, size_t degree, integration_expr_poly &result){
+    const exact_expr &variable, size_t degree, integration_expr_poly &result,
+    std::vector<exact_expr> *nonzero_conditions){
     auto strictly_positive = [&](auto &&self, const exact_expr &value) -> bool{
         if(value.is_value()) return !value.value().is_approximate() &&
             !value.value().is_zero() && !value.value().is_negative();
@@ -5889,6 +5891,18 @@ static bool integration_expr_gcd_constant_coefficients(
                 exponent != 0 && self(self, value.operand(0));
         }
         return false;
+    };
+    auto require_nonzero = [&](const exact_expr &value){
+        if(known_nonzero(known_nonzero, value)) return true;
+        if(!nonzero_conditions ||
+           !integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable) ||
+           integration_expr_zero(context, value)) return false;
+        exact_expr condition = context.simplify(value);
+        if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
+                     condition) == nonzero_conditions->end())
+            nonzero_conditions->push_back(condition);
+        return true;
     };
     auto normalize = [&](integration_expr_poly &polynomial){
         for(exact_expr &coefficient : polynomial){
@@ -5947,8 +5961,7 @@ static bool integration_expr_gcd_constant_coefficients(
                       integration_expr_poly &remainder){
         if(divisor.empty() || !normalize(dividend)) return false;
         integration_expr_poly d = divisor;
-        if(!normalize(d) || !known_nonzero(known_nonzero, d.back()))
-            return false;
+        if(!normalize(d) || !require_nonzero(d.back())) return false;
         quotient.assign(dividend.size() >= d.size()
             ? dividend.size() - d.size() + 1 : 1, context.integer(0));
         while(dividend.size() >= d.size() &&
@@ -5982,13 +5995,13 @@ static bool integration_expr_gcd_constant_coefficients(
         a = std::move(b);
         b = std::move(remainder);
     }
-    if(a.size() > 1 && !known_nonzero(known_nonzero, a.back())) return false;
+    if(a.size() > 1 && !require_nonzero(a.back())) return false;
     if(a.size() == 1 && integration_expr_zero(context, a[0])){
         result = std::move(a);
         return true;
     }
     exact_expr leading = a.back();
-    if(!known_nonzero(known_nonzero, leading)) return false;
+    if(!require_nonzero(leading)) return false;
     for(exact_expr &coefficient : a)
         coefficient = context.simplify(coefficient / leading);
     result = std::move(a);
@@ -10298,7 +10311,8 @@ static exact_expr integration_hyperexponential_rational(
     const exact_expr &inner, const exact_expr &variable,
     bool allow_expression_coefficients = false,
     const risch_options &options = risch_options(),
-    bool *resource_limited = nullptr){
+    bool *resource_limited = nullptr,
+    std::vector<exact_expr> *nonzero_conditions = nullptr){
     if(resource_limited) *resource_limited = false;
     auto exceeds_matrix_budget = [&](size_t rows, size_t columns){
         if(columns == SIZE_MAX) return true;
@@ -10569,6 +10583,17 @@ expression_coefficient_rde:
         return exact_expr();
 
     integration_expr_poly repeated_denominator;
+    std::vector<exact_expr> rde_conditions;
+    auto record_nonzero_condition = [&](const exact_expr &value){
+        if(!nonzero_conditions ||
+           !integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable) ||
+           integration_expr_zero(context, value)) return false;
+        exact_expr condition = context.simplify(value);
+        if(std::find(rde_conditions.begin(), rde_conditions.end(), condition) ==
+           rde_conditions.end()) rde_conditions.push_back(condition);
+        return true;
+    };
     integration_expr_poly q_derivative = integration_expr_derivative(context, q);
     bool repeated_gcd_found = integration_expr_gcd_rational_coefficients(
         context, q, q_derivative, variable, options.maximum_degree,
@@ -10576,7 +10601,7 @@ expression_coefficient_rde:
     if(!repeated_gcd_found){
         repeated_gcd_found = integration_expr_gcd_constant_coefficients(
             context, q, q_derivative, variable, options.maximum_degree,
-            repeated_denominator);
+            repeated_denominator, nonzero_conditions ? &rde_conditions : nullptr);
     }
     if(!repeated_gcd_found || repeated_denominator.empty())
         return exact_expr();
@@ -10661,6 +10686,13 @@ expression_coefficient_rde:
         if(integration_expr_zero(context, pivot)){
             return exact_expr();
         }
+        bool pivot_known_nonzero = pivot.is_value()
+            ? !pivot.value().is_zero()
+            : pivot.operation() == exact_opcode::constant_e ||
+              pivot.operation() == exact_opcode::constant_pi ||
+              pivot.operation() == exact_opcode::exponential;
+        if(nonzero_conditions && !pivot_known_nonzero &&
+           !record_nonzero_condition(pivot)) return exact_expr();
         a[column] = context.simplify(residual[top] / pivot);
         if(a[column].reachable_node_count() > options.maximum_nodes)
             return exact_expr();
@@ -10715,6 +10747,11 @@ expression_coefficient_rde:
         variable, options.maximum_degree, options.maximum_nodes);
     exact_expr rational_solution = integration_expr_poly_expr(context, a, variable) /
         integration_expr_poly_expr(context, repeated_denominator, variable);
+    if(nonzero_conditions)
+        for(const exact_expr &condition : rde_conditions)
+            if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
+                         condition) == nonzero_conditions->end())
+                nonzero_conditions->push_back(condition);
     return rational_solution * context.exponential(inner);
 }
 
@@ -21075,6 +21112,13 @@ risch_result exact_context::integrate_elementary_impl(
                     integration_hyperexponential_rational(*this, cofactor,
                         exponential_factor.operand(0), variable, true,
                         options, &rational_rde_limited);
+                std::vector<exact_expr> rational_rde_conditions;
+                if(!rational_candidate.valid() && !rational_rde_limited){
+                    rational_candidate = integration_hyperexponential_rational(
+                        *this, cofactor, exponential_factor.operand(0), variable,
+                        true, options, &rational_rde_limited,
+                        &rational_rde_conditions);
+                }
                 if(rational_rde_limited){
                     result.status = risch_status::resource_limit;
                     result.diagnostic =
@@ -21092,6 +21136,11 @@ risch_result exact_context::integrate_elementary_impl(
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(rational_candidate);
                 result.remainder = integer(0);
+                for(const exact_expr &condition : rational_rde_conditions)
+                    if(std::find(result.conditions.begin(),
+                            result.conditions.end(), condition) ==
+                       result.conditions.end())
+                        result.conditions.push_back(condition);
                 result.diagnostic.clear();
                 return true;
             }
