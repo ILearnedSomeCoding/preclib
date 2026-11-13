@@ -5763,10 +5763,14 @@ static bool integration_expr_gcd_rational_coefficients(
     return true;
 }
 
-// Use the CAS polynomial gcd for expression-coefficient polynomials when the
-// Q(x)-coefficient Euclidean algorithm cannot see parameter factors. Every
-// proposed quotient is parsed back as a polynomial and certified by exact
-// coefficient reconstruction before it is accepted.
+static bool integration_expr_gcd_constant_coefficients(
+    exact_context &, integration_expr_poly, integration_expr_poly,
+    const exact_expr &, size_t, integration_expr_poly &);
+
+// Cancel a common factor over the exact constant field. Prefer the local
+// Euclidean implementation; the general CAS factorizer is only used for
+// algebraic polynomial DAGs it can safely represent. Every quotient is
+// certified by exact coefficient reconstruction before it is accepted.
 static bool integration_expr_cancel_polynomial_gcd(
     exact_context &context, integration_expr_poly &numerator,
     integration_expr_poly &denominator, const exact_expr &variable,
@@ -5779,26 +5783,42 @@ static bool integration_expr_cancel_polynomial_gcd(
        denominator_expression.reachable_node_count() > maximum_nodes)
         return false;
     try{
-        exact_expr common = context.gcd(numerator_expression,
-            denominator_expression);
         integration_expr_poly common_polynomial;
-        if(!integration_parse_expr_poly(context, common, variable,
-                common_polynomial, maximum_degree) ||
-           common_polynomial.size() <= 1)
-            return false;
-        exact_expr numerator_quotient_expression = context.simplify(
-            numerator_expression / common);
-        exact_expr denominator_quotient_expression = context.simplify(
-            denominator_expression / common);
-        if(numerator_quotient_expression.reachable_node_count() > maximum_nodes ||
-           denominator_quotient_expression.reachable_node_count() > maximum_nodes)
-            return false;
+        bool gcd_found = integration_expr_gcd_constant_coefficients(context,
+            numerator, denominator, variable, maximum_degree,
+            common_polynomial);
+        if(!gcd_found){
+            auto factorizer_safe = [&](auto &&self,
+                                       const exact_expr &expression) -> bool{
+                if(expression.is_value() ||
+                   expression.operation() == exact_opcode::symbol) return true;
+                exact_opcode op = expression.operation();
+                if(op != exact_opcode::add && op != exact_opcode::multiply &&
+                   op != exact_opcode::power) return false;
+                for(size_t i = 0; i < expression.operand_count(); ++i)
+                    if(!self(self, expression.operand(i))) return false;
+                return true;
+            };
+            bool safe = true;
+            for(const exact_expr &coefficient : numerator)
+                safe = safe && factorizer_safe(factorizer_safe, coefficient);
+            for(const exact_expr &coefficient : denominator)
+                safe = safe && factorizer_safe(factorizer_safe, coefficient);
+            if(!safe) return false;
+            exact_expr common = context.gcd(numerator_expression,
+                denominator_expression);
+            if(!integration_parse_expr_poly(context, common, variable,
+                    common_polynomial, maximum_degree)) return false;
+            gcd_found = true;
+        }
+        if(!gcd_found || common_polynomial.size() <= 1) return false;
         integration_expr_poly numerator_quotient, denominator_quotient;
-        if(!integration_parse_expr_poly(context, numerator_quotient_expression,
-                variable, numerator_quotient, maximum_degree) ||
-           !integration_parse_expr_poly(context, denominator_quotient_expression,
-                variable, denominator_quotient, maximum_degree))
-            return false;
+        if(!integration_expr_divide_rational_coefficients(context, numerator,
+                common_polynomial, variable, maximum_degree,
+                numerator_quotient) ||
+           !integration_expr_divide_rational_coefficients(context, denominator,
+                common_polynomial, variable, maximum_degree,
+                denominator_quotient)) return false;
         auto product_matches = [&](const integration_expr_poly &left,
                                    const integration_expr_poly &right){
             integration_expr_poly product = integration_expr_mul(context,
@@ -10550,9 +10570,16 @@ expression_coefficient_rde:
 
     integration_expr_poly repeated_denominator;
     integration_expr_poly q_derivative = integration_expr_derivative(context, q);
-    if(!integration_expr_gcd_rational_coefficients(context, q, q_derivative,
-            variable, options.maximum_degree, repeated_denominator) ||
-       repeated_denominator.empty()) return exact_expr();
+    bool repeated_gcd_found = integration_expr_gcd_rational_coefficients(
+        context, q, q_derivative, variable, options.maximum_degree,
+        repeated_denominator);
+    if(!repeated_gcd_found){
+        repeated_gcd_found = integration_expr_gcd_constant_coefficients(
+            context, q, q_derivative, variable, options.maximum_degree,
+            repeated_denominator);
+    }
+    if(!repeated_gcd_found || repeated_denominator.empty())
+        return exact_expr();
     size_t degree_f = p.size() >= q.size() ? p.size() - q.size() : 0;
     const size_t degree_rate = rate.size() - 1;
     size_t degree_a = repeated_denominator.size() - 1;

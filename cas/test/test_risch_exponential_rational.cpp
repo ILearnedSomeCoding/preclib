@@ -851,6 +851,58 @@ int main(){
     assert(parameterized_repeated_rational_result.remainder ==
         context.integer(0));
     assert(parameterized_repeated_rational_result.conditions.empty());
+    exact_expr shifted_quadratic_denominator = context.power(x,
+        context.integer(2)) + x + context.integer(1);
+    exact_expr shifted_parameterized_numerator =
+        rational_parameter_u * context.power(x, context.integer(3)) +
+        rational_parameter_v * context.power(x, context.integer(2)) +
+        rational_parameter_w * x + rational_parameter_z;
+    exact_expr shifted_repeated_denominator = context.power(
+        shifted_quadratic_denominator, context.integer(2));
+    exact_expr shifted_rational_part = shifted_parameterized_numerator /
+        shifted_repeated_denominator;
+    exact_expr shifted_rational_cofactor =
+        context.differentiate(shifted_parameterized_numerator, x) *
+            shifted_repeated_denominator -
+        shifted_parameterized_numerator *
+            context.differentiate(shifted_repeated_denominator, x) +
+        context.differentiate(quadratic_rate, x) *
+            shifted_parameterized_numerator * shifted_repeated_denominator;
+    exact_expr shifted_parameterized_integrand =
+        context.exponential(quadratic_rate) *
+        (shifted_rational_cofactor /
+            context.power(shifted_repeated_denominator, context.integer(2)));
+    risch_result shifted_parameterized_result = context.integrate_elementary(
+        shifted_parameterized_integrand, x);
+    assert(shifted_parameterized_result.status == risch_status::elementary);
+    assert(shifted_parameterized_result.remainder == context.integer(0));
+
+    exact_expr exact_constant_coefficient = context.e();
+    exact_expr expression_coefficient_factor = context.power(x,
+        context.integer(2)) + exact_constant_coefficient;
+    exact_expr expression_coefficient_repeated_denominator = context.power(
+        expression_coefficient_factor, context.integer(2));
+    exact_expr expression_coefficient_repeated_numerator = rational_parameter_u*x +
+        rational_parameter_v;
+    exact_expr expression_coefficient_repeated_cofactor =
+        context.differentiate(expression_coefficient_repeated_numerator, x) *
+            expression_coefficient_repeated_denominator -
+        expression_coefficient_repeated_numerator *
+            context.differentiate(expression_coefficient_repeated_denominator, x) +
+        context.differentiate(quadratic_rate, x) *
+            expression_coefficient_repeated_numerator *
+            expression_coefficient_repeated_denominator;
+    exact_expr expression_coefficient_repeated_integrand =
+        context.exponential(quadratic_rate) *
+        (expression_coefficient_repeated_cofactor /
+            context.power(expression_coefficient_repeated_denominator,
+                context.integer(2)));
+    risch_result expression_coefficient_repeated_result =
+        context.integrate_elementary(expression_coefficient_repeated_integrand, x);
+    assert(expression_coefficient_repeated_result.status ==
+        risch_status::elementary);
+    assert(expression_coefficient_repeated_result.remainder == context.integer(0));
+    assert(expression_coefficient_repeated_result.conditions.empty());
 
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
         context.exponential(second_rate * x);
