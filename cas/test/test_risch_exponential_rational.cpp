@@ -809,6 +809,49 @@ int main(){
         context.exponential(quadratic_rate) * parameterized_rational_part) ==
         context.integer(0));
 
+    exact_expr rational_parameter_w = context.symbol("rational_parameter_w");
+    exact_expr rational_parameter_z = context.symbol("rational_parameter_z");
+    exact_expr parameterized_cubic_numerator =
+        rational_parameter_u * context.power(x, context.integer(3)) +
+        rational_parameter_v * context.power(x, context.integer(2)) +
+        rational_parameter_w * x + rational_parameter_z;
+    exact_expr parameterized_repeated_quadratic_denominator =
+        context.power(rational_quadratic_denominator, context.integer(2));
+    exact_expr parameterized_repeated_rational_part =
+        parameterized_cubic_numerator /
+            parameterized_repeated_quadratic_denominator;
+    exact_expr parameterized_repeated_common_factor = context.gcd(
+        parameterized_cubic_numerator * rational_quadratic_denominator,
+        context.power(rational_quadratic_denominator, context.integer(3)));
+    assert(context.simplify(parameterized_repeated_common_factor -
+        rational_quadratic_denominator) == context.integer(0));
+    assert(context.simplify(
+        context.simplify(parameterized_cubic_numerator *
+            rational_quadratic_denominator /
+            parameterized_repeated_common_factor) -
+        parameterized_cubic_numerator) == context.integer(0));
+    exact_expr repeated_rational_cofactor_numerator =
+        context.differentiate(parameterized_cubic_numerator, x) *
+            parameterized_repeated_quadratic_denominator -
+        parameterized_cubic_numerator *
+            context.differentiate(parameterized_repeated_quadratic_denominator,
+                x) +
+        context.differentiate(quadratic_rate, x) *
+            parameterized_cubic_numerator *
+            parameterized_repeated_quadratic_denominator;
+    exact_expr parameterized_repeated_rational_input =
+        context.exponential(quadratic_rate) *
+        (repeated_rational_cofactor_numerator /
+            context.power(parameterized_repeated_quadratic_denominator,
+                context.integer(2)));
+    risch_result parameterized_repeated_rational_result =
+        context.integrate_elementary(parameterized_repeated_rational_input, x);
+    assert(parameterized_repeated_rational_result.status ==
+        risch_status::elementary);
+    assert(parameterized_repeated_rational_result.remainder ==
+        context.integer(0));
+    assert(parameterized_repeated_rational_result.conditions.empty());
+
     exact_expr sum_of_symbolic_rates = context.exponential(a * x) +
         context.exponential(second_rate * x);
     risch_result sum_of_symbolic_rates_result = context.integrate_elementary(

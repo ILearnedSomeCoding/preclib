@@ -5763,6 +5763,70 @@ static bool integration_expr_gcd_rational_coefficients(
     return true;
 }
 
+// Use the CAS polynomial gcd for expression-coefficient polynomials when the
+// Q(x)-coefficient Euclidean algorithm cannot see parameter factors. Every
+// proposed quotient is parsed back as a polynomial and certified by exact
+// coefficient reconstruction before it is accepted.
+static bool integration_expr_cancel_polynomial_gcd(
+    exact_context &context, integration_expr_poly &numerator,
+    integration_expr_poly &denominator, const exact_expr &variable,
+    size_t maximum_degree, size_t maximum_nodes){
+    exact_expr numerator_expression = integration_expr_poly_expr(context,
+        numerator, variable);
+    exact_expr denominator_expression = integration_expr_poly_expr(context,
+        denominator, variable);
+    if(numerator_expression.reachable_node_count() > maximum_nodes ||
+       denominator_expression.reachable_node_count() > maximum_nodes)
+        return false;
+    try{
+        exact_expr common = context.gcd(numerator_expression,
+            denominator_expression);
+        integration_expr_poly common_polynomial;
+        if(!integration_parse_expr_poly(context, common, variable,
+                common_polynomial, maximum_degree) ||
+           common_polynomial.size() <= 1)
+            return false;
+        exact_expr numerator_quotient_expression = context.simplify(
+            numerator_expression / common);
+        exact_expr denominator_quotient_expression = context.simplify(
+            denominator_expression / common);
+        if(numerator_quotient_expression.reachable_node_count() > maximum_nodes ||
+           denominator_quotient_expression.reachable_node_count() > maximum_nodes)
+            return false;
+        integration_expr_poly numerator_quotient, denominator_quotient;
+        if(!integration_parse_expr_poly(context, numerator_quotient_expression,
+                variable, numerator_quotient, maximum_degree) ||
+           !integration_parse_expr_poly(context, denominator_quotient_expression,
+                variable, denominator_quotient, maximum_degree))
+            return false;
+        auto product_matches = [&](const integration_expr_poly &left,
+                                   const integration_expr_poly &right){
+            integration_expr_poly product = integration_expr_mul(context,
+                common_polynomial, left);
+            size_t count = std::max(product.size(), right.size());
+            product.resize(count, context.integer(0));
+            for(size_t i = 0; i < count; ++i){
+                exact_expr difference = context.simplify(product[i] -
+                    (i < right.size() ? right[i] : context.integer(0)));
+                if(!integration_expr_zero(context, difference) &&
+                   difference.reachable_node_count() <= maximum_nodes)
+                    difference = context.simplify(context.expand(difference,
+                        maximum_nodes));
+                if(!integration_expr_zero(context, difference)) return false;
+            }
+            return true;
+        };
+        if(!product_matches(numerator_quotient, numerator) ||
+           !product_matches(denominator_quotient, denominator))
+            return false;
+        numerator = std::move(numerator_quotient);
+        denominator = std::move(denominator_quotient);
+        return true;
+    }catch(const std::length_error &){
+        return false;
+    }
+}
+
 // Euclidean gcd over exact, x-independent expression coefficients. This is
 // deliberately conservative: every divisor leading coefficient must have
 // an explicit nonzero witness before it is inverted.
@@ -10620,6 +10684,8 @@ expression_coefficient_rde:
         a = std::move(reduced_numerator);
         repeated_denominator = std::move(reduced_denominator);
     }
+    integration_expr_cancel_polynomial_gcd(context, a, repeated_denominator,
+        variable, options.maximum_degree, options.maximum_nodes);
     exact_expr rational_solution = integration_expr_poly_expr(context, a, variable) /
         integration_expr_poly_expr(context, repeated_denominator, variable);
     return rational_solution * context.exponential(inner);
