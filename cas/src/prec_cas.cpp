@@ -16653,13 +16653,127 @@ risch_result exact_context::integrate_elementary_impl(
         integration_poly rational_numerator, rational_denominator;
         if(!integration_parse_rational(rational_in_generator, parameter,
                 rational_numerator, rational_denominator, degree_budget,
-                degree_budget))
-            return false;
+                degree_budget)){
+            bool symbolic_resource_limited = false;
+            exact_expr symbolic_primitive =
+                integration_symbolic_rational_primitive(*this,
+                    rational_in_generator, parameter, degree_budget,
+                    options.maximum_nodes, options.maximum_matrix_entries,
+                    &symbolic_resource_limited);
+            std::vector<exact_expr> symbolic_conditions;
+            if(!symbolic_primitive.valid() && !symbolic_resource_limited){
+                integration_expr_poly expression_numerator,
+                    expression_denominator;
+                if(integration_parse_expr_rational(*this,
+                        rational_in_generator, parameter, expression_numerator,
+                        expression_denominator, degree_budget) &&
+                   !expression_denominator.empty()){
+                    exact_expr common_scale;
+                    for(const exact_expr &coefficient : expression_denominator){
+                        if(!integration_expr_zero(*this, coefficient)){
+                            common_scale = coefficient;
+                            break;
+                        }
+                    }
+                    if(common_scale.valid() &&
+                       integration_exact_expression_tree(common_scale) &&
+                       !integration_depends_on(common_scale, parameter)){
+                        integration_poly normalized_denominator;
+                        bool scalar_denominator = true;
+                        for(const exact_expr &coefficient : expression_denominator){
+                            exact_expr ratio = simplify(coefficient / common_scale);
+                            if(!ratio.is_value() ||
+                               ratio.value().is_approximate() ||
+                               simplify(coefficient - common_scale * ratio) != integer(0)){
+                                scalar_denominator = false;
+                                break;
+                            }
+                            normalized_denominator.push_back(ratio.value());
+                        }
+                        integration_expr_poly normalized_numerator;
+                        if(scalar_denominator){
+                            normalized_numerator.reserve(expression_numerator.size());
+                            for(const exact_expr &coefficient : expression_numerator)
+                                normalized_numerator.push_back(
+                                    simplify(coefficient / common_scale));
+                            exact_expr normalized_input =
+                                integration_expr_poly_expr(*this,
+                                    normalized_numerator, parameter) /
+                                integration_poly_expr(*this,
+                                    normalized_denominator, parameter);
+                            bool normalized_resource_limited = false;
+                            symbolic_primitive =
+                                integration_symbolic_rational_primitive(*this,
+                                    normalized_input, parameter, degree_budget,
+                                    options.maximum_nodes,
+                                    options.maximum_matrix_entries,
+                                    &normalized_resource_limited);
+                            symbolic_resource_limited =
+                                normalized_resource_limited;
+                            if(symbolic_primitive.valid() &&
+                               !(common_scale.is_value() &&
+                                 !common_scale.value().is_approximate() &&
+                                 !common_scale.value().is_zero()) &&
+                               !integration_strictly_positive_constant(
+                                   common_scale))
+                                symbolic_conditions.push_back(common_scale);
+                        }
+                    }
+                }
+            }
+            if(!symbolic_primitive.valid()){
+                if(symbolic_resource_limited){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.conditions.clear();
+                    result.diagnostic =
+                        "symbolic rational exponential substitution budget exceeded";
+                    return true;
+                }
+                return false;
+            }
+            exact_expr symbolic_candidate = substitute(symbolic_primitive,
+                parameter, generator);
+            if(symbolic_candidate.reachable_node_count() > options.maximum_nodes){
+                result.status = risch_status::resource_limit;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.conditions.clear();
+                result.diagnostic =
+                    "symbolic exponential substitution primitive node budget exceeded";
+                return true;
+            }
+            exact_expr symbolic_identity = simplify(expand(
+                differentiate(symbolic_candidate, variable) - expression,
+                verification_degree_budget));
+            if(symbolic_identity != integer(0)){
+                result.status = risch_status::verification_failed;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.conditions.clear();
+                result.diagnostic =
+                    "symbolic exponential substitution failed derivative verification";
+                return true;
+            }
+            result.status = risch_status::elementary;
+            result.elementary_part = std::move(symbolic_candidate);
+            result.remainder = integer(0);
+            for(const exact_expr &condition : symbolic_conditions)
+                if(std::find(result.conditions.begin(), result.conditions.end(),
+                        condition) == result.conditions.end())
+                    result.conditions.push_back(condition);
+            result.diagnostic.clear();
+            return true;
+        }
         exact_expr rational_input = integration_poly_expr(*this,
             rational_numerator, parameter) /
             integration_poly_expr(*this, rational_denominator, parameter);
         if(rational_input.reachable_node_count() > options.maximum_nodes){
             result.status = risch_status::resource_limit;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.conditions.clear();
             result.diagnostic =
                 "exponential substitution rational input node budget exceeded";
             return true;
@@ -16667,7 +16781,13 @@ risch_result exact_context::integrate_elementary_impl(
         risch_result rational_primitive = integrate_elementary(
             rational_input, parameter, options);
         if(rational_primitive.status == risch_status::resource_limit){
-            result = std::move(rational_primitive);
+            result.status = risch_status::resource_limit;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.conditions.clear();
+            result.diagnostic = rational_primitive.diagnostic.empty()
+                ? "rational exponential substitution budget exhausted"
+                : std::move(rational_primitive.diagnostic);
             return true;
         }
         if(rational_primitive.status != risch_status::elementary ||
@@ -16677,6 +16797,9 @@ risch_result exact_context::integrate_elementary_impl(
             parameter, generator);
         if(candidate.reachable_node_count() > options.maximum_nodes){
             result.status = risch_status::resource_limit;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.conditions.clear();
             result.diagnostic =
                 "exponential substitution primitive node budget exceeded";
             return true;
@@ -16686,6 +16809,9 @@ risch_result exact_context::integrate_elementary_impl(
             verification_degree_budget));
         if(identity != integer(0)){
             result.status = risch_status::verification_failed;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.conditions.clear();
             result.diagnostic =
                 "exponential rational substitution failed derivative verification";
             return true;

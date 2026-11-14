@@ -37,6 +37,72 @@ int main(){
         seventh_degree_exponential_result.elementary_part, x) -
         seventh_degree_exponential_input, 100000)) == context.integer(0));
 
+    exact_expr symbolic_exponential_input = a * t /
+        seventh_degree_exponential_denominator;
+    risch_result symbolic_exponential_result = context.integrate_elementary(
+        symbolic_exponential_input, x);
+    assert(symbolic_exponential_result.status == risch_status::elementary);
+    assert(symbolic_exponential_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_exponential_result.elementary_part, x) -
+        symbolic_exponential_input, 100000)) == context.integer(0));
+
+    exact_expr symbolic_denominator_input = t /
+        (a * seventh_degree_exponential_denominator);
+    risch_result symbolic_denominator_result = context.integrate_elementary(
+        symbolic_denominator_input, x);
+    assert(symbolic_denominator_result.status == risch_status::elementary);
+    assert(symbolic_denominator_result.remainder == context.integer(0));
+    assert(std::find(symbolic_denominator_result.conditions.begin(),
+        symbolic_denominator_result.conditions.end(), a) !=
+        symbolic_denominator_result.conditions.end());
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_denominator_result.elementary_part, x) -
+        symbolic_denominator_input, 100000)) == context.integer(0));
+
+    exact_expr nonlinear_exponential = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr symbolic_nonlinear_input = a * context.integer(2) * x *
+        nonlinear_exponential /
+        (context.integer(1) + context.power(nonlinear_exponential,
+            context.integer(7)));
+    risch_result symbolic_nonlinear_result = context.integrate_elementary(
+        symbolic_nonlinear_input, x);
+    assert(symbolic_nonlinear_result.status == risch_status::elementary);
+    assert(symbolic_nonlinear_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        symbolic_nonlinear_result.elementary_part, x) -
+        symbolic_nonlinear_input, 100000)) == context.integer(0));
+
+    exact_expr nonlinear_seventh_degree_input = context.integer(2) * x *
+        nonlinear_exponential /
+        (context.integer(1) + context.power(nonlinear_exponential,
+            context.integer(7)));
+    risch_result nonlinear_seventh_degree_result = context.integrate_elementary(
+        nonlinear_seventh_degree_input, x);
+    assert(nonlinear_seventh_degree_result.status == risch_status::elementary);
+    assert(nonlinear_seventh_degree_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        nonlinear_seventh_degree_result.elementary_part, x) -
+        nonlinear_seventh_degree_input, 100000)) == context.integer(0));
+
+    exact_expr rational_inner_exponential = context.exponential(
+        context.integer(1) / x);
+    exact_expr rational_inner_seventh_degree_input =
+        -rational_inner_exponential /
+        (context.power(x, context.integer(2)) *
+         (context.integer(1) + context.power(rational_inner_exponential,
+             context.integer(7))));
+    risch_result rational_inner_seventh_degree_result =
+        context.integrate_elementary(rational_inner_seventh_degree_input, x);
+    assert(rational_inner_seventh_degree_result.status ==
+        risch_status::elementary);
+    assert(rational_inner_seventh_degree_result.remainder ==
+        context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        rational_inner_seventh_degree_result.elementary_part, x) -
+        rational_inner_seventh_degree_input, 100000)) == context.integer(0));
+
     exact_expr exponential_square = context.exponential(
         context.power(x, context.integer(2)));
     exact_expr exponential_square_chain = context.integer(2) * x *
@@ -51,6 +117,15 @@ int main(){
         exponential_square_chain, 100000)) == context.integer(0));
     risch_options options;
     options.maximum_recursion_depth = 1;
+
+    risch_result shallow_exponential_substitution = context.integrate_elementary(
+        rational_inner_seventh_degree_input, x, options);
+    assert(shallow_exponential_substitution.status ==
+        risch_status::resource_limit);
+    assert(shallow_exponential_substitution.elementary_part ==
+        context.integer(0));
+    assert(shallow_exponential_substitution.remainder ==
+        rational_inner_seventh_degree_input);
 
     exact_expr inputs[] = {
         context.integer(1) / (context.integer(1) + t +
