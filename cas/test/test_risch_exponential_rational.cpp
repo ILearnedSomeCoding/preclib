@@ -18,6 +18,25 @@ int main(){
     context.assume(r, "positive");
     exact_expr t = context.exponential(x);
 
+    // A rational function of one exponential generator can use the full R0
+    // rational integrator after substituting t = exp(x), even when its
+    // denominator is beyond the low-degree exponential pattern cases.
+    exact_expr seventh_degree_exponential_denominator = context.integer(1) +
+        context.power(t, context.integer(7));
+    exact_expr seventh_degree_exponential_input =
+        t / seventh_degree_exponential_denominator;
+    risch_result seventh_degree_exponential_result =
+        context.integrate_elementary(seventh_degree_exponential_input, x);
+    if(seventh_degree_exponential_result.status != risch_status::elementary ||
+       seventh_degree_exponential_result.remainder != context.integer(0)){
+        std::fprintf(stderr, "high-degree rational exponential substitution failed: %s\n",
+            seventh_degree_exponential_result.diagnostic.c_str());
+        return 1;
+    }
+    assert(context.simplify(context.expand(context.differentiate(
+        seventh_degree_exponential_result.elementary_part, x) -
+        seventh_degree_exponential_input, 100000)) == context.integer(0));
+
     exact_expr exponential_square = context.exponential(
         context.power(x, context.integer(2)));
     exact_expr exponential_square_chain = context.integer(2) * x *

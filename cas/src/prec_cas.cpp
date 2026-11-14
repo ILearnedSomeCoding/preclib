@@ -16637,8 +16637,65 @@ risch_result exact_context::integrate_elementary_impl(
             generator, parameter);
         if(!integration_parse_expr_rational(*this, transformed, parameter,
                 numerator, denominator, degree_budget)) return false;
-        return integrate_symbolic_low_degree_exponential(numerator, denominator,
-            parameter, generator, numeric_value(1));
+        if(integrate_symbolic_low_degree_exponential(numerator, denominator,
+                parameter, generator, numeric_value(1)))
+            return true;
+
+        // For a pure rational function of exp(g), change variables using
+        // D(exp(g)) = g' * exp(g), then reuse the complete rational R0
+        // integrator instead of extending the low-degree pattern table.
+        exact_expr differential = inner_derivative * generator;
+        exact_expr rational_in_generator = substitute(
+            expression / differential, generator, parameter);
+        if(integration_depends_on(rational_in_generator, variable) ||
+           !integration_exact_expression_tree(rational_in_generator))
+            return false;
+        integration_poly rational_numerator, rational_denominator;
+        if(!integration_parse_rational(rational_in_generator, parameter,
+                rational_numerator, rational_denominator, degree_budget,
+                degree_budget))
+            return false;
+        exact_expr rational_input = integration_poly_expr(*this,
+            rational_numerator, parameter) /
+            integration_poly_expr(*this, rational_denominator, parameter);
+        if(rational_input.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.diagnostic =
+                "exponential substitution rational input node budget exceeded";
+            return true;
+        }
+        risch_result rational_primitive = integrate_elementary(
+            rational_input, parameter, options);
+        if(rational_primitive.status == risch_status::resource_limit){
+            result = std::move(rational_primitive);
+            return true;
+        }
+        if(rational_primitive.status != risch_status::elementary ||
+           rational_primitive.remainder != integer(0))
+            return false;
+        exact_expr candidate = substitute(rational_primitive.elementary_part,
+            parameter, generator);
+        if(candidate.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.diagnostic =
+                "exponential substitution primitive node budget exceeded";
+            return true;
+        }
+        exact_expr identity = simplify(expand(
+            differentiate(candidate, variable) - expression,
+            verification_degree_budget));
+        if(identity != integer(0)){
+            result.status = risch_status::verification_failed;
+            result.diagnostic =
+                "exponential rational substitution failed derivative verification";
+            return true;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.conditions = std::move(rational_primitive.conditions);
+        result.diagnostic.clear();
+        return true;
     };
     if(classify_symbolic_nonlinear_exponential_substitution()) return result;
     auto classify_constant_multiple = [&]() -> bool{

@@ -128,3 +128,44 @@
 - `feat`: 显式 `exp(g(x))` 的符号非恒定多项式率分支，在多项式 cofactor 不适用时改用有界的表达式系数有理 RDE 求解器；仍仅接受精确导数回代成功的候选，不把求解失败当作非初等证明。
 - `test`: 新增 `exp(a*x^2)` 乘简单与重复有理极点 cofactor 的构造原函数回归；`test_risch_exponential_rational` 通过。
 - 已推送提交：`b083a20` (`feat: solve rational RDEs for symbolic polynomial rates`)。
+
+### Follow-up: 2026-11-09
+
+- `feat`: 非恒定符号多项式指数率的有理 cofactor 判据使用平方自由重数分解；混合重数分母中若有简单极点层，即可在率系数非零条件下证明有理 RDE 无解。纯重复因子仍不沿用该结论。
+- `test`: `exp(a*x^2)/(x*(x+1)^m)` 对 `m=2,3,5` 均得到带正确退化条件的非初等证明，完整指数有理回归通过。
+- `docs`: 记录重数层的判据和参数化 RDE 的剩余限制。
+- 已推送提交：`97b0d92` (`feat: certify mixed-multiplicity hyperexponential poles`)。
+
+### Follow-up: 2026-11-13
+
+- `fix`: 表达式系数有理 RDE 现在用逐系数精确重构作为 `R' + g'*R = f` 的证书；证书通过后不再因完整导数表达式的化简形式不同而拒绝候选。
+- `fix`: 对通过证书的有理候选执行精确多项式 GCD 约分，避免返回未约分的重复因子。
+- `test`: 新增带自由分子系数的参数化构造例，并通过完整 `test_risch_exponential_rational` 回归。
+- `docs`: 更新参数化有理 RDE 已覆盖范围与剩余限制。
+- 已推送提交：`e0e5826` (`fix: accept certified parameterized rational RDEs`)。
+
+### Follow-up: 2026-11-13
+
+- `fix`: 参数系数有理 RDE 候选新增多变量多项式 GCD 约分；仅当商可解析为积分变量多项式、且 numerator/denominator 均通过精确回乘系数验证时才采用。
+- `test`: 覆盖三次自由参数分子、重复平方分母和二次符号指数率；检查公共 GCD、精确商、零余项及无额外参数条件。
+- `docs`: 记录该约分的证书要求及参数化 GCD 的适用边界。
+- 已推送提交：`a2ee65c` (`fix: reduce parameterized rational RDE candidates`)。
+
+### Follow-up: 2026-11-13
+
+- `feat`: 超指数有理 RDE 的重复极点界在有理系数 GCD 不适用时，回退到精确变量无关表达式系数 Euclid；每次除法要求主元有非零证明，候选约分逐系数回乘验证。非代数表达式 DAG 不再交给通用多项式因式分解器，避免崩溃。
+- `test`: 增加平移重复二次分母及 `(x^2+e)^2` 精确常数系数案例；参数退化无法证明时仍拒绝泛型化。`test_risch_exponential_rational` 与 `test_risch_rde_core` 均通过。
+- 已推送提交：`40884d3` (`feat: support exact constant-field hyperexponential RDE gcd`)。
+
+### Follow-up: 2026-11-13
+
+- `feat`: 表达式系数超指数有理 RDE 在无条件求解失败后可安全重试；只有精确重构成功时才返回候选，并将 GCD/回代主元所需的非零条件附到结果。示例 `(x^2+p)^2` 会显式排除重根退化分支。
+- `test`: 参数化重复极点与符号参数极点回归通过；`test_risch_exponential_rational`、`test_risch_rde_core` 均通过。
+- `docs`: 更新 `cas/RISCH.md` 的条件传播支持范围及限制。
+- 已推送提交：`b243a6b` (`feat: propagate symbolic RDE nonzero conditions`)。
+
+### Follow-up: 2026-11-14
+
+- `feat`: 单一指数生成元有理换元在低次数 RDE 路径未覆盖时，回退到严格 R0 有理积分；只接受换元后与原变量无关的精确有理函数，并验证代回后的完整导数。
+- `test`: 新增 `exp(x)/(1+exp(x)^7)` 高次分母用例；`test_risch_exponential_rational`、`test_risch_rde_core` 及 CLI 积分验证通过。
+- `docs`: 记录此支持域以及含 `x` 依赖系数、多生成元与近似系数的边界。
