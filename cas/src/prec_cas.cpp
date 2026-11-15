@@ -19737,14 +19737,86 @@ risch_result exact_context::integrate_elementary_impl(
                         exponential_power);
                 }else if(rde.status ==
                          integration_rde_status::no_polynomial_solution){
-                    has_nonelementary = true;
                     exact_expr exponential_power = term.first == 1
                         ? generator : power(generator, integer(term.first));
                     exact_expr coefficient = scaled_constant ?
                         coefficient_scale : term.second;
-                    nonelementary_part = simplify(nonelementary_part +
-                        coefficient * exponential_power);
-                    if(scaled_constant){
+                    // For polynomial g and polynomial cofactor, reduce the
+                    // RDE right-hand side by division by k*g'. Each step
+                    // f = A' + k*g'*A + r extracts D(A*exp(k*g)); the
+                    // remaining polynomial has lower degree and retains the
+                    // no-rational-solution certificate from the complete RDE.
+                    bool extracted = false;
+                    integration_poly reduced = p;
+                    integration_poly accumulated(1, numeric_value(0));
+                    integration_poly rate;
+                    if(derivative_denominator.size() == 1 &&
+                       !derivative_denominator[0].is_zero() &&
+                       q.size() == 1 && !q[0].is_zero()){
+                        rate = scaled_derivative;
+                        for(numeric_value &entry : rate)
+                            entry = entry / derivative_denominator[0];
+                        integration_trim(rate);
+                        for(numeric_value &entry : reduced)
+                            entry = entry / q[0];
+                        integration_trim(reduced);
+                    }
+                    if(rate.size() > 1 && q.size() == 1 &&
+                       !q[0].is_zero()){
+                        for(size_t step = 0; step <= degree_budget &&
+                                !integration_zero_poly(reduced) &&
+                                reduced.size() >= rate.size(); ++step){
+                            integration_poly quotient, remainder;
+                            if(!integration_divmod_poly(reduced, rate,
+                                    quotient, remainder)){
+                                supported = false;
+                                break;
+                            }
+                            if(integration_zero_poly(quotient)) break;
+                            if(accumulated.size() < quotient.size())
+                                accumulated.resize(quotient.size(),
+                                                  numeric_value(0));
+                            for(size_t i = 0; i < quotient.size(); ++i)
+                                accumulated[i] = accumulated[i] + quotient[i];
+                            integration_poly quotient_derivative =
+                                integration_derivative_poly(quotient);
+                            if(remainder.size() < quotient_derivative.size())
+                                remainder.resize(quotient_derivative.size(),
+                                                 numeric_value(0));
+                            for(size_t i = 0; i < quotient_derivative.size(); ++i)
+                                remainder[i] = remainder[i] -
+                                               quotient_derivative[i];
+                            integration_trim(remainder);
+                            reduced = std::move(remainder);
+                            extracted = true;
+                        }
+                    }
+                    if(!supported) break;
+                    integration_trim(accumulated);
+                    bool term_nonelementary = true;
+                    if(extracted && !integration_zero_poly(accumulated)){
+                        exact_expr scale_factor = scaled_constant
+                            ? coefficient_scale : integer(1);
+                        exact_expr partial = scale_factor *
+                            integration_poly_expr(*this, accumulated,
+                                                   variable) * exponential_power;
+                        elementary_part = simplify(elementary_part + partial);
+                        if(!integration_zero_poly(reduced)){
+                            exact_expr residual = scale_factor *
+                                integration_poly_expr(*this, reduced,
+                                                      variable) * exponential_power;
+                            nonelementary_part = simplify(
+                                nonelementary_part + residual);
+                            has_nonelementary = true;
+                        }else{
+                            term_nonelementary = false;
+                        }
+                    }else{
+                        has_nonelementary = true;
+                        nonelementary_part = simplify(nonelementary_part +
+                            coefficient * exponential_power);
+                    }
+                    if(scaled_constant && term_nonelementary){
                         bool known_nonzero =
                             integration_strictly_positive_constant(
                                 coefficient_scale) ||
@@ -22281,6 +22353,115 @@ risch_result exact_context::integrate_elementary_impl(
             return true;
         }
         if(!integration_normalize_rational(p, q)) return false;
+
+        // Risch reduction for a polynomial exponential: when g is a
+        // polynomial of degree at least two and the cofactor is polynomial,
+        // repeatedly divide by g' and integrate by parts.  This extracts an
+        // elementary derivative even when the final hyperexponential RDE has
+        // no complete rational solution, e.g. x^4*exp(x^2).
+        if(gd.size() == 1 && !gd[0].is_zero() && q.size() == 1 &&
+           !q[0].is_zero() && gn.size() >= 3 &&
+           p.size() <= degree_budget + 1){
+            integration_poly rate = integration_derivative_poly(gn);
+            for(numeric_value &coefficient : rate)
+                coefficient = coefficient / gd[0];
+            integration_trim(rate);
+            integration_poly reduced = p;
+            for(numeric_value &coefficient : reduced)
+                coefficient = coefficient / q[0];
+            integration_trim(reduced);
+            integration_poly accumulated(1, numeric_value(0));
+            bool extracted = false;
+            for(size_t step = 0; step <= degree_budget &&
+                    !integration_zero_poly(reduced) &&
+                    reduced.size() >= rate.size(); ++step){
+                integration_poly quotient, remainder;
+                if(!integration_divmod_poly(reduced, rate, quotient,
+                                             remainder))
+                    return false;
+                if(integration_zero_poly(quotient)) break;
+                if(accumulated.size() < quotient.size())
+                    accumulated.resize(quotient.size(), numeric_value(0));
+                for(size_t i = 0; i < quotient.size(); ++i)
+                    accumulated[i] = accumulated[i] + quotient[i];
+                integration_poly quotient_derivative =
+                    integration_derivative_poly(quotient);
+                if(remainder.size() < quotient_derivative.size())
+                    remainder.resize(quotient_derivative.size(),
+                                     numeric_value(0));
+                for(size_t i = 0; i < quotient_derivative.size(); ++i)
+                    remainder[i] = remainder[i] - quotient_derivative[i];
+                integration_trim(remainder);
+                reduced = std::move(remainder);
+                extracted = true;
+            }
+            integration_trim(accumulated);
+            if(extracted && !integration_zero_poly(accumulated)){
+                exact_expr partial = integration_poly_expr(*this,
+                    accumulated, variable) * exponential_factor;
+                if(partial.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "hyperexponential reduction result node budget exceeded";
+                    return true;
+                }
+                if(integration_zero_poly(reduced)){
+                    exact_expr error = simplify(expand(
+                        differentiate(partial, variable) - expression,
+                        100000));
+                    if(error != integer(0)){
+                        result.status = risch_status::verification_failed;
+                        result.diagnostic =
+                            "hyperexponential polynomial reduction failed verification";
+                        return true;
+                    }
+                    result.status = risch_status::elementary;
+                    result.elementary_part = std::move(partial);
+                    result.remainder = integer(0);
+                    result.diagnostic.clear();
+                    return true;
+                }
+
+                exact_expr reduced_integrand = integration_poly_expr(*this,
+                    reduced, variable) * exponential_factor;
+                if(reduced_integrand.reachable_node_count() >
+                   options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "hyperexponential reduction remainder node budget exceeded";
+                    return true;
+                }
+                risch_result lower = integrate_elementary(
+                    reduced_integrand, variable, options);
+                exact_expr combined = partial + lower.elementary_part;
+                if(combined.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "hyperexponential reduction combined node budget exceeded";
+                    return true;
+                }
+                exact_expr identity = simplify(expand(
+                    differentiate(combined, variable) + lower.remainder -
+                        expression, 100000));
+                if(identity != integer(0)){
+                    result.status = risch_status::verification_failed;
+                    result.elementary_part = integer(0);
+                    result.remainder = expression;
+                    result.diagnostic =
+                        "hyperexponential partial decomposition failed verification";
+                    return true;
+                }
+                result = std::move(lower);
+                result.elementary_part = std::move(combined);
+                return true;
+            }
+        }
         integration_poly derivative_denominator = integration_mul(gd, gd);
         std::vector<integration_parametric_rational_basis> basis;
         auto solved = integration_parametric_rde_rational(logarithmic_derivative,

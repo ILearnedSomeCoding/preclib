@@ -183,3 +183,6 @@
 - `fix`: 严格证书不覆盖的符号系数低次数分支继续使用原参数化路径，避免误拒符号二次极点及带指数常数偏移的已有结果。
 - `test`: 新增 `exp(x^2)` 与 `exp(2*x^2)` 相关生成元有理核回归；`test_risch_exponential_rational` 和 `test_risch_rde_core` 均通过。
 - `docs`: 说明临时生成元证书、指数整数相关归一化及当前参数系数边界。
+- `feat`: 对 `exp(k*g(x))*P(x)` 的多项式指数 RDE 增加精确降次归约，提取可积的初等部分，并将低次剩余项交给原有判定器。
+- `test`: 新增 `x^3*exp(x^2)`、`x^2*exp(x^2)`、`x^4*exp(x^2)` 和负指数率回归；新测试、`test_risch_rde_core` 与 `test_risch_exponential_rational` 均通过。
+- `docs`: 记录该归约的前提及有理 cofactor、符号系数和一般有理指数率的未覆盖边界。
