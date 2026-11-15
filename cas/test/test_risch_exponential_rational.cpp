@@ -60,8 +60,43 @@ int main(){
         symbolic_denominator_result.elementary_part, x) -
         symbolic_denominator_input, 100000)) == context.integer(0));
 
+    exact_expr sqrt_two = context.square_root(context.integer(2));
+    exact_expr algebraic_denominator_input = t /
+        (sqrt_two * seventh_degree_exponential_denominator);
+    risch_result algebraic_denominator_result = context.integrate_elementary(
+        algebraic_denominator_input, x);
+    assert(algebraic_denominator_result.status == risch_status::elementary);
+    assert(algebraic_denominator_result.remainder == context.integer(0));
+    assert(algebraic_denominator_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        algebraic_denominator_result.elementary_part, x) -
+        algebraic_denominator_input, 100000)) == context.integer(0));
+
     exact_expr nonlinear_exponential = context.exponential(
         context.power(x, context.integer(2)));
+    exact_expr nonlinear_exponential_square = context.exponential(
+        context.integer(2) * context.power(x, context.integer(2)));
+    exact_expr related_nonlinear_exponential_input = context.integer(2) * x *
+        nonlinear_exponential /
+        (context.integer(1) + nonlinear_exponential +
+         nonlinear_exponential_square);
+    risch_result related_nonlinear_exponential_result =
+        context.integrate_elementary(related_nonlinear_exponential_input, x);
+    if(related_nonlinear_exponential_result.status != risch_status::elementary)
+        std::fprintf(stderr, "related nonlinear exponential failed: %s\n",
+            related_nonlinear_exponential_result.diagnostic.c_str());
+    assert(related_nonlinear_exponential_result.status ==
+        risch_status::elementary);
+    assert(related_nonlinear_exponential_result.remainder ==
+        context.integer(0));
+    exact_expr related_nonlinear_expected = context.integer(2) *
+        context.arc_tangent((context.integer(2) * nonlinear_exponential +
+            context.integer(1)) / context.square_root(context.integer(3))) /
+        context.square_root(context.integer(3));
+    assert(context.simplify(
+        related_nonlinear_exponential_result.elementary_part -
+        related_nonlinear_expected) == context.integer(0));
+
     exact_expr symbolic_nonlinear_input = a * context.integer(2) * x *
         nonlinear_exponential /
         (context.integer(1) + context.power(nonlinear_exponential,

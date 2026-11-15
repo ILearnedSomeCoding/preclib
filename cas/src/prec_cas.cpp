@@ -15545,6 +15545,37 @@ risch_result exact_context::integrate_elementary_impl(
                 result.conditions.push_back(condition);
         return true;
     };
+    auto integrate_symbolic_low_degree_exponential_certified = [&] (
+        const integration_expr_poly &numerator,
+        const integration_expr_poly &denominator,
+        const exact_expr &temporary, const exact_expr &generator,
+        const numeric_value &slope) -> bool{
+        auto numeric_coefficients = [](const integration_expr_poly &poly){
+            return std::all_of(poly.begin(), poly.end(),
+                [](const exact_expr &coefficient){
+                    return coefficient.is_value() &&
+                        !coefficient.value().is_approximate();
+                });
+        };
+        if(!numeric_coefficients(numerator) ||
+           !numeric_coefficients(denominator))
+            return integrate_symbolic_low_degree_exponential(numerator,
+                denominator, temporary, generator, slope);
+        risch_result previous_result = result;
+        if(!integrate_symbolic_low_degree_exponential(numerator, denominator,
+                temporary, generator, slope)) return false;
+        if(result.status != risch_status::elementary) return true;
+        exact_expr formal_primitive = substitute(result.elementary_part,
+            generator, temporary);
+        exact_expr formal_integrand =
+            integration_expr_poly_expr(*this, numerator, temporary) /
+            (value(slope) * temporary *
+             integration_expr_poly_expr(*this, denominator, temporary));
+        if(certify_exponential_rational_primitive(formal_primitive,
+                formal_integrand, temporary)) return true;
+        result = std::move(previous_result);
+        return false;
+    };
     auto normalize_integer_related_exponentials = [&]() -> bool{
         std::vector<exact_expr> generators;
         std::unordered_set<uint32_t> seen;
@@ -16637,7 +16668,7 @@ risch_result exact_context::integrate_elementary_impl(
             generator, parameter);
         if(!integration_parse_expr_rational(*this, transformed, parameter,
                 numerator, denominator, degree_budget)) return false;
-        if(integrate_symbolic_low_degree_exponential(numerator, denominator,
+        if(integrate_symbolic_low_degree_exponential_certified(numerator, denominator,
                 parameter, generator, numeric_value(1)))
             return true;
 
@@ -16660,6 +16691,7 @@ risch_result exact_context::integrate_elementary_impl(
                     rational_in_generator, parameter, degree_budget,
                     options.maximum_nodes, options.maximum_matrix_entries,
                     &symbolic_resource_limited);
+            exact_expr symbolic_rational_input = rational_in_generator;
             std::vector<exact_expr> symbolic_conditions;
             if(!symbolic_primitive.valid() && !symbolic_resource_limited){
                 integration_expr_poly expression_numerator,
@@ -16701,6 +16733,7 @@ risch_result exact_context::integrate_elementary_impl(
                                     normalized_numerator, parameter) /
                                 integration_poly_expr(*this,
                                     normalized_denominator, parameter);
+                            symbolic_rational_input = normalized_input;
                             bool normalized_resource_limited = false;
                             symbolic_primitive =
                                 integration_symbolic_rational_primitive(*this,
@@ -16744,10 +16777,13 @@ risch_result exact_context::integrate_elementary_impl(
                     "symbolic exponential substitution primitive node budget exceeded";
                 return true;
             }
-            exact_expr symbolic_identity = simplify(expand(
-                differentiate(symbolic_candidate, variable) - expression,
-                verification_degree_budget));
-            if(symbolic_identity != integer(0)){
+            exact_expr formal_symbolic_candidate = substitute(
+                symbolic_candidate, generator, parameter);
+            if(simplify(differentiate(generator, variable) - differential) !=
+                   integer(0) ||
+               !certify_exponential_rational_primitive(
+                   formal_symbolic_candidate, symbolic_rational_input,
+                   parameter)){
                 result.status = risch_status::verification_failed;
                 result.elementary_part = integer(0);
                 result.remainder = expression;
@@ -16804,16 +16840,16 @@ risch_result exact_context::integrate_elementary_impl(
                 "exponential substitution primitive node budget exceeded";
             return true;
         }
-        exact_expr identity = simplify(expand(
-            differentiate(candidate, variable) - expression,
-            verification_degree_budget));
-        if(identity != integer(0)){
+        if(simplify(differentiate(generator, variable) - differential) !=
+               integer(0) ||
+           !certify_exponential_rational_primitive(
+               rational_primitive.elementary_part, rational_input, parameter)){
             result.status = risch_status::verification_failed;
             result.elementary_part = integer(0);
             result.remainder = expression;
             result.conditions.clear();
             result.diagnostic =
-                "exponential rational substitution failed derivative verification";
+                "exponential rational substitution failed rational derivative certification";
             return true;
         }
         result.status = risch_status::elementary;
