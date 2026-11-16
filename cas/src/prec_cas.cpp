@@ -19699,8 +19699,34 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                 }
                 integration_poly p, q;
-                if(!integration_parse_rational(term.second, variable, p, q) ||
-                   !integration_normalize_rational(p, q)){
+                bool parsed_rational = integration_parse_rational(
+                    term.second, variable, p, q) &&
+                    integration_normalize_rational(p, q);
+                if(!parsed_rational && term.first != 0){
+                    exact_expr rational_scale;
+                    exact_expr rational_cofactor = integration_extract_constants(
+                        *this, term.second, variable, rational_scale);
+                    integration_poly scaled_numerator, scaled_denominator;
+                    if(rational_scale != integer(1) &&
+                       integration_exact_expression_tree(rational_scale) &&
+                       !integration_depends_on(rational_scale, variable) &&
+                       integration_parse_rational(rational_cofactor, variable,
+                           scaled_numerator, scaled_denominator,
+                           degree_budget, degree_budget) &&
+                       integration_normalize_rational(scaled_numerator,
+                                                      scaled_denominator)){
+                        coefficient_scale = rational_scale;
+                        scaled_constant = true;
+                        term.second = integration_poly_expr(*this,
+                            scaled_numerator, variable) /
+                            integration_poly_expr(*this, scaled_denominator,
+                                                   variable);
+                        p = std::move(scaled_numerator);
+                        q = std::move(scaled_denominator);
+                        parsed_rational = true;
+                    }
+                }
+                if(!parsed_rational){
                     supported = false;
                     break;
                 }
@@ -19842,7 +19868,7 @@ risch_result exact_context::integrate_elementary_impl(
                             term_nonelementary = false;
                         }
                     }
-                    if(!term_decomposed && !scaled_constant && q.size() > 1){
+                    if(!term_decomposed && q.size() > 1){
                         exact_expr reduced_inner = integer(term.first) *
                             generator.operand(0);
                         exact_expr rational_part, rational_residual;
@@ -19854,6 +19880,11 @@ risch_result exact_context::integrate_elementary_impl(
                         if(rational_part.valid() &&
                            rational_residual.valid() &&
                            simplify(rational_part) != integer(0)){
+                            exact_expr scale_factor = scaled_constant
+                                ? coefficient_scale : integer(1);
+                            rational_part = scale_factor * rational_part;
+                            rational_residual = scale_factor *
+                                rational_residual;
                             risch_result lower = integrate_elementary(
                                 rational_residual, variable, options);
                             if(lower.status == risch_status::elementary ||
@@ -19864,7 +19895,7 @@ risch_result exact_context::integrate_elementary_impl(
                                 exact_expr identity = simplify(expand(
                                     differentiate(candidate_term, variable) +
                                         lower.remainder - term.second *
-                                            exponential_power,
+                                            scale_factor * exponential_power,
                                     100000));
                                 bool identity_verified =
                                     identity == integer(0);

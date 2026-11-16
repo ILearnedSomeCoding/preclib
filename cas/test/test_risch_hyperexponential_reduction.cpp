@@ -1,5 +1,6 @@
 #include "../prec_cas.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 static bool is_zero(exact_context &context, const exact_expr &value){
@@ -155,6 +156,44 @@ int main(){
                   << shifted_pole_result.elementary_part.to_string()
                   << " remainder=" << shifted_pole_result.remainder.to_string()
                   << '\n';
+        return 1;
+    }
+
+    exact_expr scale = context.symbol("scale");
+    exact_expr scaled_repeated_pole = scale * repeated_pole;
+    risch_result scaled_repeated_pole_result = context.integrate_elementary(
+        scaled_repeated_pole, x);
+    if(scaled_repeated_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context, scaled_repeated_pole_result.elementary_part -
+                         scale * repeated_pole_primitive) ||
+       !is_zero(context, scaled_repeated_pole_result.remainder -
+                         scale * repeated_pole_remainder) ||
+       std::find(scaled_repeated_pole_result.conditions.begin(),
+                 scaled_repeated_pole_result.conditions.end(), scale) ==
+           scaled_repeated_pole_result.conditions.end()){
+        std::cerr << "symbolic-scale repeated-pole reduction failed: "
+                  << scaled_repeated_pole_result.diagnostic << " elementary="
+                  << scaled_repeated_pole_result.elementary_part.to_string()
+                  << " remainder=" << scaled_repeated_pole_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr positive_scale = context.symbol("positive_scale");
+    context.assume(positive_scale, "positive");
+    risch_result positive_scaled_repeated_pole_result =
+        context.integrate_elementary(positive_scale * repeated_pole, x);
+    if(positive_scaled_repeated_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context,
+           positive_scaled_repeated_pole_result.elementary_part -
+               positive_scale * repeated_pole_primitive) ||
+       !is_zero(context, positive_scaled_repeated_pole_result.remainder -
+               positive_scale * repeated_pole_remainder) ||
+       !positive_scaled_repeated_pole_result.conditions.empty()){
+        std::cerr << "assumed-positive repeated-pole reduction failed: "
+                  << positive_scaled_repeated_pole_result.diagnostic << '\n';
         return 1;
     }
 
