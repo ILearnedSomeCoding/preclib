@@ -197,6 +197,35 @@ int main(){
         return 1;
     }
 
+    exact_expr a = context.symbol("a");
+    exact_expr b = context.symbol("b");
+    exact_expr symbolic_rational_cofactor =
+        (a * (-x + context.integer(2) * context.power(x, context.integer(3))) +
+         b * (context.integer(2) * context.power(x, context.integer(2)) -
+              context.integer(2))) /
+        context.power(x, context.integer(3));
+    exact_expr symbolic_rational_input =
+        symbolic_rational_cofactor * exponential;
+    exact_expr symbolic_rational_expected =
+        (a / x + b / context.power(x, context.integer(2))) * exponential;
+    risch_result symbolic_rational_result = context.integrate_elementary(
+        symbolic_rational_input, x);
+    if(symbolic_rational_result.status != risch_status::elementary ||
+       symbolic_rational_result.remainder != context.integer(0) ||
+       !symbolic_rational_result.conditions.empty() ||
+       !is_zero(context, symbolic_rational_result.elementary_part -
+                         symbolic_rational_expected) ||
+       !is_zero(context, context.differentiate(
+           symbolic_rational_result.elementary_part, x) -
+           symbolic_rational_input)){
+        std::cerr << "symbolic numerator Hermite reduction failed: "
+                  << symbolic_rational_result.diagnostic << " elementary="
+                  << symbolic_rational_result.elementary_part.to_string()
+                  << " remainder="
+                  << symbolic_rational_result.remainder.to_string() << '\n';
+        return 1;
+    }
+
     exact_expr simple_pole = exponential / x;
     risch_result simple_pole_result = context.integrate_elementary(
         simple_pole, x);

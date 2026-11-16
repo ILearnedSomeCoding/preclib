@@ -10783,6 +10783,92 @@ expression_coefficient_rde:
     return rational_solution * context.exponential(inner);
 }
 
+// Extend the repeated-pole Hermite reduction linearly to exact constant-field
+// coefficients in the numerator. The denominator and the inner exponent stay
+// over Q[x], so each monomial uses the already certified rational solver.
+static bool integration_hyperexponential_rational_partial_expr(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable,
+    const risch_options &options, exact_expr &elementary_part,
+    exact_expr &remainder, bool *resource_limited = nullptr){
+    if(resource_limited) *resource_limited = false;
+    elementary_part = exact_expr();
+    remainder = exact_expr();
+
+    integration_expr_poly numerator, expression_denominator;
+    if(!integration_parse_expr_rational(context, cofactor, variable,
+            numerator, expression_denominator, options.maximum_degree) ||
+       numerator.empty() || expression_denominator.size() < 2)
+        return false;
+
+    integration_poly denominator;
+    denominator.reserve(expression_denominator.size());
+    for(const exact_expr &coefficient : expression_denominator){
+        if(!coefficient.is_value() || coefficient.value().is_approximate())
+            return false;
+        denominator.push_back(coefficient.value());
+    }
+    integration_trim(denominator);
+    if(denominator.size() < 2 || integration_zero_poly(denominator))
+        return false;
+    integration_poly denominator_gcd = integration_gcd_poly(denominator,
+        integration_derivative_poly(denominator));
+    if(denominator_gcd.size() < 2) return false;
+
+    elementary_part = context.integer(0);
+    remainder = context.integer(0);
+    bool saw_nonzero_coefficient = false;
+    for(size_t degree = 0; degree < numerator.size(); ++degree){
+        const exact_expr &coefficient = numerator[degree];
+        if(integration_expr_zero(context, coefficient)) continue;
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+        saw_nonzero_coefficient = true;
+
+        integration_poly monomial(degree + 1, numeric_value(0));
+        monomial[degree] = numeric_value(1);
+        integration_poly reduced_numerator = monomial;
+        integration_poly reduced_denominator = denominator;
+        if(!integration_normalize_rational(reduced_numerator,
+                                            reduced_denominator))
+            return false;
+        integration_poly monomial_gcd = integration_gcd_poly(
+            reduced_denominator,
+            integration_derivative_poly(reduced_denominator));
+
+        exact_expr monomial_part = context.integer(0);
+        exact_expr monomial_remainder;
+        if(monomial_gcd.size() < 2){
+            monomial_remainder = integration_poly_expr(context,
+                reduced_numerator, variable) * context.exponential(inner) /
+                integration_poly_expr(context, reduced_denominator, variable);
+        }else{
+            exact_expr monomial_cofactor = integration_poly_expr(context,
+                monomial, variable) /
+                integration_poly_expr(context, denominator, variable);
+            bool limited = false;
+            integration_hyperexponential_rational(context, monomial_cofactor,
+                inner, variable, false, options, &limited, nullptr,
+                &monomial_part, &monomial_remainder, true);
+            if(limited){
+                if(resource_limited) *resource_limited = true;
+                return false;
+            }
+            if(!monomial_part.valid() || !monomial_remainder.valid())
+                return false;
+        }
+        elementary_part = elementary_part + coefficient * monomial_part;
+        remainder = remainder + coefficient * monomial_remainder;
+        if(elementary_part.reachable_node_count() > options.maximum_nodes ||
+           remainder.reachable_node_count() > options.maximum_nodes){
+            if(resource_limited) *resource_limited = true;
+            return false;
+        }
+    }
+    return saw_nonzero_coefficient && elementary_part.valid() &&
+           remainder.valid();
+}
+
 // Hermite reduction in the quadratic exponential extension. For
 // P(x)*exp(a*x^2+b*x+d), solve P = R' + (2*a*x+b)*R + k. The first two
 // terms are d(R*exp(...))/dx; the one-dimensional residual k is integrated
@@ -19724,6 +19810,84 @@ risch_result exact_context::integrate_elementary_impl(
                         p = std::move(scaled_numerator);
                         q = std::move(scaled_denominator);
                         parsed_rational = true;
+                    }
+                }
+                if(!parsed_rational && term.first != 0){
+                    exact_expr symbolic_partial, symbolic_residual;
+                    bool limited = false;
+                    bool reduced =
+                        integration_hyperexponential_rational_partial_expr(
+                            *this, term.second,
+                            integer(term.first) * generator.operand(0),
+                            variable, options, symbolic_partial,
+                            symbolic_residual, &limited);
+                    if(limited){
+                        result.status = risch_status::resource_limit;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        result.diagnostic =
+                            "symbolic hyperexponential Hermite budget exceeded";
+                        return true;
+                    }
+                    if(reduced && simplify(symbolic_partial) != integer(0)){
+                        exact_expr exponential_power = term.first == 1
+                            ? generator : power(generator, integer(term.first));
+                        risch_result lower = integrate_elementary(
+                            symbolic_residual, variable, options);
+                        if(lower.status == risch_status::elementary ||
+                           lower.status ==
+                               risch_status::proven_nonelementary){
+                            exact_expr candidate_term = symbolic_partial +
+                                lower.elementary_part;
+                            if(candidate_term.reachable_node_count() >
+                                    options.maximum_nodes ||
+                               lower.remainder.reachable_node_count() >
+                                    options.maximum_nodes){
+                                result.status = risch_status::resource_limit;
+                                result.elementary_part = integer(0);
+                                result.remainder = expression;
+                                result.diagnostic =
+                                    "symbolic hyperexponential Hermite node budget exhausted";
+                                return true;
+                            }
+                            exact_expr identity = simplify(expand(
+                                differentiate(candidate_term, variable) +
+                                    lower.remainder - term.second *
+                                        exponential_power,
+                                100000));
+                            bool identity_verified = identity == integer(0);
+                            if(!identity_verified){
+                                integration_poly identity_numerator,
+                                    identity_denominator;
+                                exact_expr scaled_identity = simplify(
+                                    identity / exponential_power);
+                                if(integration_parse_rational(scaled_identity,
+                                       variable, identity_numerator,
+                                       identity_denominator) &&
+                                   integration_normalize_rational(
+                                       identity_numerator,
+                                       identity_denominator))
+                                    identity_verified = integration_zero_poly(
+                                        identity_numerator);
+                            }
+                            if(identity_verified){
+                                elementary_part = simplify(elementary_part +
+                                    candidate_term);
+                                nonelementary_part = simplify(
+                                    nonelementary_part + lower.remainder);
+                                bool term_nonelementary = lower.status ==
+                                    risch_status::proven_nonelementary;
+                                has_nonelementary = has_nonelementary ||
+                                    term_nonelementary;
+                                for(const exact_expr &condition :
+                                        lower.conditions)
+                                    if(std::find(result.conditions.begin(),
+                                            result.conditions.end(), condition) ==
+                                       result.conditions.end())
+                                        result.conditions.push_back(condition);
+                                continue;
+                            }
+                        }
                     }
                 }
                 if(!parsed_rational){
