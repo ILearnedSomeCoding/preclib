@@ -10312,8 +10312,13 @@ static exact_expr integration_hyperexponential_rational(
     bool allow_expression_coefficients = false,
     const risch_options &options = risch_options(),
     bool *resource_limited = nullptr,
-    std::vector<exact_expr> *nonzero_conditions = nullptr){
+    std::vector<exact_expr> *nonzero_conditions = nullptr,
+    exact_expr *elementary_reduction = nullptr,
+    exact_expr *remainder_integrand = nullptr,
+    bool partial_reduction_only = false){
     if(resource_limited) *resource_limited = false;
+    if(elementary_reduction) *elementary_reduction = exact_expr();
+    if(remainder_integrand) *remainder_integrand = exact_expr();
     auto exceeds_matrix_budget = [&](size_t rows, size_t columns){
         if(columns == SIZE_MAX) return true;
         const size_t width = columns + 1;
@@ -10443,7 +10448,11 @@ static exact_expr integration_hyperexponential_rational(
         exact_expr a = integration_poly_expr(context, coefficients, variable);
         exact_expr b = integration_poly_expr(
             context, universal_denominator, variable);
-        return a * context.exponential(inner) / b;
+        exact_expr primitive = a * context.exponential(inner) / b;
+        if(elementary_reduction) *elementary_reduction = primitive;
+        if(remainder_integrand)
+            *remainder_integrand = context.integer(0);
+        return primitive;
     }
 
     // A squarefree denominator has no repeated poles to reduce. Returning now
@@ -10454,11 +10463,22 @@ static exact_expr integration_hyperexponential_rational(
     if(!integration_divide_poly(denominator, universal_denominator,
                                 squarefree_denominator))
         return exact_expr();
-    const size_t residual_columns = squarefree_denominator.size() - 1;
+    const size_t squarefree_columns = squarefree_denominator.size() - 1;
+    // After removing repeated poles, polynomial division by g' reduces the
+    // polynomial part to degree < deg(g'). Include those coefficients in the
+    // residual basis as well as the proper squarefree numerator.
+    const size_t polynomial_columns = degree_h > 0
+        ? (size_t)degree_h : 0;
+    if(squarefree_columns > SIZE_MAX - polynomial_columns){
+        if(resource_limited) *resource_limited = true;
+        return exact_expr();
+    }
+    const size_t residual_columns = squarefree_columns + polynomial_columns;
     if(residual_columns == 0) return exact_expr();
 
-    // Hermite reduction permits a squarefree residual S/C:
-    // P*B = C*N(A) + S*B^2, deg(S)<deg(C).
+    // Hermite reduction permits a residual S/C whose proper part has a
+    // squarefree denominator and whose polynomial part has degree < deg(g'):
+    // P*B = C*N(A) + S*B^2.
     if(a_columns > SIZE_MAX - residual_columns){
         if(resource_limited) *resource_limited = true;
         return exact_expr();
@@ -10528,16 +10548,24 @@ static exact_expr integration_hyperexponential_rational(
     exact_expr b = integration_poly_expr(
         context, universal_denominator, variable);
     exact_expr rational_part = a * context.exponential(inner) / b;
-    if(integration_zero_poly(residual_coefficients)) return rational_part;
+    if(integration_zero_poly(residual_coefficients)){
+        if(elementary_reduction) *elementary_reduction = rational_part;
+        if(remainder_integrand)
+            *remainder_integrand = context.integer(0);
+        return rational_part;
+    }
 
     exact_expr residual_numerator = integration_poly_expr(
         context, residual_coefficients, variable);
     exact_expr residual_denominator = integration_poly_expr(
         context, squarefree_denominator, variable);
-    exact_expr residual_primitive = context.integrate(
-        residual_numerator * context.exponential(inner) /
-            residual_denominator,
-        variable);
+    exact_expr residual_expression = residual_numerator *
+        context.exponential(inner) / residual_denominator;
+    if(elementary_reduction) *elementary_reduction = rational_part;
+    if(remainder_integrand) *remainder_integrand = residual_expression;
+    if(partial_reduction_only) return rational_part;
+    exact_expr residual_primitive = context.integrate(residual_expression,
+                                                       variable);
     if(residual_primitive.operation() == exact_opcode::integral)
         return exact_expr();
     return rational_part + residual_primitive;
@@ -19793,6 +19821,7 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                     if(!supported) break;
                     integration_trim(accumulated);
+                    bool term_decomposed = false;
                     bool term_nonelementary = true;
                     if(extracted && !integration_zero_poly(accumulated)){
                         exact_expr scale_factor = scaled_constant
@@ -19801,6 +19830,7 @@ risch_result exact_context::integrate_elementary_impl(
                             integration_poly_expr(*this, accumulated,
                                                    variable) * exponential_power;
                         elementary_part = simplify(elementary_part + partial);
+                        term_decomposed = true;
                         if(!integration_zero_poly(reduced)){
                             exact_expr residual = scale_factor *
                                 integration_poly_expr(*this, reduced,
@@ -19811,7 +19841,72 @@ risch_result exact_context::integrate_elementary_impl(
                         }else{
                             term_nonelementary = false;
                         }
-                    }else{
+                    }
+                    if(!term_decomposed && !scaled_constant && q.size() > 1){
+                        exact_expr reduced_inner = integer(term.first) *
+                            generator.operand(0);
+                        exact_expr rational_part, rational_residual;
+                        bool reduction_limited = false;
+                        integration_hyperexponential_rational(*this,
+                            term.second, reduced_inner, variable, false,
+                            options, &reduction_limited, nullptr,
+                            &rational_part, &rational_residual, true);
+                        if(rational_part.valid() &&
+                           rational_residual.valid() &&
+                           simplify(rational_part) != integer(0)){
+                            risch_result lower = integrate_elementary(
+                                rational_residual, variable, options);
+                            if(lower.status == risch_status::elementary ||
+                               lower.status ==
+                                   risch_status::proven_nonelementary){
+                                exact_expr candidate_term = rational_part +
+                                    lower.elementary_part;
+                                exact_expr identity = simplify(expand(
+                                    differentiate(candidate_term, variable) +
+                                        lower.remainder - term.second *
+                                            exponential_power,
+                                    100000));
+                                bool identity_verified =
+                                    identity == integer(0);
+                                if(!identity_verified){
+                                    integration_poly identity_numerator,
+                                        identity_denominator;
+                                    exact_expr scaled_identity = simplify(
+                                        identity / exponential_power);
+                                    if(integration_parse_rational(
+                                           scaled_identity, variable,
+                                           identity_numerator,
+                                           identity_denominator) &&
+                                       integration_normalize_rational(
+                                           identity_numerator,
+                                           identity_denominator))
+                                        identity_verified =
+                                            integration_zero_poly(
+                                                identity_numerator);
+                                }
+                                if(identity_verified){
+                                    elementary_part = simplify(
+                                        elementary_part + candidate_term);
+                                    nonelementary_part = simplify(
+                                        nonelementary_part + lower.remainder);
+                                    term_decomposed = true;
+                                    term_nonelementary = lower.status ==
+                                        risch_status::proven_nonelementary;
+                                    has_nonelementary = has_nonelementary ||
+                                        term_nonelementary;
+                                    for(const exact_expr &condition :
+                                            lower.conditions)
+                                        if(std::find(result.conditions.begin(),
+                                                result.conditions.end(),
+                                                condition) ==
+                                           result.conditions.end())
+                                            result.conditions.push_back(condition);
+                                }
+                            }
+                        }
+                        (void)reduction_limited;
+                    }
+                    if(!term_decomposed){
                         has_nonelementary = true;
                         nonelementary_part = simplify(nonelementary_part +
                             coefficient * exponential_power);

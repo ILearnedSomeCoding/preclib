@@ -112,6 +112,63 @@ int main(){
         }
     }
 
+    exact_expr repeated_pole = exponential /
+        context.power(x, context.integer(2));
+    risch_result repeated_pole_result = context.integrate_elementary(
+        repeated_pole, x);
+    exact_expr repeated_pole_primitive = -exponential / x;
+    exact_expr repeated_pole_remainder = context.integer(2) * exponential;
+    if(repeated_pole_result.status != risch_status::proven_nonelementary ||
+       !is_zero(context, repeated_pole_result.elementary_part -
+                         repeated_pole_primitive) ||
+       !is_zero(context, repeated_pole_result.remainder -
+                         repeated_pole_remainder) ||
+       !is_zero(context,
+           context.differentiate(repeated_pole_result.elementary_part, x) +
+               repeated_pole_result.remainder - repeated_pole)){
+        std::cerr << "rational repeated-pole hyperexponential reduction failed: "
+                  << repeated_pole_result.diagnostic << " elementary="
+                  << repeated_pole_result.elementary_part.to_string()
+                  << " remainder=" << repeated_pole_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr shifted_pole = exponential /
+        context.power(x - context.integer(1), context.integer(2));
+    risch_result shifted_pole_result = context.integrate_elementary(
+        shifted_pole, x);
+    exact_expr shifted_pole_primitive = -exponential /
+        (x - context.integer(1));
+    exact_expr shifted_pole_remainder = context.integer(2) * x * exponential /
+        (x - context.integer(1));
+    if(shifted_pole_result.status != risch_status::proven_nonelementary ||
+       !is_zero(context, shifted_pole_result.elementary_part -
+                         shifted_pole_primitive) ||
+       !is_zero(context, shifted_pole_result.remainder -
+                         shifted_pole_remainder) ||
+       !is_zero(context,
+           context.differentiate(shifted_pole_result.elementary_part, x) +
+               shifted_pole_result.remainder - shifted_pole)){
+        std::cerr << "shifted repeated-pole hyperexponential reduction failed: "
+                  << shifted_pole_result.diagnostic << " elementary="
+                  << shifted_pole_result.elementary_part.to_string()
+                  << " remainder=" << shifted_pole_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr simple_pole = exponential / x;
+    risch_result simple_pole_result = context.integrate_elementary(
+        simple_pole, x);
+    if(simple_pole_result.status != risch_status::proven_nonelementary ||
+       simple_pole_result.elementary_part != context.integer(0) ||
+       !is_zero(context, simple_pole_result.remainder - simple_pole)){
+        std::cerr << "simple-pole hyperexponential classification regressed: "
+                  << simple_pole_result.diagnostic << '\n';
+        return 1;
+    }
+
     std::cout << "risch hyperexponential polynomial reduction ok\n";
     return 0;
 }

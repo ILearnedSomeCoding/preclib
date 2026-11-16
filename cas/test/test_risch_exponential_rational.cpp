@@ -1374,11 +1374,15 @@ int main(){
     assert(repeated_and_simple_pole_resonance_result.status ==
         risch_status::proven_nonelementary);
     assert(repeated_and_simple_pole_resonance_result.conditions.empty());
-    assert(repeated_and_simple_pole_resonance_result.elementary_part ==
+    assert(repeated_and_simple_pole_resonance_result.elementary_part !=
         context.integer(0));
     assert(repeated_and_simple_pole_resonance_result.remainder.valid());
     assert(repeated_and_simple_pole_resonance_result.remainder !=
         context.integer(0));
+    assert(repeated_and_simple_pole_resonance_result.elementary_part ==
+        -context.exponential(-x) / x);
+    assert(repeated_and_simple_pole_resonance_result.remainder ==
+        -context.exponential(-x) / (x + context.integer(1)));
     exact_expr zero_rate_e_over_x = context.substitute(
         symbolic_rate_e_over_x, a, context.integer(0));
     risch_result zero_rate_e_over_x_result = context.integrate_elementary(
