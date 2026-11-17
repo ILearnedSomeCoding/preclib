@@ -287,6 +287,78 @@ int main(){
                           symbolic_denominator_expected) << '\n';
         return 1;
     }
+
+    exact_expr linear_exponential = context.exponential(x);
+    exact_expr shifted_parameter = context.symbol("pole_shift");
+    exact_expr shifted_repeated_pole = linear_exponential /
+        context.power(x + shifted_parameter, context.integer(2));
+    risch_result shifted_repeated_pole_result = context.integrate_elementary(
+        shifted_repeated_pole, x);
+    exact_expr shifted_repeated_pole_elementary = -linear_exponential /
+        (x + shifted_parameter);
+    exact_expr shifted_repeated_pole_remainder = linear_exponential /
+        (x + shifted_parameter);
+    if(shifted_repeated_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context, shifted_repeated_pole_result.elementary_part -
+                         shifted_repeated_pole_elementary) ||
+       !is_zero(context, shifted_repeated_pole_result.remainder -
+                         shifted_repeated_pole_remainder) ||
+       !is_zero(context,
+           context.differentiate(
+               shifted_repeated_pole_result.elementary_part, x) +
+               shifted_repeated_pole_result.remainder -
+               shifted_repeated_pole)){
+        std::cerr << "symbolic-parameter partial Hermite reduction failed: "
+                  << shifted_repeated_pole_result.diagnostic << " elementary="
+                  << shifted_repeated_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << shifted_repeated_pole_result.remainder.to_string()
+                  << " status=" << (int)shifted_repeated_pole_result.status
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr quadratic_shifted_pole = exponential /
+        context.power(x + shifted_parameter, context.integer(2));
+    risch_result quadratic_shifted_pole_result = context.integrate_elementary(
+        quadratic_shifted_pole, x);
+    exact_expr quadratic_shifted_elementary = -exponential /
+        (x + shifted_parameter);
+    exact_expr quadratic_shifted_remainder =
+        (context.integer(2) - context.integer(2) * shifted_parameter /
+            (x + shifted_parameter)) * exponential;
+    bool excludes_degenerate_pole = false;
+    for(const exact_expr &condition : quadratic_shifted_pole_result.conditions){
+        exact_expr ratio = context.simplify(condition / shifted_parameter);
+        if(ratio.is_value() && !ratio.value().is_approximate() &&
+           !ratio.value().is_zero()) excludes_degenerate_pole = true;
+    }
+    bool partial_primitive_matches = is_zero(context,
+        quadratic_shifted_pole_result.elementary_part -
+            quadratic_shifted_elementary);
+    bool partial_remainder_matches = is_zero(context,
+        quadratic_shifted_pole_result.remainder -
+            quadratic_shifted_remainder);
+    // The RDE matrix in the integrator verifies this coefficient identity;
+    // this CAS differentiator does not yet fully cancel symbolic denominators.
+    if(quadratic_shifted_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !partial_primitive_matches || !partial_remainder_matches ||
+       !excludes_degenerate_pole){
+        std::cerr << "specialized-pole condition was not retained: "
+                  << quadratic_shifted_pole_result.diagnostic
+                  << " elementary="
+                  << quadratic_shifted_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << quadratic_shifted_pole_result.remainder.to_string()
+                  << " conditions="
+                  << quadratic_shifted_pole_result.conditions.size()
+                  << " checks=" << partial_primitive_matches << ','
+                  << partial_remainder_matches << ','
+                  << excludes_degenerate_pole << '\n';
+        return 1;
+    }
     risch_options tiny_rde_budget;
     tiny_rde_budget.maximum_matrix_entries = 1;
     risch_result limited_symbolic_denominator_result =

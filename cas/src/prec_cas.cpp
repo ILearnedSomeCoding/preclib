@@ -10899,6 +10899,400 @@ static bool integration_hyperexponential_rational_partial_expr(
     return true;
 }
 
+// General expression-coefficient Hermite reduction for a rational
+// hyperexponential cofactor. The residual is kept in the canonical space
+// S/C + P, with C squarefree and deg(P) < deg(inner').
+static bool integration_hyperexponential_rational_partial_general_expr(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable,
+    const risch_options &options, exact_expr &elementary_part,
+    exact_expr &remainder, bool *resource_limited = nullptr,
+    std::vector<exact_expr> *nonzero_conditions = nullptr){
+    if(resource_limited) *resource_limited = false;
+    elementary_part = exact_expr();
+    remainder = exact_expr();
+
+    integration_expr_poly numerator, denominator, exponent, rate;
+    if(!integration_parse_expr_rational(context, cofactor, variable,
+            numerator, denominator, options.maximum_degree) ||
+       !integration_parse_expr_poly(context, inner, variable, exponent,
+            options.maximum_degree) || numerator.empty() || denominator.size() < 2)
+        return false;
+    integration_expr_trim(context, numerator);
+    integration_expr_trim(context, denominator);
+    if(denominator.size() < 2 ||
+       !integration_exact_expression_tree(denominator.back()) ||
+       integration_depends_on(denominator.back(), variable) ||
+       integration_expr_zero(context, denominator.back())) return false;
+
+    std::vector<exact_expr> conditions;
+    auto require_nonzero = [&](const exact_expr &value){
+        if(!integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable) ||
+           integration_expr_zero(context, value)) return false;
+        if(value.is_value() && !value.value().is_approximate())
+            return !value.value().is_zero();
+        if(value.operation() == exact_opcode::constant_e ||
+           value.operation() == exact_opcode::constant_pi ||
+           value.operation() == exact_opcode::exponential) return true;
+        if(!nonzero_conditions) return false;
+        exact_expr condition = context.simplify(value);
+        if(std::find(conditions.begin(), conditions.end(), condition) ==
+           conditions.end()) conditions.push_back(condition);
+        return true;
+    };
+    if(!require_nonzero(denominator.back())) return false;
+
+    exact_expr inverse_lead = context.simplify(
+        context.integer(1) / denominator.back());
+    for(exact_expr &coefficient : numerator)
+        coefficient = context.simplify(coefficient * inverse_lead);
+    for(exact_expr &coefficient : denominator)
+        coefficient = context.simplify(coefficient * inverse_lead);
+    integration_expr_trim(context, numerator);
+    integration_expr_trim(context, denominator);
+    if(denominator.empty() || !require_nonzero(denominator.back())) return false;
+
+    rate = integration_expr_derivative(context, exponent);
+    integration_expr_trim(context, rate);
+    if(rate.size() == 1 && integration_expr_zero(context, rate[0])) return false;
+    for(const exact_expr &coefficient : numerator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+    for(const exact_expr &coefficient : denominator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+    for(const exact_expr &coefficient : rate)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+
+    integration_expr_poly repeated, denominator_derivative =
+        integration_expr_derivative(context, denominator);
+    if(!integration_expr_gcd_constant_coefficients(context, denominator,
+            denominator_derivative, variable, options.maximum_degree,
+            repeated, &conditions) || repeated.empty() ||
+       repeated.size() >= denominator.size()) return false;
+    integration_expr_poly squarefree;
+    auto divide_field = [&](integration_expr_poly dividend,
+                            const integration_expr_poly &divisor,
+                            integration_expr_poly &quotient){
+        if(divisor.empty() || !require_nonzero(divisor.back())) return false;
+        quotient.assign(dividend.size() >= divisor.size()
+            ? dividend.size() - divisor.size() + 1 : 1, context.integer(0));
+        integration_expr_trim(context, dividend);
+        while(dividend.size() >= divisor.size() &&
+              !(dividend.size() == 1 &&
+                integration_expr_zero(context, dividend[0]))){
+            size_t offset = dividend.size() - divisor.size();
+            exact_expr factor = context.simplify(dividend.back() /
+                                                   divisor.back());
+            if(!integration_exact_expression_tree(factor) ||
+               integration_depends_on(factor, variable)) return false;
+            quotient[offset] = context.simplify(quotient[offset] + factor);
+            for(size_t j = 0; j < divisor.size(); ++j)
+                dividend[offset + j] = context.simplify(
+                    dividend[offset + j] - factor * divisor[j]);
+            integration_expr_trim(context, dividend);
+        }
+        if(!(dividend.size() == 1 &&
+             integration_expr_zero(context, dividend[0]))) return false;
+        integration_expr_trim(context, quotient);
+        return true;
+    };
+    if(!divide_field(denominator, repeated, squarefree) ||
+       squarefree.empty()) return false;
+    integration_expr_poly gcd_check = integration_expr_mul(context,
+        repeated, squarefree);
+    gcd_check.resize(std::max(gcd_check.size(), denominator.size()),
+                     context.integer(0));
+    denominator.resize(gcd_check.size(), context.integer(0));
+    for(size_t i = 0; i < denominator.size(); ++i)
+        if(!integration_expr_zero(context,
+                context.simplify(denominator[i] - gcd_check[i]))) return false;
+
+    const size_t degree_rate = rate.size() - 1;
+    const size_t degree_f = numerator.size() >= denominator.size()
+        ? numerator.size() - denominator.size() : 0;
+    size_t degree_a = repeated.size() - 1;
+    if(degree_f > degree_rate){
+        size_t extra = degree_f - degree_rate;
+        if(degree_a > SIZE_MAX - extra){
+            if(resource_limited) *resource_limited = true;
+            return false;
+        }
+        degree_a += extra;
+    }
+    if(degree_a > options.maximum_degree){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    const size_t a_columns = degree_a + 1;
+    const size_t proper_columns = squarefree.size() - 1;
+    if(a_columns > SIZE_MAX - proper_columns ||
+       a_columns + proper_columns > SIZE_MAX - degree_rate){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    const size_t columns = a_columns + proper_columns + degree_rate;
+    if(columns == 0){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+
+    integration_expr_poly repeated_squared = integration_expr_mul(context,
+        repeated, repeated);
+    integration_expr_poly rhs = integration_expr_mul(context, numerator,
+                                                       repeated);
+    std::vector<integration_expr_poly> matrix_columns;
+    matrix_columns.reserve(columns);
+    const integration_expr_poly repeated_derivative =
+        integration_expr_derivative(context, repeated);
+    for(size_t degree = 0; degree < a_columns; ++degree){
+        integration_expr_poly basis(degree + 1, context.integer(0));
+        basis[degree] = context.integer(1);
+        integration_expr_poly differential = integration_expr_add(context,
+            integration_expr_mul(context,
+                integration_expr_derivative(context, basis), repeated),
+            integration_expr_mul(context,
+                integration_expr_mul(context, basis, repeated_derivative),
+                integration_expr_poly{context.integer(-1)}));
+        differential = integration_expr_add(context, differential,
+            integration_expr_mul(context, rate,
+                integration_expr_mul(context, basis, repeated)));
+        matrix_columns.push_back(integration_expr_mul(context, squarefree,
+                                                       differential));
+    }
+    for(size_t degree = 0; degree < proper_columns; ++degree){
+        integration_expr_poly column(degree, context.integer(0));
+        column.insert(column.end(), repeated_squared.begin(),
+                      repeated_squared.end());
+        matrix_columns.push_back(std::move(column));
+    }
+    for(size_t degree = 0; degree < degree_rate; ++degree){
+        integration_expr_poly column(degree, context.integer(0));
+        integration_expr_poly polynomial_basis = integration_expr_mul(context,
+            repeated_squared, squarefree);
+        column.insert(column.end(), polynomial_basis.begin(),
+                      polynomial_basis.end());
+        matrix_columns.push_back(std::move(column));
+    }
+
+    size_t rows = rhs.size();
+    for(const auto &column : matrix_columns) rows = std::max(rows,
+                                                              column.size());
+    if(rows && columns > options.maximum_matrix_entries / rows){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    if(rhs.size() > options.maximum_degree + 2 ||
+       rows > options.maximum_degree + 2){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    std::vector<std::vector<exact_expr>> matrix(rows,
+        std::vector<exact_expr>(columns + 1, context.integer(0)));
+    for(size_t column = 0; column < columns; ++column)
+        for(size_t row = 0; row < matrix_columns[column].size(); ++row)
+            matrix[row][column] = matrix_columns[column][row];
+    for(size_t row = 0; row < rhs.size(); ++row)
+        matrix[row][columns] = rhs[row];
+
+    std::vector<size_t> pivot_columns;
+    size_t pivot_row = 0;
+    for(size_t column = 0; column < columns && pivot_row < rows; ++column){
+        size_t selected = rows, conditional_selected = rows;
+        for(size_t row = pivot_row; row < rows; ++row)
+            if(!integration_expr_zero(context, matrix[row][column])){
+                exact_expr candidate = context.simplify(
+                    matrix[row][column]);
+                bool known_nonzero = candidate.is_value()
+                    ? !candidate.value().is_approximate() &&
+                      !candidate.value().is_zero()
+                    : candidate.operation() == exact_opcode::constant_e ||
+                      candidate.operation() == exact_opcode::constant_pi ||
+                      candidate.operation() == exact_opcode::exponential ||
+                      integration_strictly_positive_constant(candidate) ||
+                      integration_strictly_positive_constant(-candidate);
+                if(known_nonzero){
+                    selected = row;
+                    break;
+                }
+                if(conditional_selected == rows) conditional_selected = row;
+            }
+        if(selected == rows) selected = conditional_selected;
+        if(selected == rows) continue;
+        exact_expr pivot = context.simplify(matrix[selected][column]);
+        if(!require_nonzero(pivot)) return false;
+        if(selected != pivot_row) std::swap(matrix[selected],
+                                            matrix[pivot_row]);
+        for(size_t j = column; j <= columns; ++j)
+            matrix[pivot_row][j] = context.simplify(
+                matrix[pivot_row][j] / pivot);
+        for(size_t row = 0; row < rows; ++row){
+            if(row == pivot_row ||
+               integration_expr_zero(context, matrix[row][column])) continue;
+            exact_expr factor = matrix[row][column];
+            for(size_t j = column; j <= columns; ++j){
+                matrix[row][j] = context.simplify(matrix[row][j] -
+                    factor * matrix[pivot_row][j]);
+                if(matrix[row][j].reachable_node_count() >
+                   options.maximum_nodes){
+                    if(resource_limited) *resource_limited = true;
+                    return false;
+                }
+            }
+        }
+        pivot_columns.push_back(column);
+        ++pivot_row;
+    }
+    for(size_t row = pivot_row; row < rows; ++row){
+        bool zero_row = true;
+        for(size_t column = 0; column < columns; ++column)
+            if(!integration_expr_zero(context, matrix[row][column])){
+                zero_row = false;
+                break;
+            }
+        if(zero_row && !integration_expr_zero(context,
+                matrix[row][columns])) return false;
+    }
+    std::vector<exact_expr> solution(columns, context.integer(0));
+    for(size_t row = 0; row < pivot_columns.size(); ++row)
+        solution[pivot_columns[row]] = matrix[row][columns];
+
+    integration_expr_poly a(solution.begin(), solution.begin() + a_columns);
+    integration_expr_poly proper(solution.begin() + a_columns,
+        solution.begin() + a_columns + proper_columns);
+    integration_expr_poly polynomial(solution.begin() + a_columns +
+        proper_columns, solution.end());
+    integration_expr_poly reconstructed{context.integer(0)};
+    for(size_t column = 0; column < columns; ++column)
+        reconstructed = integration_expr_add(context, reconstructed,
+            integration_expr_mul(context,
+                integration_expr_poly{solution[column]},
+                matrix_columns[column]));
+    reconstructed.resize(std::max(reconstructed.size(), rhs.size()),
+                          context.integer(0));
+    rhs.resize(reconstructed.size(), context.integer(0));
+    for(size_t i = 0; i < rhs.size(); ++i)
+        if(!integration_expr_zero(context, context.simplify(
+                reconstructed[i] - rhs[i]))) return false;
+
+    exact_expr exp_factor = context.exponential(inner);
+    exact_expr rational_part = integration_expr_poly_expr(context, a, variable) /
+        integration_expr_poly_expr(context, repeated, variable);
+    exact_expr residual_cofactor =
+        integration_expr_poly_expr(context, proper, variable) /
+            integration_expr_poly_expr(context, squarefree, variable) +
+        integration_expr_poly_expr(context, polynomial, variable);
+    exact_expr candidate_elementary = rational_part * exp_factor;
+    exact_expr candidate_remainder = residual_cofactor * exp_factor;
+    if(candidate_elementary.reachable_node_count() > options.maximum_nodes ||
+       candidate_remainder.reachable_node_count() > options.maximum_nodes){
+        if(resource_limited) *resource_limited = true;
+        return false;
+    }
+    elementary_part = std::move(candidate_elementary);
+    remainder = std::move(candidate_remainder);
+    if(nonzero_conditions)
+        for(const exact_expr &condition : conditions)
+            if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
+                         condition) == nonzero_conditions->end())
+                nonzero_conditions->push_back(condition);
+    return true;
+}
+
+// If a reduced proper rational cofactor has a finite pole while the
+// exponential rate is polynomial, the RDE A' + g'*A = cofactor has no
+// rational solution: every pole of A would create a higher-order pole in
+// A', while a polynomial g' is regular there. This is the exact simple-pole
+// obstruction used to classify the residual, not a failed-search heuristic.
+static bool integration_hyperexponential_proper_pole_non_elementary(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &inner, const exact_expr &variable,
+    const risch_options &options,
+    std::vector<exact_expr> *nonzero_conditions = nullptr){
+    integration_expr_poly numerator, denominator, exponent;
+    if(!integration_parse_expr_rational(context, cofactor, variable,
+            numerator, denominator, options.maximum_degree) ||
+       !integration_parse_expr_poly(context, inner, variable, exponent,
+            options.maximum_degree) || numerator.empty() ||
+       denominator.size() < 2) return false;
+    integration_expr_trim(context, numerator);
+    integration_expr_trim(context, denominator);
+    if(numerator.empty() || denominator.size() < 2 ||
+       (numerator.size() == 1 &&
+        integration_expr_zero(context, numerator[0]))) return false;
+    for(const exact_expr &coefficient : numerator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+    for(const exact_expr &coefficient : denominator)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+    integration_expr_poly rate = integration_expr_derivative(context, exponent);
+    integration_expr_trim(context, rate);
+    if(rate.size() == 1 && integration_expr_zero(context, rate[0]))
+        return false;
+    for(const exact_expr &coefficient : rate)
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+
+    integration_expr_poly common;
+    if(!integration_expr_gcd_constant_coefficients(context, numerator,
+            denominator, variable, options.maximum_degree, common,
+            nonzero_conditions) ||
+       common.empty()) return false;
+    integration_expr_poly reduced_numerator, reduced_denominator;
+    auto divide = [&](integration_expr_poly dividend,
+                      const integration_expr_poly &divisor,
+                      integration_expr_poly &quotient){
+        if(divisor.empty() || integration_expr_zero(context, divisor.back()))
+            return false;
+        quotient.assign(dividend.size() >= divisor.size()
+            ? dividend.size() - divisor.size() + 1 : 1, context.integer(0));
+        integration_expr_trim(context, dividend);
+        while(dividend.size() >= divisor.size() &&
+              !(dividend.size() == 1 &&
+                integration_expr_zero(context, dividend[0]))){
+            size_t offset = dividend.size() - divisor.size();
+            exact_expr factor = context.simplify(dividend.back() /
+                                                   divisor.back());
+            if(!integration_exact_expression_tree(factor) ||
+               integration_depends_on(factor, variable)) return false;
+            quotient[offset] = context.simplify(quotient[offset] + factor);
+            for(size_t i = 0; i < divisor.size(); ++i)
+                dividend[offset + i] = context.simplify(
+                    dividend[offset + i] - factor * divisor[i]);
+            integration_expr_trim(context, dividend);
+        }
+        if(!(dividend.size() == 1 &&
+             integration_expr_zero(context, dividend[0]))) return false;
+        integration_expr_trim(context, quotient);
+        return true;
+    };
+    if(!divide(numerator, common, reduced_numerator) ||
+       !divide(denominator, common, reduced_denominator)) return false;
+    integration_expr_trim(context, reduced_numerator);
+    integration_expr_trim(context, reduced_denominator);
+    if(reduced_denominator.size() < 2) return false;
+    while(reduced_numerator.size() >= reduced_denominator.size() &&
+          !(reduced_numerator.size() == 1 &&
+            integration_expr_zero(context, reduced_numerator[0]))){
+        size_t offset = reduced_numerator.size() -
+                        reduced_denominator.size();
+        exact_expr factor = context.simplify(reduced_numerator.back() /
+                                              reduced_denominator.back());
+        if(!integration_exact_expression_tree(factor) ||
+           integration_depends_on(factor, variable)) return false;
+        for(size_t i = 0; i < reduced_denominator.size(); ++i)
+            reduced_numerator[offset + i] = context.simplify(
+                reduced_numerator[offset + i] - factor *
+                    reduced_denominator[i]);
+        integration_expr_trim(context, reduced_numerator);
+    }
+    return !(reduced_numerator.size() == 1 &&
+             integration_expr_zero(context, reduced_numerator[0]));
+}
+
 // Hermite reduction in the quadratic exponential extension. For
 // P(x)*exp(a*x^2+b*x+d), solve P = R' + (2*a*x+b)*R + k. The first two
 // terms are d(R*exp(...))/dx; the one-dimensional residual k is integrated
@@ -19853,6 +20247,21 @@ risch_result exact_context::integrate_elementary_impl(
                             variable, options, symbolic_partial,
                             symbolic_residual, &limited,
                             &symbolic_conditions);
+                    if(!reduced && !limited){
+                        std::vector<exact_expr> general_conditions;
+                        bool general_limited = false;
+                        reduced =
+                            integration_hyperexponential_rational_partial_general_expr(
+                                *this, term.second,
+                                integer(term.first) * generator.operand(0),
+                                variable, options, symbolic_partial,
+                                symbolic_residual, &general_limited,
+                                &general_conditions);
+                        if(reduced)
+                            symbolic_conditions = std::move(general_conditions);
+                        else if(general_limited)
+                            limited = true;
+                    }
                     if(limited){
                         result.status = risch_status::resource_limit;
                         result.elementary_part = integer(0);
@@ -19866,6 +20275,17 @@ risch_result exact_context::integrate_elementary_impl(
                             ? generator : power(generator, integer(term.first));
                         risch_result lower = integrate_elementary(
                             symbolic_residual, variable, options);
+                        bool pole_proof = lower.status == risch_status::unsupported &&
+                            integration_hyperexponential_proper_pole_non_elementary(
+                                *this, simplify(symbolic_residual /
+                                    exponential_power),
+                                integer(term.first) * generator.operand(0),
+                                variable, options);
+                        if(pole_proof){
+                            lower.status = risch_status::proven_nonelementary;
+                            lower.elementary_part = integer(0);
+                            lower.remainder = symbolic_residual;
+                        }
                         if(lower.status == risch_status::elementary ||
                            lower.status ==
                                risch_status::proven_nonelementary){
@@ -21672,6 +22092,109 @@ risch_result exact_context::integrate_elementary_impl(
             cofactor = other_factors.empty() ? integer(1)
                                              : multiply(other_factors);
         }else return false;
+        if(cofactor != integer(1)){
+            exact_expr partial_elementary, partial_remainder;
+            std::vector<exact_expr> partial_conditions;
+            bool partial_limited = false;
+            bool partial_reduced =
+                integration_hyperexponential_rational_partial_expr(*this,
+                    cofactor, exponential_factor.operand(0), variable,
+                    options, partial_elementary, partial_remainder,
+                    &partial_limited, &partial_conditions);
+            if(!partial_reduced && !partial_limited){
+                std::vector<exact_expr> general_conditions;
+                bool general_limited = false;
+                partial_reduced =
+                    integration_hyperexponential_rational_partial_general_expr(
+                        *this, cofactor, exponential_factor.operand(0),
+                        variable, options, partial_elementary,
+                        partial_remainder, &general_limited,
+                        &general_conditions);
+                if(partial_reduced)
+                    partial_conditions = std::move(general_conditions);
+                else if(general_limited)
+                    partial_limited = true;
+            }
+            if(partial_limited){
+                result.status = risch_status::resource_limit;
+                result.elementary_part = integer(0);
+                result.remainder = expression;
+                result.diagnostic =
+                    "hyperexponential partial Hermite matrix budget exceeded";
+                return true;
+            }
+            if(partial_reduced && partial_conditions.empty() &&
+               simplify(partial_elementary) != integer(0) &&
+               simplify(partial_remainder) != integer(0)){
+                risch_result lower = integrate_elementary(partial_remainder,
+                                                           variable, options);
+                std::vector<exact_expr> pole_conditions;
+                if(lower.status == risch_status::unsupported &&
+                   integration_hyperexponential_proper_pole_non_elementary(
+                       *this, simplify(partial_remainder /
+                           exponential_factor),
+                       exponential_factor.operand(0), variable, options,
+                       &pole_conditions)){
+                    lower.status = risch_status::proven_nonelementary;
+                    lower.elementary_part = integer(0);
+                    lower.remainder = partial_remainder;
+                    lower.conditions.insert(lower.conditions.end(),
+                        pole_conditions.begin(), pole_conditions.end());
+                }
+                if(lower.status == risch_status::elementary ||
+                   lower.status == risch_status::proven_nonelementary){
+                    exact_expr candidate = partial_elementary +
+                                           lower.elementary_part;
+                    if(candidate.reachable_node_count() >
+                           options.maximum_nodes ||
+                       lower.remainder.reachable_node_count() >
+                           options.maximum_nodes){
+                        result.status = risch_status::resource_limit;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        result.diagnostic =
+                            "hyperexponential partial Hermite result budget exceeded";
+                        return true;
+                    }
+                    exact_expr error = simplify(expand(
+                        differentiate(candidate, variable) + lower.remainder -
+                            expression, 100000));
+                    bool verified = error == integer(0);
+                    if(!verified){
+                        exact_expr scaled_error = simplify(error /
+                            exponential_factor);
+                        integration_expr_poly error_numerator,
+                            error_denominator;
+                        if(integration_parse_expr_rational(*this, scaled_error,
+                               variable, error_numerator, error_denominator,
+                               options.maximum_degree)){
+                            verified = true;
+                            for(const exact_expr &entry : error_numerator)
+                                if(!integration_expr_zero(*this, entry)){
+                                    verified = false;
+                                    break;
+                                }
+                        }
+                    }
+                    if(verified){
+                        result.status = lower.status;
+                        result.elementary_part = std::move(candidate);
+                        result.remainder = std::move(lower.remainder);
+                        result.conditions = std::move(lower.conditions);
+                        for(const exact_expr &condition : partial_conditions)
+                            if(std::find(result.conditions.begin(),
+                                    result.conditions.end(), condition) ==
+                               result.conditions.end())
+                                result.conditions.push_back(condition);
+                        result.diagnostic = lower.status ==
+                            risch_status::proven_nonelementary
+                            ? "partial Hermite reduction leaves a proven proper-pole obstruction"
+                            : std::string();
+                        return true;
+                    }
+                }
+            }
+        }
         integration_poly p, q, gn, gd;
         if(!integration_parse_rational(exponential_factor.operand(0), variable,
                 gn, gd, degree_budget, degree_budget)){
