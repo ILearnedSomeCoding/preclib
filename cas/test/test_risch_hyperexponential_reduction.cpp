@@ -226,6 +226,84 @@ int main(){
         return 1;
     }
 
+    exact_expr denominator_scale = context.symbol("denominator_scale");
+    exact_expr scaled_denominator_cofactor =
+        (-x + context.integer(2) * context.power(x, context.integer(3))) /
+        (denominator_scale * context.power(x, context.integer(3)));
+    exact_expr scaled_denominator_input = scaled_denominator_cofactor *
+        exponential;
+    exact_expr scaled_denominator_expected = exponential /
+        (denominator_scale * x);
+    risch_result scaled_denominator_result = context.integrate_elementary(
+        scaled_denominator_input, x);
+    if(scaled_denominator_result.status != risch_status::elementary ||
+       scaled_denominator_result.remainder != context.integer(0) ||
+       std::find(scaled_denominator_result.conditions.begin(),
+                 scaled_denominator_result.conditions.end(), denominator_scale) ==
+           scaled_denominator_result.conditions.end() ||
+       !is_zero(context, scaled_denominator_result.elementary_part -
+                         scaled_denominator_expected) ||
+       !is_zero(context, context.differentiate(
+           scaled_denominator_result.elementary_part, x) -
+           scaled_denominator_input)){
+        std::cerr << "scaled symbolic denominator Hermite reduction failed: "
+                  << scaled_denominator_result.diagnostic << " elementary="
+                  << scaled_denominator_result.elementary_part.to_string()
+                  << " remainder="
+                  << scaled_denominator_result.remainder.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr shift = context.symbol("shift");
+    exact_expr shifted_linear = x + shift;
+    exact_expr symbolic_denominator_cofactor =
+        (context.integer(2) * context.power(x, context.integer(3)) +
+         context.integer(2) * shift * context.power(x, context.integer(2)) -
+         x + shift) /
+        context.power(shifted_linear, context.integer(3));
+    exact_expr symbolic_denominator_input =
+        symbolic_denominator_cofactor * exponential;
+    exact_expr symbolic_denominator_expected = x * exponential /
+        (context.power(shift, context.integer(2)) +
+         context.integer(2) * shift * x + context.power(x, context.integer(2)));
+    risch_result symbolic_denominator_result = context.integrate_elementary(
+        symbolic_denominator_input, x);
+    // The RDE solver certifies the coefficient identity exactly. The generic
+    // differentiator currently does not canonicalize this symbolic quotient.
+    if(symbolic_denominator_result.status != risch_status::elementary ||
+       symbolic_denominator_result.remainder != context.integer(0) ||
+       !symbolic_denominator_result.conditions.empty() ||
+       !is_zero(context, symbolic_denominator_result.elementary_part -
+                         symbolic_denominator_expected)){
+        std::cerr << "general symbolic denominator RDE failed: "
+                  << symbolic_denominator_result.diagnostic << " elementary="
+                  << symbolic_denominator_result.elementary_part.to_string()
+                  << " remainder="
+                  << symbolic_denominator_result.remainder.to_string()
+                  << " status=" << (int)symbolic_denominator_result.status
+                  << " conditions=" << symbolic_denominator_result.conditions.size()
+                  << " primitive_match=" << is_zero(context,
+                      symbolic_denominator_result.elementary_part -
+                          symbolic_denominator_expected) << '\n';
+        return 1;
+    }
+    risch_options tiny_rde_budget;
+    tiny_rde_budget.maximum_matrix_entries = 1;
+    risch_result limited_symbolic_denominator_result =
+        context.integrate_elementary(symbolic_denominator_input, x,
+                                     tiny_rde_budget);
+    if(limited_symbolic_denominator_result.status !=
+       risch_status::resource_limit){
+        std::cerr << "symbolic denominator RDE budget status failed: "
+                  << (int)limited_symbolic_denominator_result.status << ' '
+                  << limited_symbolic_denominator_result.diagnostic
+                  << " elementary="
+                  << limited_symbolic_denominator_result.elementary_part.to_string()
+                  << " remainder="
+                  << limited_symbolic_denominator_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
     exact_expr simple_pole = exponential / x;
     risch_result simple_pole_result = context.integrate_elementary(
         simple_pole, x);

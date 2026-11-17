@@ -10783,14 +10783,15 @@ expression_coefficient_rde:
     return rational_solution * context.exponential(inner);
 }
 
-// Extend the repeated-pole Hermite reduction linearly to exact constant-field
-// coefficients in the numerator. The denominator and the inner exponent stay
-// over Q[x], so each monomial uses the already certified rational solver.
+// Extend repeated-pole Hermite reduction to exact constant-field numerator
+// coefficients and a denominator equal to one constant times a Q[x] polynomial.
+// After extracting that constant, each monomial uses the certified Q solver.
 static bool integration_hyperexponential_rational_partial_expr(
     exact_context &context, const exact_expr &cofactor,
     const exact_expr &inner, const exact_expr &variable,
     const risch_options &options, exact_expr &elementary_part,
-    exact_expr &remainder, bool *resource_limited = nullptr){
+    exact_expr &remainder, bool *resource_limited = nullptr,
+    std::vector<exact_expr> *nonzero_conditions = nullptr){
     if(resource_limited) *resource_limited = false;
     elementary_part = exact_expr();
     remainder = exact_expr();
@@ -10801,12 +10802,22 @@ static bool integration_hyperexponential_rational_partial_expr(
        numerator.empty() || expression_denominator.size() < 2)
         return false;
 
+    exact_expr denominator_scale;
+    for(const exact_expr &coefficient : expression_denominator){
+        if(!integration_exact_expression_tree(coefficient) ||
+           integration_depends_on(coefficient, variable)) return false;
+        if(!denominator_scale.valid() &&
+           !integration_expr_zero(context, coefficient))
+            denominator_scale = coefficient;
+    }
+    if(!denominator_scale.valid()) return false;
+
     integration_poly denominator;
     denominator.reserve(expression_denominator.size());
     for(const exact_expr &coefficient : expression_denominator){
-        if(!coefficient.is_value() || coefficient.value().is_approximate())
-            return false;
-        denominator.push_back(coefficient.value());
+        exact_expr ratio = context.simplify(coefficient / denominator_scale);
+        if(!ratio.is_value() || ratio.value().is_approximate()) return false;
+        denominator.push_back(ratio.value());
     }
     integration_trim(denominator);
     if(denominator.size() < 2 || integration_zero_poly(denominator))
@@ -10857,16 +10868,35 @@ static bool integration_hyperexponential_rational_partial_expr(
             if(!monomial_part.valid() || !monomial_remainder.valid())
                 return false;
         }
-        elementary_part = elementary_part + coefficient * monomial_part;
-        remainder = remainder + coefficient * monomial_remainder;
+        exact_expr scaled_coefficient = context.simplify(
+            coefficient / denominator_scale);
+        if(!integration_exact_expression_tree(scaled_coefficient) ||
+           integration_depends_on(scaled_coefficient, variable)) return false;
+        elementary_part = elementary_part + scaled_coefficient * monomial_part;
+        remainder = remainder + scaled_coefficient * monomial_remainder;
         if(elementary_part.reachable_node_count() > options.maximum_nodes ||
            remainder.reachable_node_count() > options.maximum_nodes){
             if(resource_limited) *resource_limited = true;
             return false;
         }
     }
-    return saw_nonzero_coefficient && elementary_part.valid() &&
-           remainder.valid();
+    if(!saw_nonzero_coefficient || !elementary_part.valid() ||
+       !remainder.valid()) return false;
+    bool scale_known_nonzero = denominator_scale.is_value() &&
+        !denominator_scale.value().is_approximate() &&
+        !denominator_scale.value().is_zero();
+    scale_known_nonzero = scale_known_nonzero ||
+        integration_strictly_positive_constant(denominator_scale) ||
+        integration_strictly_positive_constant(-denominator_scale);
+    if(!scale_known_nonzero && nonzero_conditions){
+        exact_expr condition = context.simplify(denominator_scale);
+        if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
+                     condition) == nonzero_conditions->end())
+            nonzero_conditions->push_back(condition);
+    }else if(!scale_known_nonzero){
+        return false;
+    }
+    return true;
 }
 
 // Hermite reduction in the quadratic exponential extension. For
@@ -19814,13 +19844,15 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 if(!parsed_rational && term.first != 0){
                     exact_expr symbolic_partial, symbolic_residual;
+                    std::vector<exact_expr> symbolic_conditions;
                     bool limited = false;
                     bool reduced =
                         integration_hyperexponential_rational_partial_expr(
                             *this, term.second,
                             integer(term.first) * generator.operand(0),
                             variable, options, symbolic_partial,
-                            symbolic_residual, &limited);
+                            symbolic_residual, &limited,
+                            &symbolic_conditions);
                     if(limited){
                         result.status = risch_status::resource_limit;
                         result.elementary_part = integer(0);
@@ -19885,8 +19917,77 @@ risch_result exact_context::integrate_elementary_impl(
                                             result.conditions.end(), condition) ==
                                        result.conditions.end())
                                         result.conditions.push_back(condition);
+                                for(const exact_expr &condition :
+                                        symbolic_conditions)
+                                    if(std::find(result.conditions.begin(),
+                                            result.conditions.end(), condition) ==
+                                       result.conditions.end())
+                                        result.conditions.push_back(condition);
                                 continue;
                             }
+                        }
+                    }
+                    exact_expr reduced_inner = integer(term.first) *
+                        generator.operand(0);
+                    std::vector<exact_expr> full_rde_conditions;
+                    bool full_rde_limited = false;
+                    exact_expr full_rde_primitive =
+                        integration_hyperexponential_rational(*this,
+                            term.second, reduced_inner, variable, true,
+                            options, &full_rde_limited,
+                            &full_rde_conditions);
+                    if(full_rde_limited){
+                        result.status = risch_status::resource_limit;
+                        result.elementary_part = integer(0);
+                        result.remainder = expression;
+                        result.diagnostic =
+                            "expression-coefficient hyperexponential RDE budget exceeded";
+                        return true;
+                    }
+                    if(full_rde_primitive.valid()){
+                        exact_expr exponential_power = term.first == 1
+                            ? generator : power(generator, integer(term.first));
+                        exact_expr candidate = coefficient_scale *
+                            full_rde_primitive;
+                        if(candidate.reachable_node_count() >
+                           options.maximum_nodes){
+                            result.status = risch_status::resource_limit;
+                            result.elementary_part = integer(0);
+                            result.remainder = expression;
+                            result.diagnostic =
+                                "expression-coefficient hyperexponential primitive exceeded node budget";
+                            return true;
+                        }
+                        exact_expr error = simplify(differentiate(candidate,
+                            variable) - coefficient_scale * term.second *
+                                exponential_power);
+                        bool verified = error == integer(0);
+                        if(!verified){
+                            exact_expr scaled_error = simplify(error /
+                                exponential_power);
+                            integration_expr_poly error_numerator,
+                                error_denominator;
+                            if(integration_parse_expr_rational(*this,
+                                   scaled_error, variable, error_numerator,
+                                   error_denominator, degree_budget)){
+                                verified = true;
+                                for(const exact_expr &entry : error_numerator)
+                                    if(!integration_expr_zero(*this, entry)){
+                                        verified = false;
+                                        break;
+                                    }
+                            }
+                        }
+                        if(verified){
+                            elementary_part = simplify(elementary_part +
+                                candidate);
+                            for(const exact_expr &condition :
+                                    full_rde_conditions)
+                                if(std::find(result.conditions.begin(),
+                                        result.conditions.end(), condition) ==
+                                   result.conditions.end())
+                                    result.conditions.push_back(condition);
+                            continue;
                         }
                     }
                 }
@@ -22922,6 +23023,69 @@ risch_result exact_context::integrate_elementary_impl(
         };
         degree_pair shape = rational_degree(rational_degree, expression);
         if(shape == invalid){
+            // Rational-degree analysis deliberately rejects expressions with
+            // transcendental leaves. Before giving up, recognize a single
+            // exponential generator times an exact rational cofactor and let
+            // the coefficient-field RDE solver certify its primitive.
+            std::vector<exact_expr> exponential_factors;
+            std::unordered_set<uint32_t> seen_exponential_nodes;
+            auto collect_exponential_factors = [&](auto &&self,
+                    const exact_expr &part) -> void{
+                if(!part.valid() ||
+                   !seen_exponential_nodes.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::exponential){
+                    exponential_factors.push_back(part);
+                    return;
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_exponential_factors(collect_exponential_factors,
+                                        expression);
+            if(exponential_factors.size() == 1){
+                const exact_expr &generator = exponential_factors[0];
+                const exact_expr &inner = generator.operand(0);
+                integration_expr_poly inner_polynomial;
+                exact_expr cofactor = simplify(expression / generator);
+                integration_expr_poly cofactor_numerator,
+                    cofactor_denominator;
+                if(integration_parse_expr_poly(*this, inner, variable,
+                        inner_polynomial, degree_budget) &&
+                   inner_polynomial.size() >= 3 &&
+                   integration_parse_expr_rational(*this, cofactor, variable,
+                       cofactor_numerator, cofactor_denominator,
+                       degree_budget) && !cofactor_numerator.empty() &&
+                   !cofactor_denominator.empty() &&
+                   simplify(cofactor * generator - expression) == integer(0)){
+                    std::vector<exact_expr> rde_conditions;
+                    bool rde_limited = false;
+                    exact_expr primitive =
+                        integration_hyperexponential_rational(*this,
+                            cofactor, inner, variable, true, options,
+                            &rde_limited, &rde_conditions);
+                    if(rde_limited){
+                        result.status = risch_status::resource_limit;
+                        result.diagnostic =
+                            "symbolic hyperexponential RDE budget exceeded";
+                        return result;
+                    }
+                    if(primitive.valid()){
+                        if(primitive.reachable_node_count() >
+                           options.maximum_nodes){
+                            result.status = risch_status::resource_limit;
+                            result.diagnostic =
+                                "symbolic hyperexponential primitive exceeded node budget";
+                            return result;
+                        }
+                        result.status = risch_status::elementary;
+                        result.elementary_part = std::move(primitive);
+                        result.remainder = integer(0);
+                        result.conditions = std::move(rde_conditions);
+                        result.diagnostic.clear();
+                        return result;
+                    }
+                }
+            }
             if(classify_tower_logarithmic_derivative()) return result;
             if(try_verified_elementary()) return result;
             bool linear_resource_limited = false;
