@@ -10912,6 +10912,85 @@ static bool integration_hyperexponential_rational_partial_general_expr(
     elementary_part = exact_expr();
     remainder = exact_expr();
 
+    // A repeated affine pole has a direct Hermite step when its cofactor is
+    // exactly L^-2 and L' is a nonzero constant:
+    // D(-exp(g)/(L' L)) = exp(g)/L^2 - g' exp(g)/(L' L).
+    exact_expr inverse_square = cofactor;
+    if(cofactor.operation() == exact_opcode::multiply){
+        exact_expr candidate;
+        bool only_unit = true;
+        for(size_t i = 0; i < cofactor.operand_count(); ++i){
+            const exact_expr &factor = cofactor.operand(i);
+            int64_t power = 0;
+            if(factor.operation() == exact_opcode::power &&
+               integration_signed_exponent(factor.operand(1), power) &&
+               power == -2 && !candidate.valid()){
+                candidate = factor;
+            }else if(factor != context.integer(1)){
+                only_unit = false;
+            }
+        }
+        if(only_unit && candidate.valid()) inverse_square = candidate;
+    }
+    if(inverse_square.operation() == exact_opcode::power){
+        int64_t pole_power = 0;
+        const exact_expr &pole = inverse_square.operand(0);
+        if(integration_signed_exponent(inverse_square.operand(1), pole_power) &&
+           pole_power == -2){
+            integration_expr_poly pole_polynomial, inner_polynomial;
+            if(integration_parse_expr_poly(context, pole, variable,
+                    pole_polynomial, options.maximum_degree) &&
+               pole_polynomial.size() == 2 &&
+               integration_parse_expr_poly(context, inner, variable,
+                    inner_polynomial, options.maximum_degree)){
+                exact_expr slope = context.simplify(
+                    integration_expr_poly_expr(context,
+                        integration_expr_derivative(context, pole_polynomial),
+                        variable));
+                exact_expr rate = context.simplify(
+                    integration_expr_poly_expr(context,
+                        integration_expr_derivative(context, inner_polynomial),
+                        variable));
+                integration_expr_poly rate_polynomial =
+                    integration_expr_derivative(context, inner_polynomial);
+                integration_expr_trim(context, rate_polynomial);
+                bool slope_known_nonzero = slope.is_value()
+                    ? !slope.value().is_approximate() &&
+                      !slope.value().is_zero()
+                    : integration_strictly_positive_constant(slope) ||
+                      integration_strictly_positive_constant(-slope);
+                bool valid_slope = integration_exact_expression_tree(slope) &&
+                    !integration_depends_on(slope, variable) &&
+                    !integration_expr_zero(context, slope);
+                bool valid_rate = !rate_polynomial.empty() &&
+                    !(rate_polynomial.size() == 1 &&
+                      integration_expr_zero(context, rate_polynomial[0]));
+                for(const exact_expr &coefficient : rate_polynomial)
+                    valid_rate = valid_rate &&
+                        integration_exact_expression_tree(coefficient) &&
+                        !integration_depends_on(coefficient, variable);
+                if(valid_slope && valid_rate){
+                    if(!slope_known_nonzero){
+                        if(!nonzero_conditions) return false;
+                        nonzero_conditions->push_back(slope);
+                    }
+                    exact_expr exp_factor = context.exponential(inner);
+                    elementary_part = -exp_factor / (slope * pole);
+                    remainder = rate * exp_factor / (slope * pole);
+                    if(elementary_part.reachable_node_count() >
+                           options.maximum_nodes ||
+                       remainder.reachable_node_count() > options.maximum_nodes){
+                        elementary_part = exact_expr();
+                        remainder = exact_expr();
+                        if(resource_limited) *resource_limited = true;
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+
     integration_expr_poly numerator, denominator, exponent, rate;
     if(!integration_parse_expr_rational(context, cofactor, variable,
             numerator, denominator, options.maximum_degree) ||
@@ -11038,7 +11117,6 @@ static bool integration_hyperexponential_rational_partial_general_expr(
         if(resource_limited) *resource_limited = true;
         return false;
     }
-
     integration_expr_poly repeated_squared = integration_expr_mul(context,
         repeated, repeated);
     integration_expr_poly rhs = integration_expr_mul(context, numerator,
@@ -22123,7 +22201,7 @@ risch_result exact_context::integrate_elementary_impl(
                     "hyperexponential partial Hermite matrix budget exceeded";
                 return true;
             }
-            if(partial_reduced && partial_conditions.empty() &&
+            if(partial_reduced &&
                simplify(partial_elementary) != integer(0) &&
                simplify(partial_remainder) != integer(0)){
                 risch_result lower = integrate_elementary(partial_remainder,

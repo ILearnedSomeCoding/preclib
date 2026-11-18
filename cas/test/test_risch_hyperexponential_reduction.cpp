@@ -325,9 +325,8 @@ int main(){
         quadratic_shifted_pole, x);
     exact_expr quadratic_shifted_elementary = -exponential /
         (x + shifted_parameter);
-    exact_expr quadratic_shifted_remainder =
-        (context.integer(2) - context.integer(2) * shifted_parameter /
-            (x + shifted_parameter)) * exponential;
+    exact_expr quadratic_shifted_remainder = context.integer(2) * x *
+        exponential / (x + shifted_parameter);
     bool excludes_degenerate_pole = false;
     for(const exact_expr &condition : quadratic_shifted_pole_result.conditions){
         exact_expr ratio = context.simplify(condition / shifted_parameter);
@@ -357,6 +356,47 @@ int main(){
                   << " checks=" << partial_primitive_matches << ','
                   << partial_remainder_matches << ','
                   << excludes_degenerate_pole << '\n';
+        return 1;
+    }
+
+    exact_expr rate_parameter = context.symbol("rate_parameter");
+    exact_expr parameter_rate_exponential = context.exponential(
+        rate_parameter * context.power(x, context.integer(2)));
+    exact_expr parameter_rate_pole = parameter_rate_exponential /
+        context.power(x + shifted_parameter, context.integer(2));
+    risch_result parameter_rate_pole_result = context.integrate_elementary(
+        parameter_rate_pole, x);
+    exact_expr parameter_rate_elementary = -parameter_rate_exponential /
+        (x + shifted_parameter);
+    exact_expr parameter_rate_remainder = context.integer(2) *
+        rate_parameter * x * parameter_rate_exponential /
+            (x + shifted_parameter);
+    auto conditions_exclude = [&](const exact_expr &degenerate_parameter){
+        for(const exact_expr &condition : parameter_rate_pole_result.conditions)
+            if(is_zero(context, context.substitute(condition,
+                    degenerate_parameter, context.integer(0)))) return true;
+        return false;
+    };
+    bool rate_and_pole_degeneracy_excluded =
+        conditions_exclude(rate_parameter) &&
+        conditions_exclude(shifted_parameter);
+    if(parameter_rate_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context, parameter_rate_pole_result.elementary_part -
+                         parameter_rate_elementary) ||
+       !is_zero(context, parameter_rate_pole_result.remainder -
+                         parameter_rate_remainder) ||
+       !rate_and_pole_degeneracy_excluded){
+        std::cerr << "conditional symbolic-rate Hermite reduction failed: "
+                  << parameter_rate_pole_result.diagnostic
+                  << " elementary="
+                  << parameter_rate_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << parameter_rate_pole_result.remainder.to_string()
+                  << " conditions=";
+        for(const exact_expr &condition : parameter_rate_pole_result.conditions)
+            std::cerr << condition.to_string() << ';';
+        std::cerr << '\n';
         return 1;
     }
     risch_options tiny_rde_budget;
