@@ -10912,79 +10912,176 @@ static bool integration_hyperexponential_rational_partial_general_expr(
     elementary_part = exact_expr();
     remainder = exact_expr();
 
-    // A repeated affine pole has a direct Hermite step when its cofactor is
-    // exactly L^-2 and L' is a nonzero constant:
-    // D(-exp(g)/(L' L)) = exp(g)/L^2 - g' exp(g)/(L' L).
-    exact_expr inverse_square = cofactor;
-    if(cofactor.operation() == exact_opcode::multiply){
-        exact_expr candidate;
-        bool only_unit = true;
-        for(size_t i = 0; i < cofactor.operand_count(); ++i){
-            const exact_expr &factor = cofactor.operand(i);
-            int64_t power = 0;
-            if(factor.operation() == exact_opcode::power &&
-               integration_signed_exponent(factor.operand(1), power) &&
-               power == -2 && !candidate.valid()){
-                candidate = factor;
-            }else if(factor != context.integer(1)){
-                only_unit = false;
+    // Repeated affine poles admit a field-generic Hermite step. Write
+    // n = L*q + r with constant remainder r and L' = c. For pole order m,
+    // A = -r/((m-1)c) gives
+    // D(A*exp(g)/L^(m-1)) = exp(g)*(r + L*(A*g'))/L^m.
+    // Subtracting it lowers the pole order by one, so iteration is exact and
+    // does not require symbolic Gaussian elimination over parameter fields.
+    exact_expr pole;
+    size_t pole_order = 0;
+    std::vector<exact_expr> numerator_factors;
+    bool repeated_affine_pole = true;
+    auto inspect_factor = [&](const exact_expr &factor){
+        int64_t power = 0;
+        if(factor.operation() == exact_opcode::power &&
+           integration_signed_exponent(factor.operand(1), power) &&
+           power <= -2){
+            if(pole.valid() || power == INT64_MIN){
+                repeated_affine_pole = false;
+                return;
             }
+            pole = factor.operand(0);
+            pole_order = (size_t)(-power);
+            return;
         }
-        if(only_unit && candidate.valid()) inverse_square = candidate;
-    }
-    if(inverse_square.operation() == exact_opcode::power){
-        int64_t pole_power = 0;
-        const exact_expr &pole = inverse_square.operand(0);
-        if(integration_signed_exponent(inverse_square.operand(1), pole_power) &&
-           pole_power == -2){
-            integration_expr_poly pole_polynomial, inner_polynomial;
-            if(integration_parse_expr_poly(context, pole, variable,
-                    pole_polynomial, options.maximum_degree) &&
-               pole_polynomial.size() == 2 &&
-               integration_parse_expr_poly(context, inner, variable,
-                    inner_polynomial, options.maximum_degree)){
-                exact_expr slope = context.simplify(
-                    integration_expr_poly_expr(context,
-                        integration_expr_derivative(context, pole_polynomial),
-                        variable));
-                exact_expr rate = context.simplify(
-                    integration_expr_poly_expr(context,
-                        integration_expr_derivative(context, inner_polynomial),
-                        variable));
-                integration_expr_poly rate_polynomial =
-                    integration_expr_derivative(context, inner_polynomial);
-                integration_expr_trim(context, rate_polynomial);
-                bool slope_known_nonzero = slope.is_value()
-                    ? !slope.value().is_approximate() &&
-                      !slope.value().is_zero()
-                    : integration_strictly_positive_constant(slope) ||
-                      integration_strictly_positive_constant(-slope);
-                bool valid_slope = integration_exact_expression_tree(slope) &&
-                    !integration_depends_on(slope, variable) &&
-                    !integration_expr_zero(context, slope);
-                bool valid_rate = !rate_polynomial.empty() &&
-                    !(rate_polynomial.size() == 1 &&
-                      integration_expr_zero(context, rate_polynomial[0]));
-                for(const exact_expr &coefficient : rate_polynomial)
-                    valid_rate = valid_rate &&
-                        integration_exact_expression_tree(coefficient) &&
-                        !integration_depends_on(coefficient, variable);
-                if(valid_slope && valid_rate){
-                    if(!slope_known_nonzero){
-                        if(!nonzero_conditions) return false;
-                        nonzero_conditions->push_back(slope);
+        numerator_factors.push_back(factor);
+    };
+    if(cofactor.operation() == exact_opcode::multiply){
+        for(size_t i = 0; i < cofactor.operand_count(); ++i)
+            inspect_factor(cofactor.operand(i));
+    }else inspect_factor(cofactor);
+
+    if(repeated_affine_pole && pole.valid()){
+        integration_expr_poly pole_polynomial, inner_polynomial;
+        if(pole_order > options.maximum_degree){
+            if(resource_limited) *resource_limited = true;
+            return false;
+        }
+        if(integration_parse_expr_poly(context, pole, variable,
+                pole_polynomial, options.maximum_degree) &&
+           pole_polynomial.size() == 2 &&
+           integration_parse_expr_poly(context, inner, variable,
+                inner_polynomial, options.maximum_degree)){
+            exact_expr slope = context.simplify(pole_polynomial[1]);
+            exact_expr denominator_scale = context.integer(1);
+            bool needs_scale_condition = false;
+            bool slope_known_nonzero = slope.is_value()
+                ? !slope.value().is_approximate() &&
+                  !slope.value().is_zero()
+                : integration_strictly_positive_constant(slope) ||
+                  integration_strictly_positive_constant(-slope);
+            bool valid_slope = integration_exact_expression_tree(slope) &&
+                !integration_depends_on(slope, variable) &&
+                !integration_expr_zero(context, slope) &&
+                (slope_known_nonzero || nonzero_conditions != nullptr) &&
+                integration_exact_expression_tree(pole_polynomial[0]) &&
+                !integration_depends_on(pole_polynomial[0], variable);
+
+            exact_expr numerator_expression = numerator_factors.empty()
+                ? context.integer(1) : context.multiply(numerator_factors);
+            integration_expr_poly numerator, denominator;
+            bool valid_numerator = valid_slope &&
+                integration_parse_expr_rational(context, numerator_expression,
+                    variable, numerator, denominator,
+                    options.maximum_degree) && denominator.size() == 1 &&
+                integration_exact_expression_tree(denominator[0]) &&
+                !integration_depends_on(denominator[0], variable) &&
+                !integration_expr_zero(context, denominator[0]);
+            if(valid_numerator){
+                denominator_scale = context.simplify(denominator[0]);
+                bool scale_known_nonzero = denominator_scale.is_value()
+                    ? !denominator_scale.value().is_approximate() &&
+                      !denominator_scale.value().is_zero()
+                    : integration_strictly_positive_constant(denominator_scale) ||
+                      integration_strictly_positive_constant(-denominator_scale);
+                needs_scale_condition = !scale_known_nonzero;
+                if(needs_scale_condition && !nonzero_conditions)
+                    valid_numerator = false;
+                else for(exact_expr &coefficient : numerator)
+                    coefficient = context.simplify(coefficient /
+                                                   denominator_scale);
+            }
+
+            integration_expr_poly rate = integration_expr_derivative(context,
+                inner_polynomial);
+            integration_expr_trim(context, rate);
+            bool valid_rate = !rate.empty() &&
+                !(rate.size() == 1 &&
+                  integration_expr_zero(context, rate[0]));
+            for(const exact_expr &coefficient : rate)
+                valid_rate = valid_rate &&
+                    integration_exact_expression_tree(coefficient) &&
+                    !integration_depends_on(coefficient, variable);
+            for(const exact_expr &coefficient : numerator)
+                valid_numerator = valid_numerator &&
+                    integration_exact_expression_tree(coefficient) &&
+                    !integration_depends_on(coefficient, variable);
+
+            if(valid_numerator && valid_rate){
+                bool needs_slope_condition = !slope_known_nonzero;
+                exact_expr candidate_elementary = context.integer(0);
+                bool reduction_limited = false;
+                exact_expr offset = pole_polynomial[0];
+                for(size_t order = pole_order; order > 1; --order){
+                    integration_expr_trim(context, numerator);
+                    if(numerator.empty()) numerator.push_back(context.integer(0));
+                    size_t degree = numerator.size() - 1;
+                    integration_expr_poly quotient(
+                        degree ? degree : 1, context.integer(0));
+                    exact_expr pole_remainder = numerator.back();
+                    if(degree){
+                        quotient[degree - 1] = context.simplify(
+                            numerator[degree] / slope);
+                        for(size_t i = degree - 1; i > 0; --i)
+                            quotient[i - 1] = context.simplify(
+                                (numerator[i] - offset * quotient[i]) /
+                                    slope);
+                        pole_remainder = context.simplify(
+                            numerator[0] - offset * quotient[0]);
                     }
-                    exact_expr exp_factor = context.exponential(inner);
-                    elementary_part = -exp_factor / (slope * pole);
-                    remainder = rate * exp_factor / (slope * pole);
-                    if(elementary_part.reachable_node_count() >
-                           options.maximum_nodes ||
-                       remainder.reachable_node_count() > options.maximum_nodes){
-                        elementary_part = exact_expr();
-                        remainder = exact_expr();
+                    exact_expr primitive_coefficient = context.simplify(
+                        -pole_remainder /
+                        (context.integer(order - 1) * slope));
+                    if(!integration_exact_expression_tree(primitive_coefficient) ||
+                       integration_depends_on(primitive_coefficient, variable)){
+                        valid_numerator = false;
+                        break;
+                    }
+                    if(!integration_expr_zero(context, primitive_coefficient)){
+                        exact_expr term = primitive_coefficient *
+                            context.exponential(inner) /
+                            context.power(pole,
+                                context.integer(order - 1));
+                        candidate_elementary = candidate_elementary + term;
+                    }
+                    integration_expr_poly scaled_rate = rate;
+                    for(exact_expr &coefficient : scaled_rate)
+                        coefficient = context.simplify(
+                            coefficient * (-primitive_coefficient));
+                    numerator = integration_expr_add(context, quotient,
+                                                     scaled_rate);
+                    integration_expr_trim(context, numerator);
+                    if(numerator.size() > options.maximum_degree + 1){
+                        reduction_limited = true;
+                        break;
+                    }
+                    if(candidate_elementary.reachable_node_count() >
+                           options.maximum_nodes){
+                        reduction_limited = true;
+                        break;
+                    }
+                }
+                if(reduction_limited){
+                    if(resource_limited) *resource_limited = true;
+                    return false;
+                }
+                if(valid_numerator &&
+                   !integration_expr_zero(context, candidate_elementary)){
+                    exact_expr candidate_remainder =
+                        integration_expr_poly_expr(context, numerator, variable) *
+                        context.exponential(inner) / pole;
+                    if(candidate_remainder.reachable_node_count() >
+                           options.maximum_nodes){
                         if(resource_limited) *resource_limited = true;
                         return false;
                     }
+                    if(needs_slope_condition)
+                        nonzero_conditions->push_back(slope);
+                    if(needs_scale_condition)
+                        nonzero_conditions->push_back(denominator_scale);
+                    elementary_part = std::move(candidate_elementary);
+                    remainder = std::move(candidate_remainder);
                     return true;
                 }
             }
@@ -11310,9 +11407,27 @@ static bool integration_hyperexponential_proper_pole_non_elementary(
     integration_expr_trim(context, rate);
     if(rate.size() == 1 && integration_expr_zero(context, rate[0]))
         return false;
+    bool rate_proven_nonzero = false;
     for(const exact_expr &coefficient : rate)
         if(!integration_exact_expression_tree(coefficient) ||
            integration_depends_on(coefficient, variable)) return false;
+        else if((coefficient.is_value() &&
+                 !coefficient.value().is_approximate() &&
+                 !coefficient.value().is_zero()) ||
+                integration_strictly_positive_constant(coefficient) ||
+                integration_strictly_positive_constant(-coefficient))
+            rate_proven_nonzero = true;
+    if(!rate_proven_nonzero){
+        // A symbolic rate may specialize to zero, invalidating the pole
+        // obstruction. A single nonzero coefficient is a sufficient
+        // condition that the rate polynomial is not identically zero.
+        if(!nonzero_conditions) return false;
+        exact_expr rate_condition = rate.back();
+        if(integration_expr_zero(context, rate_condition)) return false;
+        if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
+                     rate_condition) == nonzero_conditions->end())
+            nonzero_conditions->push_back(rate_condition);
+    }
 
     integration_expr_poly common;
     if(!integration_expr_gcd_constant_coefficients(context, numerator,

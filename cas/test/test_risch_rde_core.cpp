@@ -79,6 +79,13 @@ int main(){
             negative_exponential_polynomial_rhs,
             -(x + context.integer(1)) * negative_exponential_factor,
             negative_exponential_factor)) return 1;
+    exact_expr public_negative_exponential = context.integrate(
+        x / context.exponential(x), x);
+    if(public_negative_exponential.operation() == exact_opcode::integral){
+        std::cerr << "public integration missed x/exp(x): "
+                  << public_negative_exponential.to_string() << '\n';
+        return 1;
+    }
     exact_expr log_two = context.natural_logarithm(context.integer(2));
     exact_expr negative_base_power_factor =
         context.power(context.integer(2), -x);
@@ -91,6 +98,13 @@ int main(){
             normalized_negative_base_power_rhs,
             negative_base_power_primitive, negative_base_power_factor))
         return 1;
+    exact_expr public_negative_base_power = context.integrate(
+        negative_base_power_polynomial_rhs, x);
+    if(public_negative_base_power.operation() == exact_opcode::integral){
+        std::cerr << "public integration missed x/2^x: "
+                  << public_negative_base_power.to_string() << '\n';
+        return 1;
+    }
     exact_expr shifted_laurent_rhs = context.integer(1) /
         (context.exponential(context.integer(3) * x) +
          context.exponential(context.integer(2) * x + context.integer(1)));

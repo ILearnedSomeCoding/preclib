@@ -399,6 +399,97 @@ int main(){
         std::cerr << '\n';
         return 1;
     }
+
+    exact_expr parameter_rate_triple_pole = parameter_rate_exponential /
+        context.power(x + shifted_parameter, context.integer(3));
+    risch_result parameter_rate_triple_result = context.integrate_elementary(
+        parameter_rate_triple_pole, x);
+    exact_expr parameter_rate_triple_elementary =
+        -parameter_rate_exponential /
+            (context.integer(2) * context.power(
+                x + shifted_parameter, context.integer(2))) +
+        rate_parameter * shifted_parameter * parameter_rate_exponential /
+            (x + shifted_parameter);
+    exact_expr parameter_rate_triple_remainder =
+        (rate_parameter - context.integer(2) * rate_parameter *
+            rate_parameter * shifted_parameter * x) *
+            parameter_rate_exponential /
+            (x + shifted_parameter);
+    if(parameter_rate_triple_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context, parameter_rate_triple_result.elementary_part -
+                         parameter_rate_triple_elementary) ||
+       !is_zero(context, parameter_rate_triple_result.remainder -
+                         parameter_rate_triple_remainder) ||
+       !conditions_exclude(rate_parameter) ||
+       !conditions_exclude(shifted_parameter)){
+        std::cerr << "conditional triple-pole Hermite reduction failed: "
+                  << parameter_rate_triple_result.diagnostic
+                  << " elementary="
+                  << parameter_rate_triple_result.elementary_part.to_string()
+                  << " remainder="
+                  << parameter_rate_triple_result.remainder.to_string()
+                  << " conditions=";
+        for(const exact_expr &condition : parameter_rate_triple_result.conditions)
+            std::cerr << condition.to_string() << ';';
+        std::cerr << '\n';
+        return 1;
+    }
+
+    exact_expr parameter_rate_linear_numerator = x *
+        parameter_rate_exponential /
+            context.power(x + shifted_parameter, context.integer(2));
+    risch_result parameter_rate_linear_numerator_result =
+        context.integrate_elementary(parameter_rate_linear_numerator, x);
+    exact_expr parameter_rate_linear_numerator_elementary =
+        shifted_parameter * parameter_rate_exponential /
+            (x + shifted_parameter);
+    exact_expr parameter_rate_linear_numerator_remainder =
+        (context.integer(1) - context.integer(2) * shifted_parameter *
+            rate_parameter * x) * parameter_rate_exponential /
+            (x + shifted_parameter);
+    if(parameter_rate_linear_numerator_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context,
+           parameter_rate_linear_numerator_result.elementary_part -
+               parameter_rate_linear_numerator_elementary) ||
+       !is_zero(context,
+           parameter_rate_linear_numerator_result.remainder -
+               parameter_rate_linear_numerator_remainder)){
+        std::cerr << "symbolic affine-pole polynomial numerator reduction "
+                     "failed: "
+                  << parameter_rate_linear_numerator_result.diagnostic
+                  << " elementary="
+                  << parameter_rate_linear_numerator_result.elementary_part.to_string()
+                  << " remainder="
+                  << parameter_rate_linear_numerator_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
+
+    exact_expr scaled_linear_pole = context.integer(2) * x +
+        context.integer(1);
+    exact_expr swept_numerator = context.power(x, context.integer(2)) +
+        context.integer(3) * x + context.integer(2);
+    for(int64_t order = 2; order <= 8; ++order){
+        exact_expr swept_integrand = swept_numerator * exponential /
+            context.power(scaled_linear_pole, context.integer(order));
+        risch_result swept_result = context.integrate_elementary(
+            swept_integrand, x);
+        bool supported_status = swept_result.status == risch_status::elementary ||
+            swept_result.status == risch_status::proven_nonelementary;
+        if(!supported_status ||
+           is_zero(context, swept_result.elementary_part)){
+            std::cerr << "affine repeated-pole order sweep failed at order "
+                      << order << " status=" << (int)swept_result.status
+                      << ": " << swept_result.diagnostic
+                      << " elementary="
+                      << swept_result.elementary_part.to_string()
+                      << " remainder=" << swept_result.remainder.to_string()
+                      << '\n';
+            return 1;
+        }
+    }
     risch_options tiny_rde_budget;
     tiny_rde_budget.maximum_matrix_entries = 1;
     risch_result limited_symbolic_denominator_result =
