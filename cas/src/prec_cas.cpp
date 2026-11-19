@@ -20277,6 +20277,27 @@ risch_result exact_context::integrate_elementary_impl(
                         terms.emplace(0, part);
                         return true;
                     }
+                    // Rational cofactors with exact symbolic constants belong
+                    // to the coefficient field of this Laurent generator too.
+                    // Keeping them intact lets the expression-coefficient
+                    // Hermite/RDE path handle parameterized poles downstream.
+                    integration_expr_poly expression_numerator,
+                        expression_denominator;
+                    if(integration_parse_expr_rational(*this, part, variable,
+                           expression_numerator, expression_denominator,
+                           degree_budget) &&
+                       !expression_denominator.empty() &&
+                       !(expression_denominator.size() == 1 &&
+                         integration_expr_zero(*this,
+                             expression_denominator[0]))){
+                        exact_expr rational_coefficient =
+                            integration_expr_poly_expr(*this,
+                                expression_numerator, variable) /
+                            integration_expr_poly_expr(*this,
+                                expression_denominator, variable);
+                        terms.emplace(0, std::move(rational_coefficient));
+                        return true;
+                    }
                     // Exact constants such as an assumed-positive symbol are
                     // valid Laurent coefficients even though they are not
                     // rational functions of x.

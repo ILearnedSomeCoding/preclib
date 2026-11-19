@@ -159,6 +159,48 @@ int main(){
         return 1;
     }
 
+    exact_expr two_repeated_poles = exponential /
+        (context.power(x, context.integer(2)) *
+         context.power(x + context.integer(1), context.integer(2)));
+    risch_result two_repeated_poles_result = context.integrate_elementary(
+        two_repeated_poles, x);
+    exact_expr two_repeated_poles_primitive =
+        (-context.integer(2) * x - context.integer(1)) * exponential /
+        (x * (x + context.integer(1)));
+    exact_expr two_repeated_poles_remainder =
+        context.integer(2) * (context.integer(2) * x - context.integer(1)) *
+        exponential / x;
+    if(two_repeated_poles_result.status !=
+           risch_status::proven_nonelementary ||
+       two_repeated_poles_result.elementary_part.to_string() !=
+           two_repeated_poles_primitive.to_string() ||
+       two_repeated_poles_result.remainder.to_string() !=
+           two_repeated_poles_remainder.to_string()){
+        std::cerr << "multiple repeated-pole hyperexponential reduction failed: "
+                  << "status=" << (int)two_repeated_poles_result.status << ' '
+                  << two_repeated_poles_result.diagnostic << " elementary="
+                  << two_repeated_poles_result.elementary_part.to_string()
+                  << " remainder="
+                  << two_repeated_poles_result.remainder.to_string() << '\n';
+        return 1;
+    }
+
+    exact_expr pole_shift = context.symbol("pole_shift");
+    exact_expr symbolic_two_repeated_poles = exponential /
+        (context.power(x, context.integer(2)) *
+         context.power(x + pole_shift, context.integer(2)));
+    risch_result symbolic_two_repeated_poles_result =
+        context.integrate_elementary(symbolic_two_repeated_poles, x);
+    if(symbolic_two_repeated_poles_result.status !=
+       risch_status::unsupported){
+        std::cerr << "parameterized multiple-pole case must remain unsupported "
+                  << "until its generic squarefree decomposition is certified; "
+                  << "status="
+                  << (int)symbolic_two_repeated_poles_result.status << ' '
+                  << symbolic_two_repeated_poles_result.diagnostic << '\n';
+        return 1;
+    }
+
     exact_expr scale = context.symbol("scale");
     exact_expr scaled_repeated_pole = scale * repeated_pole;
     risch_result scaled_repeated_pole_result = context.integrate_elementary(
