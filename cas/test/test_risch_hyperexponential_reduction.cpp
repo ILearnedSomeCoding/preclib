@@ -192,12 +192,47 @@ int main(){
     risch_result symbolic_two_repeated_poles_result =
         context.integrate_elementary(symbolic_two_repeated_poles, x);
     if(symbolic_two_repeated_poles_result.status !=
-       risch_status::unsupported){
-        std::cerr << "parameterized multiple-pole case must remain unsupported "
-                  << "until its generic squarefree decomposition is certified; "
+           risch_status::proven_nonelementary ||
+       symbolic_two_repeated_poles_result.elementary_part ==
+           context.integer(0) ||
+       symbolic_two_repeated_poles_result.remainder == context.integer(0) ||
+       std::find(symbolic_two_repeated_poles_result.conditions.begin(),
+                 symbolic_two_repeated_poles_result.conditions.end(),
+                 pole_shift) ==
+           symbolic_two_repeated_poles_result.conditions.end()){
+        std::cerr << "parameterized multiple-pole Hermite reduction failed: "
                   << "status="
                   << (int)symbolic_two_repeated_poles_result.status << ' '
-                  << symbolic_two_repeated_poles_result.diagnostic << '\n';
+                  << symbolic_two_repeated_poles_result.diagnostic
+                  << " elementary="
+                  << symbolic_two_repeated_poles_result.elementary_part.to_string()
+                  << " remainder="
+                  << symbolic_two_repeated_poles_result.remainder.to_string()
+                  << " conditions=";
+        for(const exact_expr &condition :
+                symbolic_two_repeated_poles_result.conditions)
+            std::cerr << condition.to_string() << ',';
+        std::cerr << '\n';
+        return 1;
+    }
+
+    exact_context assumed_pole_context;
+    exact_expr assumed_x = assumed_pole_context.symbol("x");
+    exact_expr assumed_pole_shift = assumed_pole_context.symbol("pole_shift");
+    assumed_pole_context.assume(assumed_pole_shift, "positive");
+    exact_expr assumed_two_pole_integrand =
+        assumed_pole_context.exponential(
+            assumed_pole_context.power(assumed_x,
+                                      assumed_pole_context.integer(2))) /
+        (assumed_pole_context.power(assumed_x,
+                                    assumed_pole_context.integer(2)) *
+         assumed_pole_context.power(
+             assumed_x + assumed_pole_shift,
+             assumed_pole_context.integer(2)));
+    if(assumed_pole_context.integrate_elementary(
+           assumed_two_pole_integrand, assumed_x).status !=
+       risch_status::proven_nonelementary){
+        std::cerr << "positive pole-shift multi-pole reduction failed\n";
         return 1;
     }
 

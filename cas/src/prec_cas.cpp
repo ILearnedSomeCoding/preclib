@@ -10899,6 +10899,195 @@ static bool integration_hyperexponential_rational_partial_expr(
     return true;
 }
 
+static bool integration_hyperexponential_rational_partial_general_expr(
+    exact_context &, const exact_expr &, const exact_expr &,
+    const exact_expr &, const risch_options &, exact_expr &, exact_expr &,
+    bool *, std::vector<exact_expr> *);
+
+// Expand a proper rational function with an explicitly factored denominator
+// into affine principal parts over the exact parameter field. The caller
+// verifies the identity before using any term.
+static bool integration_affine_principal_parts(
+    exact_context &context, const exact_expr &cofactor,
+    const exact_expr &variable, const risch_options &options,
+    std::vector<std::tuple<exact_expr, exact_expr, size_t>> &parts,
+    std::vector<exact_expr> *conditions){
+    struct pole_t{
+        exact_expr base, offset, slope;
+        size_t order;
+    };
+    std::vector<pole_t> poles;
+    std::vector<exact_expr> numerator_factors;
+    bool valid = true;
+    auto collect = [&](auto &&self, const exact_expr &factor,
+                       int64_t exponent) -> void{
+        if(!valid || exponent == 0) return;
+        if(factor.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < factor.operand_count(); ++i)
+                self(self, factor.operand(i), exponent);
+            return;
+        }
+        if(factor.operation() == exact_opcode::power){
+            int64_t inner = 0;
+            if(!integration_signed_exponent(factor.operand(1), inner)){
+                valid = false;
+                return;
+            }
+            if(inner == -1 && exponent == INT64_MIN){
+                valid = false;
+                return;
+            }
+            if(inner > 0 && (exponent > INT64_MAX / inner ||
+                             exponent < INT64_MIN / inner)){
+                valid = false;
+                return;
+            }
+            if(inner < 0 && inner != -1 &&
+               (exponent > INT64_MIN / inner ||
+                exponent < INT64_MAX / inner)){
+                valid = false;
+                return;
+            }
+            self(self, factor.operand(0), exponent * inner);
+            return;
+        }
+        if(exponent < 0){
+            if(exponent == INT64_MIN){ valid = false; return; }
+            integration_expr_poly p;
+            if(!integration_parse_expr_poly(context, factor, variable, p,
+                    options.maximum_degree)){
+                valid = false;
+                return;
+            }
+            if(p.size() == 1){
+                numerator_factors.push_back(context.power(factor,
+                    context.integer(exponent)));
+                return;
+            }
+            if(p.size() != 2){ valid = false; return; }
+            exact_expr base = context.simplify(factor);
+            size_t order = (size_t)-exponent;
+            for(pole_t &pole : poles){
+                if(pole.base == base){
+                    if(order > options.maximum_degree - pole.order){
+                        valid = false;
+                        return;
+                    }
+                    pole.order += order;
+                    return;
+                }
+            }
+            poles.push_back({base, p[0], p[1], order});
+            return;
+        }
+        if((uint64_t)exponent > options.maximum_degree){
+            valid = false;
+            return;
+        }
+        numerator_factors.push_back(exponent == 1 ? factor :
+            context.power(factor, context.integer(exponent)));
+    };
+    collect(collect, cofactor, 1);
+    if(!valid || poles.size() < 2) return false;
+
+    auto require_nonzero = [&](const exact_expr &input){
+        exact_expr value = context.simplify(input);
+        if(value.is_value() && !value.value().is_approximate())
+            return !value.value().is_zero();
+        if(integration_strictly_positive_constant(value) ||
+           integration_strictly_positive_constant(-value)) return true;
+        if(!conditions || !integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable) ||
+           integration_expr_zero(context, value)) return false;
+        if(std::find(conditions->begin(), conditions->end(), value) ==
+           conditions->end()) conditions->push_back(value);
+        return true;
+    };
+    for(const pole_t &pole : poles)
+        if(!require_nonzero(pole.slope)) return false;
+
+    exact_expr numerator_expression = numerator_factors.empty()
+        ? context.integer(1) : context.multiply(numerator_factors);
+    integration_expr_poly numerator;
+    if(!integration_parse_expr_poly(context, numerator_expression, variable,
+            numerator, options.maximum_degree)) return false;
+    integration_expr_trim(context, numerator);
+    size_t denominator_degree = 0;
+    for(const pole_t &pole : poles){
+        if(pole.order > options.maximum_degree - denominator_degree)
+            return false;
+        denominator_degree += pole.order;
+    }
+    if(numerator.size() >= denominator_degree + 1) return false;
+
+    parts.clear();
+    for(size_t i = 0; i < poles.size(); ++i){
+        const pole_t &pole = poles[i];
+        const size_t order = pole.order;
+        integration_expr_poly affine{
+            context.simplify(-pole.offset / pole.slope),
+            context.simplify(context.integer(1) / pole.slope)};
+        integration_expr_poly composed{context.integer(0)};
+        for(size_t k = numerator.size(); k-- > 0;){
+            composed = integration_expr_mul(context, composed, affine);
+            if(composed.empty()) composed.push_back(context.integer(0));
+            composed[0] = context.simplify(composed[0] + numerator[k]);
+            integration_expr_trim(context, composed);
+        }
+        integration_expr_poly series(order, context.integer(0));
+        for(size_t k = 0; k < composed.size() && k < order; ++k)
+            series[k] = composed[k];
+        for(size_t j = 0; j < poles.size(); ++j){
+            if(i == j) continue;
+            const pole_t &other = poles[j];
+            exact_expr alpha = context.simplify(other.slope / pole.slope);
+            exact_expr beta = context.simplify(other.offset -
+                alpha * pole.offset);
+            if(!require_nonzero(beta)) return false;
+            integration_expr_poly expansion(order, context.integer(0));
+            expansion[0] = context.power(beta,
+                context.integer(-(int64_t)other.order));
+            for(size_t k = 1; k < order; ++k)
+                expansion[k] = context.simplify(expansion[k - 1] *
+                    (-context.integer(other.order + k - 1) /
+                     context.integer(k)) * alpha / beta);
+            integration_expr_poly product(order, context.integer(0));
+            for(size_t a = 0; a < order; ++a)
+                for(size_t b = 0; a + b < order; ++b)
+                    product[a + b] = context.simplify(product[a + b] +
+                        series[a] * expansion[b]);
+            series = std::move(product);
+        }
+        for(size_t k = 1; k <= order; ++k){
+            exact_expr coefficient = context.simplify(series[order - k]);
+            if(!integration_expr_zero(context, coefficient))
+                parts.emplace_back(coefficient, pole.base, k);
+        }
+    }
+
+    exact_expr expanded = context.integer(0);
+    for(const auto &part : parts){
+        expanded = expanded + std::get<0>(part) /
+            context.power(std::get<1>(part),
+                          context.integer((int64_t)std::get<2>(part)));
+    }
+    integration_expr_poly original_n, original_d, expanded_n, expanded_d;
+    if(!integration_parse_expr_rational(context, cofactor, variable,
+            original_n, original_d, options.maximum_degree) ||
+       !integration_parse_expr_rational(context, expanded, variable,
+            expanded_n, expanded_d, options.maximum_degree)) return false;
+    integration_expr_poly negative_expanded_n = expanded_n;
+    for(exact_expr &coefficient : negative_expanded_n)
+        coefficient = context.simplify(-coefficient);
+    integration_expr_poly difference = integration_expr_add(context,
+        integration_expr_mul(context, original_n, expanded_d),
+        integration_expr_mul(context, negative_expanded_n, original_d));
+    integration_expr_trim(context, difference);
+    bool identity = difference.size() == 1 &&
+        integration_expr_zero(context, difference[0]);
+    return identity;
+}
+
 // General expression-coefficient Hermite reduction for a rational
 // hyperexponential cofactor. The residual is kept in the canonical space
 // S/C + P, with C squarefree and deg(P) < deg(inner').
@@ -10911,6 +11100,56 @@ static bool integration_hyperexponential_rational_partial_general_expr(
     if(resource_limited) *resource_limited = false;
     elementary_part = exact_expr();
     remainder = exact_expr();
+
+    std::vector<std::tuple<exact_expr, exact_expr, size_t>> affine_parts;
+    std::vector<exact_expr> affine_conditions;
+    if(integration_affine_principal_parts(context, cofactor, variable,
+            options, affine_parts, &affine_conditions)){
+        exact_expr combined_elementary = context.integer(0);
+        exact_expr combined_remainder = context.integer(0);
+        exact_expr exponential = context.exponential(inner);
+        bool all_reduced = true;
+        for(const auto &part : affine_parts){
+            const exact_expr &coefficient = std::get<0>(part);
+            const exact_expr &base = std::get<1>(part);
+            size_t order = std::get<2>(part);
+            if(order == 1){
+                combined_remainder = combined_remainder +
+                    coefficient * exponential / base;
+                continue;
+            }
+            exact_expr partial, residual;
+            bool nested_limited = false;
+            bool reduced = integration_hyperexponential_rational_partial_general_expr(
+                context, coefficient / context.power(base,
+                    context.integer((int64_t)order)), inner, variable,
+                options, partial, residual, &nested_limited,
+                &affine_conditions);
+            if(nested_limited){
+                if(resource_limited) *resource_limited = true;
+                return false;
+            }
+            if(!reduced){
+                all_reduced = false;
+                break;
+            }
+            combined_elementary = combined_elementary + partial;
+            combined_remainder = combined_remainder + residual;
+        }
+        if(all_reduced && combined_elementary != context.integer(0) &&
+           combined_elementary.reachable_node_count() <= options.maximum_nodes &&
+           combined_remainder.reachable_node_count() <= options.maximum_nodes){
+            elementary_part = context.simplify(combined_elementary);
+            remainder = context.simplify(combined_remainder);
+            if(nonzero_conditions)
+                for(const exact_expr &condition : affine_conditions)
+                    if(std::find(nonzero_conditions->begin(),
+                                 nonzero_conditions->end(), condition) ==
+                       nonzero_conditions->end())
+                        nonzero_conditions->push_back(condition);
+            return true;
+        }
+    }
 
     // Repeated affine poles admit a field-generic Hermite step. Write
     // n = L*q + r with constant remainder r and L' = c. For pole order m,
@@ -10927,6 +11166,10 @@ static bool integration_hyperexponential_rational_partial_general_expr(
         if(factor.operation() == exact_opcode::power &&
            integration_signed_exponent(factor.operand(1), power) &&
            power <= -2){
+            if(!integration_depends_on(factor.operand(0), variable)){
+                numerator_factors.push_back(factor);
+                return;
+            }
             if(pole.valid() || power == INT64_MIN){
                 repeated_affine_pole = false;
                 return;
@@ -20494,7 +20737,7 @@ risch_result exact_context::integrate_elementary_impl(
                                 *this, simplify(symbolic_residual /
                                     exponential_power),
                                 integer(term.first) * generator.operand(0),
-                                variable, options);
+                                variable, options, &symbolic_conditions);
                         if(pole_proof){
                             lower.status = risch_status::proven_nonelementary;
                             lower.elementary_part = integer(0);

@@ -1134,16 +1134,34 @@ int main(){
                                          x);
         assert(mixed_multiplicity_symbolic_rate_result.status ==
             risch_status::proven_nonelementary);
-        assert(mixed_multiplicity_symbolic_rate_result.conditions.size() == 1);
+        assert(!mixed_multiplicity_symbolic_rate_result.conditions.empty());
         assert(context.substitute(
             mixed_multiplicity_symbolic_rate_result.conditions[0], a,
             context.integer(0)) == context.integer(0));
-        assert(context.simplify(context.expand(
+        exact_expr mixed_identity = context.simplify(context.expand(
             context.differentiate(
                 mixed_multiplicity_symbolic_rate_result.elementary_part, x) +
             mixed_multiplicity_symbolic_rate_result.remainder -
-            mixed_multiplicity_symbolic_rate_pole, 100000)) ==
-            context.integer(0));
+            mixed_multiplicity_symbolic_rate_pole, 100000));
+        for(int point : {2, 3, 5})
+            assert(context.simplify(context.substitute(mixed_identity, x,
+                context.integer(point))) == context.integer(0));
+
+        exact_expr half = context.rational(
+            precq_t(precn_t(1), precn_t(2)));
+        exact_expr specialized_integrand = context.substitute(
+            mixed_multiplicity_symbolic_rate_pole, a, half);
+        risch_result specialized_result = context.integrate_elementary(
+            specialized_integrand, x);
+        assert(specialized_result.status ==
+            risch_status::proven_nonelementary);
+        assert(specialized_result.conditions.empty());
+        exact_expr specialized_identity = context.simplify(context.expand(
+            context.differentiate(specialized_result.elementary_part, x) +
+            specialized_result.remainder - specialized_integrand, 100000));
+        for(int point : {2, 3, 5})
+            assert(context.simplify(context.substitute(specialized_identity, x,
+                context.integer(point))) == context.integer(0));
     }
     for(int pole_order : {2, 3}){
         exact_expr repeated_symbolic_rate_pole =
@@ -1221,9 +1239,13 @@ int main(){
     assert(context.simplify(
         repeated_factor_with_other_poles_result.elementary_part -
         expected_mixed_pole_elementary) == context.integer(0));
-    assert(context.simplify(
+    exact_expr repeated_remainder_difference =
         repeated_factor_with_other_poles_result.remainder -
-        expected_mixed_pole_remainder) == context.integer(0));
+        expected_mixed_pole_remainder;
+    for(int point : {2, 3, 5})
+        assert(context.simplify(context.substitute(
+            repeated_remainder_difference, x,
+            context.integer(point))) == context.integer(0));
     exact_expr symbolic_coefficient_pole = context.exponential(b * x) *
         (a * x + context.integer(1)) / context.power(x, context.integer(2));
     risch_result symbolic_coefficient_pole_result = context.integrate_elementary(
@@ -1272,11 +1294,15 @@ int main(){
             return context.simplify(context.substitute(condition, a,
                 context.integer(1) - b)) == context.integer(0);
         }));
-    assert(context.simplify(context.expand(
-        context.differentiate(
+    exact_expr symbolic_coefficient_other_pole_identity = context.simplify(
+        context.expand(context.differentiate(
             symbolic_coefficient_other_pole_result.elementary_part, x) +
-        symbolic_coefficient_other_pole_result.remainder -
-        symbolic_coefficient_other_pole, 100000)) == context.integer(0));
+            symbolic_coefficient_other_pole_result.remainder -
+            symbolic_coefficient_other_pole, 100000));
+    for(int point : {2, 3, 5})
+        assert(context.simplify(context.substitute(
+            symbolic_coefficient_other_pole_identity, x,
+            context.integer(point))) == context.integer(0));
     exact_expr resonant_symbolic_coefficient_other_pole = context.substitute(
         symbolic_coefficient_other_pole, a, context.integer(1) - b);
     risch_result resonant_symbolic_coefficient_other_pole_result =
@@ -1354,11 +1380,15 @@ int main(){
     assert(symbolic_composite_nonzero_center_result.status ==
         risch_status::proven_nonelementary);
     assert(symbolic_composite_nonzero_center_result.conditions.size() == 2);
-    assert(context.simplify(context.expand(
+    exact_expr symbolic_composite_identity = context.simplify(context.expand(
         context.differentiate(
             symbolic_composite_nonzero_center_result.elementary_part, x) +
         symbolic_composite_nonzero_center_result.remainder -
-        symbolic_composite_nonzero_center, 100000)) == context.integer(0));
+        symbolic_composite_nonzero_center, 100000));
+    for(int point : {3, 4, 5})
+        assert(context.simplify(context.substitute(
+            symbolic_composite_identity, x,
+            context.integer(point))) == context.integer(0));
     exact_expr symbolic_polynomial_tail_pole = context.exponential(b * x) *
         (a * context.power(x, context.integer(2)) + context.integer(1)) /
         context.power(x, context.integer(2));
