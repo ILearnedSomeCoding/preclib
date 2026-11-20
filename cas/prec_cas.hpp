@@ -178,6 +178,8 @@ struct risch_options{
     size_t maximum_degree = 64;
     size_t maximum_matrix_entries = 65536;
     size_t maximum_recursion_depth = 16;
+    // Higher values opt into more expensive algebraic-residue factorization.
+    size_t maximum_rothstein_degree = 6;
 };
 
 struct risch_result{

@@ -236,3 +236,8 @@
 - `fix`: 修复重复仿射极点归约将变量无关负幂误识别为第二个变量极点的问题；proper-pole 证书现在接收并传播符号条件。
 - `test`: 覆盖 `exp(x^2)/(x^2*(x+a)^2)`、混合重数极点 `exp(a*x^2)/(x*(x+1)^m)`（`m=2,3,5`）及 `a=1/2` 特化；`test_risch_hyperexponential_reduction` 和完整 `test_risch_exponential_rational` 通过。
 - `docs`: 记录显式仿射因子乘积范围、精确验证要求及参数主元条件可能保守的限制。
+
+### Follow-up: 2026-11-20
+
+- `fix`: 在公开 `risch_options` 中声明 `maximum_rothstein_degree`，使严格积分器的 RT 次数预算与实现及调用方测试一致；默认仍为 6。
+- `test`: 新增 7、8 次平方自由分母 RT 回归，验证零余项、节点预算和展开后导数恒等式。
