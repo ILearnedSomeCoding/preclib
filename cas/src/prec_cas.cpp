@@ -19286,24 +19286,63 @@ risch_result exact_context::integrate_elementary_impl(
         for(const exact_expr &part : trigonometric_nodes)
             if(is_hyperbolic(part.operation()) != hyperbolic) return false;
 
-        exact_expr angle = trigonometric_nodes.front().operand(0);
-        for(size_t i = 1; i < trigonometric_nodes.size(); ++i){
-            exact_expr other_angle = trigonometric_nodes[i].operand(0);
-            if(other_angle != angle &&
-               simplify(other_angle - angle) != integer(0))
+        std::vector<integration_expr_poly> angle_polynomials(
+            trigonometric_nodes.size());
+        for(size_t i = 0; i < trigonometric_nodes.size(); ++i){
+            if(!integration_parse_expr_poly(*this,
+                    trigonometric_nodes[i].operand(0), variable,
+                    angle_polynomials[i], 1) ||
+               angle_polynomials[i].size() != 2 ||
+               integration_depends_on(angle_polynomials[i][1], variable) ||
+               !integration_exact_expression_tree(angle_polynomials[i][0]) ||
+               !integration_exact_expression_tree(angle_polynomials[i][1]) ||
+               (angle_polynomials[i][1].is_value() &&
+                angle_polynomials[i][1].value().is_zero()))
                 return false;
         }
 
-        integration_expr_poly angle_polynomial;
-        if(!integration_parse_expr_poly(*this, angle, variable,
-                                        angle_polynomial) ||
-           angle_polynomial.size() != 2 ||
-           integration_depends_on(angle_polynomial[1], variable) ||
-           !integration_exact_expression_tree(angle_polynomial[0]) ||
-           !integration_exact_expression_tree(angle_polynomial[1]) ||
-           (angle_polynomial[1].is_value() &&
-            angle_polynomial[1].value().is_zero()))
-            return false;
+        // Pick a base angle for which every other affine angle is an exact
+        // integer multiple. Trying each observed angle handles either input
+        // order, e.g. sin(2*x)+cos(x).
+        size_t base_index = SIZE_MAX;
+        std::vector<int64_t> frequencies;
+        uint64_t best_frequency = UINT64_MAX;
+        const size_t frequency_limit = std::min<size_t>(
+            options.maximum_degree, 64);
+        for(size_t candidate = 0; candidate < angle_polynomials.size();
+            ++candidate){
+            std::vector<int64_t> candidate_frequencies;
+            candidate_frequencies.reserve(angle_polynomials.size());
+            uint64_t largest = 0;
+            bool common_lattice = true;
+            const exact_expr &base_slope = angle_polynomials[candidate][1];
+            const exact_expr &base_offset = angle_polynomials[candidate][0];
+            for(const auto &other : angle_polynomials){
+                exact_expr ratio = simplify(other[1] / base_slope);
+                int64_t multiple = 0;
+                if(!integration_signed_exponent(ratio, multiple) ||
+                   multiple == INT64_MIN ||
+                   (uint64_t)(multiple < 0 ? -multiple : multiple) >
+                       frequency_limit ||
+                   simplify(other[0] - integer(multiple) * base_offset) !=
+                       integer(0)){
+                    common_lattice = false;
+                    break;
+                }
+                uint64_t magnitude = (uint64_t)(multiple < 0 ?
+                    -multiple : multiple);
+                largest = std::max(largest, magnitude);
+                candidate_frequencies.push_back(multiple);
+            }
+            if(common_lattice && largest < best_frequency){
+                base_index = candidate;
+                best_frequency = largest;
+                frequencies = std::move(candidate_frequencies);
+            }
+        }
+        if(base_index == SIZE_MAX || best_frequency == 0) return false;
+        exact_expr angle = trigonometric_nodes[base_index].operand(0);
+        exact_expr slope = angle_polynomials[base_index][1];
 
         exact_expr parameter;
         for(size_t suffix = 0;; ++suffix){
@@ -19312,38 +19351,79 @@ risch_result exact_context::integrate_elementary_impl(
                !integration_depends_on(expression, parameter)) break;
         }
         exact_expr parameter_squared = power(parameter, integer(2));
-        exact_expr one_plus_t_squared = integer(1) + parameter_squared;
-        exact_expr one_minus_t_squared = integer(1) - parameter_squared;
-        exact_expr sine_replacement = hyperbolic
-            ? integer(2) * parameter / one_minus_t_squared
-            : integer(2) * parameter / one_plus_t_squared;
-        exact_expr cosine_replacement = hyperbolic
-            ? one_plus_t_squared / one_minus_t_squared
-            : one_minus_t_squared / one_plus_t_squared;
-        exact_expr tangent_replacement = hyperbolic
-            ? integer(2) * parameter / one_plus_t_squared
-            : integer(2) * parameter / one_minus_t_squared;
+        integration_expr_poly unit{integer(1)};
+        integration_expr_poly two_t{integer(0), integer(2)};
+        integration_expr_poly cosine_one = hyperbolic
+            ? integration_expr_poly{integer(1), integer(0), integer(1)}
+            : integration_expr_poly{integer(1), integer(0), integer(-1)};
+        integration_expr_poly sine_one = two_t;
+        integration_expr_poly denominator_one = hyperbolic
+            ? integration_expr_poly{integer(1), integer(0), integer(-1)}
+            : integration_expr_poly{integer(1), integer(0), integer(1)};
+        integration_expr_poly sine_n{integer(0)};
+        integration_expr_poly cosine_n = unit;
+        integration_expr_poly denominator_n = unit;
+        std::vector<integration_expr_poly> sine_numerators(
+            (size_t)best_frequency + 1), cosine_numerators(
+            (size_t)best_frequency + 1), denominators(
+            (size_t)best_frequency + 1);
+        sine_numerators[0] = {integer(0)};
+        cosine_numerators[0] = {integer(1)};
+        denominators[0] = {integer(1)};
+        for(size_t n = 1; n <= best_frequency; ++n){
+            integration_expr_poly next_sine = integration_expr_add(*this,
+                integration_expr_mul(*this, sine_n, cosine_one),
+                integration_expr_mul(*this, cosine_n, sine_one));
+            integration_expr_poly cosine_product = integration_expr_mul(
+                *this, cosine_n, cosine_one);
+            integration_expr_poly sine_product = integration_expr_mul(
+                *this, sine_n, sine_one);
+            if(!hyperbolic)
+                for(exact_expr &coefficient : sine_product)
+                    coefficient = -coefficient;
+            integration_expr_poly next_cosine = integration_expr_add(*this,
+                cosine_product, sine_product);
+            integration_expr_poly next_denominator = integration_expr_mul(
+                *this, denominator_n, denominator_one);
+            sine_n = std::move(next_sine);
+            cosine_n = std::move(next_cosine);
+            denominator_n = std::move(next_denominator);
+            sine_numerators[n] = sine_n;
+            cosine_numerators[n] = cosine_n;
+            denominators[n] = denominator_n;
+        }
         exact_expr transformed = expression;
-        for(const exact_expr &trigonometric : trigonometric_nodes){
+        for(size_t i = 0; i < trigonometric_nodes.size(); ++i){
+            const exact_expr &trigonometric = trigonometric_nodes[i];
+            int64_t frequency = frequencies[i];
+            size_t magnitude = (size_t)(frequency < 0 ?
+                -frequency : frequency);
+            exact_expr sine_numerator = integration_expr_poly_expr(*this,
+                sine_numerators[magnitude], parameter);
+            exact_expr cosine_numerator = integration_expr_poly_expr(*this,
+                cosine_numerators[magnitude], parameter);
+            if(frequency < 0) sine_numerator = -sine_numerator;
+            exact_expr denominator = integration_expr_poly_expr(*this,
+                denominators[magnitude], parameter);
             exact_expr replacement;
             switch(trigonometric.operation()){
             case exact_opcode::sine:
             case exact_opcode::hyperbolic_sine:
-                replacement = sine_replacement; break;
+                replacement = sine_numerator / denominator; break;
             case exact_opcode::cosine:
             case exact_opcode::hyperbolic_cosine:
-                replacement = cosine_replacement; break;
+                replacement = cosine_numerator / denominator; break;
             case exact_opcode::tangent:
             case exact_opcode::hyperbolic_tangent:
-                replacement = tangent_replacement; break;
+                replacement = sine_numerator / cosine_numerator; break;
             default: return false;
             }
             transformed = substitute(transformed, trigonometric, replacement);
         }
 
-        exact_expr slope = angle_polynomial[1];
         exact_expr dx_dt_without_slope = integer(2) /
-            (hyperbolic ? one_minus_t_squared : one_plus_t_squared);
+            (hyperbolic ? integer(1) - parameter_squared
+                        : integer(1) + parameter_squared);
         // Integrate the slope-free rational part, then apply the chain factor
         // once. This keeps symbolic slopes out of the rational coefficient field.
         exact_expr transformed_integrand = simplify(

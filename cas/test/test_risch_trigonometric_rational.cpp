@@ -55,6 +55,40 @@ int main(){
     assert(rational_trig_result.status == risch_status::elementary);
     assert(rational_trig_result.remainder == context.integer(0));
 
+    for(const exact_expr &mixed_frequency : {
+            context.integer(1) / (context.integer(3) + context.cosine(x) +
+                context.sine(context.integer(2) * x)),
+            context.integer(1) / (context.integer(3) +
+                context.sine(context.integer(2) * x) + context.cosine(x)),
+            context.integer(1) / (context.integer(5) +
+                context.sine(context.integer(3) * x) +
+                context.cosine(context.integer(2) * x))}){
+        risch_result mixed_result = context.integrate_elementary(
+            mixed_frequency, x);
+        if(mixed_result.status != risch_status::elementary ||
+           mixed_result.remainder != context.integer(0)){
+            std::fprintf(stderr, "mixed-frequency trig RDE failed: %s\n",
+                mixed_result.diagnostic.c_str());
+            std::fprintf(stderr, "  input=%s status=%d primitive=%s remainder=%s\n",
+                mixed_frequency.to_string().c_str(), (int)mixed_result.status,
+                mixed_result.elementary_part.to_string().c_str(),
+                mixed_result.remainder.to_string().c_str());
+            return 1;
+        }
+    }
+
+    exact_expr symbolic_frequency = context.symbol("trig_frequency");
+    exact_expr symbolic_mixed_frequency = context.integer(1) /
+        (context.integer(3) + context.cosine(symbolic_frequency * x) +
+         context.sine(context.integer(2) * symbolic_frequency * x));
+    risch_result symbolic_mixed_result = context.integrate_elementary(
+        symbolic_mixed_frequency, x);
+    assert(symbolic_mixed_result.status == risch_status::elementary);
+    assert(symbolic_mixed_result.remainder == context.integer(0));
+    assert(std::find(symbolic_mixed_result.conditions.begin(),
+        symbolic_mixed_result.conditions.end(), symbolic_frequency) !=
+        symbolic_mixed_result.conditions.end());
+
     exact_expr tangent_result_input = context.tangent(x);
     risch_result tangent_result = context.integrate_elementary(
         tangent_result_input, x);

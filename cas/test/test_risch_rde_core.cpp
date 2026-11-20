@@ -48,6 +48,38 @@ int main(){
         std::cerr << "a constructive polynomial RDE case failed\n";
         return 1;
     }
+    exact_expr degree_five_cofactor = context.power(x, context.integer(5)) +
+        context.integer(3) * context.power(x, context.integer(2)) -
+        context.integer(7);
+    exact_expr degree_five_input = degree_five_cofactor * exp_x;
+    exact_expr degree_five_primitive = exp_x * (
+        context.power(x, context.integer(5)) -
+        context.integer(5) * context.power(x, context.integer(4)) +
+        context.integer(20) * context.power(x, context.integer(3)) -
+        context.integer(57) * context.power(x, context.integer(2)) +
+        context.integer(114) * x - context.integer(121));
+    risch_result degree_five_result = context.integrate_elementary(
+        degree_five_input, x);
+    if(degree_five_result.status != risch_status::elementary ||
+       degree_five_result.remainder != context.integer(0) ||
+       context.simplify(degree_five_result.elementary_part -
+           degree_five_primitive) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           degree_five_result.elementary_part, x) - degree_five_input) !=
+           context.integer(0)){
+        std::cerr << "degree-five exponential polynomial RDE failed: "
+                  << degree_five_result.diagnostic << " primitive="
+                  << degree_five_result.elementary_part.to_string() << '\n';
+        return 1;
+    }
+    exact_expr degree_five_public = context.integrate(degree_five_input, x);
+    if(degree_five_public.operation() == exact_opcode::integral ||
+       context.simplify(context.differentiate(degree_five_public, x) -
+           degree_five_input) != context.integer(0)){
+        std::cerr << "public integration missed degree-five exponential "
+                     "polynomial\n";
+        return 1;
+    }
     auto verify_negative_rate = [&](const exact_expr &integrand,
                                     const exact_expr &normalized_integrand,
                                     const exact_expr &expected,
@@ -914,6 +946,36 @@ int main(){
         std::cerr << "expected the complete RDE bound to prove exp(x^2) "
                      "non-elementary, got: "
                   << no_rational_solution.diagnostic << '\n';
+        return 1;
+    }
+
+    exact_expr exp_x3 = context.exponential(context.power(x,
+        context.integer(3)));
+    exact_expr x_times_exp_x3 = x * exp_x3;
+    risch_result cubic_rate_non_elementary = context.integrate_elementary(
+        x_times_exp_x3, x);
+    if(cubic_rate_non_elementary.status !=
+           risch_status::proven_nonelementary ||
+       cubic_rate_non_elementary.remainder != x_times_exp_x3){
+        std::cerr << "expected the polynomial RDE bound to prove "
+                     "x*exp(x^3) non-elementary, got: "
+                  << cubic_rate_non_elementary.diagnostic << " status="
+                  << (int)cubic_rate_non_elementary.status << '\n';
+        return 1;
+    }
+    exact_expr cubic_rate_chain_input = context.integer(3) *
+        context.power(x, context.integer(2)) * exp_x3;
+    risch_result cubic_rate_chain_result = context.integrate_elementary(
+        cubic_rate_chain_input, x);
+    if(cubic_rate_chain_result.status != risch_status::elementary ||
+       cubic_rate_chain_result.remainder != context.integer(0) ||
+       context.simplify(cubic_rate_chain_result.elementary_part - exp_x3) !=
+           context.integer(0) ||
+       context.simplify(context.differentiate(
+           cubic_rate_chain_result.elementary_part, x) -
+           cubic_rate_chain_input) != context.integer(0)){
+        std::cerr << "cubic-rate chain RDE failed: "
+                  << cubic_rate_chain_result.diagnostic << '\n';
         return 1;
     }
 
