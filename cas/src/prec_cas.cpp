@@ -19301,12 +19301,12 @@ risch_result exact_context::integrate_elementary_impl(
                 return false;
         }
 
-        // Pick a base angle for which every other affine angle is an exact
-        // integer multiple. Trying each observed angle handles either input
-        // order, e.g. sin(2*x)+cos(x).
+        // Pick a base slope whose rational frequency lattice is smallest.
+        // Each observed angle may retain its own exact constant phase.
         size_t base_index = SIZE_MAX;
         std::vector<int64_t> frequencies;
         uint64_t best_frequency = UINT64_MAX;
+        uint64_t best_lattice = 1;
         const size_t frequency_limit = std::min<size_t>(
             options.maximum_degree, 64);
         for(size_t candidate = 0; candidate < angle_polynomials.size();
@@ -19316,33 +19316,58 @@ risch_result exact_context::integrate_elementary_impl(
             uint64_t largest = 0;
             bool common_lattice = true;
             const exact_expr &base_slope = angle_polynomials[candidate][1];
-            const exact_expr &base_offset = angle_polynomials[candidate][0];
+            std::vector<precq_t> ratios;
+            ratios.reserve(angle_polynomials.size());
+            precn_t lattice(1);
             for(const auto &other : angle_polynomials){
                 exact_expr ratio = simplify(other[1] / base_slope);
-                int64_t multiple = 0;
-                if(!integration_signed_exponent(ratio, multiple) ||
-                   multiple == INT64_MIN ||
-                   (uint64_t)(multiple < 0 ? -multiple : multiple) >
-                       frequency_limit ||
-                   simplify(other[0] - integer(multiple) * base_offset) !=
-                       integer(0)){
+                if(!ratio.is_value() || ratio.value().is_approximate()){
                     common_lattice = false;
                     break;
                 }
-                uint64_t magnitude = (uint64_t)(multiple < 0 ?
-                    -multiple : multiple);
+                precq_t rational_ratio = ratio.value().rational();
+                const precn_t &denominator = rational_ratio.denominator();
+                if(denominator > precn_t(frequency_limit)){
+                    common_lattice = false;
+                    break;
+                }
+                lattice = (lattice / ::gcd(lattice, denominator)) * denominator;
+                if(lattice > precn_t(frequency_limit)){
+                    common_lattice = false;
+                    break;
+                }
+                ratios.push_back(std::move(rational_ratio));
+            }
+            if(!common_lattice) continue;
+            for(const precq_t &ratio : ratios){
+                precq_t frequency = ratio * precq_t(lattice);
+                if(frequency.denominator() != precn_t(1) ||
+                   frequency.numerator() > precn_t(frequency_limit)){
+                    common_lattice = false;
+                    break;
+                }
+                uint64_t magnitude = frequency.numerator().rsiz
+                    ? frequency.numerator().a[0] : 0;
+                int64_t multiple = (int64_t)magnitude;
+                if(frequency.is_negative()) multiple = -multiple;
                 largest = std::max(largest, magnitude);
                 candidate_frequencies.push_back(multiple);
             }
             if(common_lattice && largest < best_frequency){
                 base_index = candidate;
                 best_frequency = largest;
+                best_lattice = lattice.a[0];
                 frequencies = std::move(candidate_frequencies);
             }
         }
         if(base_index == SIZE_MAX || best_frequency == 0) return false;
-        exact_expr angle = trigonometric_nodes[base_index].operand(0);
-        exact_expr slope = angle_polynomials[base_index][1];
+        // The selected slope divided by the common denominator gives the
+        // primitive angle. Keep angle_polynomials immutable while candidates
+        // are being tested: a failed/later candidate must see the originals.
+        exact_expr lattice_expr = integer((int64_t)best_lattice);
+        exact_expr angle = (angle_polynomials[base_index][0] +
+            angle_polynomials[base_index][1] * variable) / lattice_expr;
+        exact_expr slope = angle_polynomials[base_index][1] / lattice_expr;
 
         exact_expr parameter;
         for(size_t suffix = 0;; ++suffix){
@@ -19405,17 +19430,32 @@ risch_result exact_context::integrate_elementary_impl(
             if(frequency < 0) sine_numerator = -sine_numerator;
             exact_expr denominator = integration_expr_poly_expr(*this,
                 denominators[magnitude], parameter);
+            exact_expr phase = angle_polynomials[i][0] -
+                integer(frequency) *
+                    (angle_polynomials[base_index][0] /
+                     integer((int64_t)best_lattice));
+            if(integration_depends_on(phase, variable) ||
+               !integration_exact_expression_tree(phase)) return false;
+            exact_expr phase_sine = simplify(hyperbolic
+                ? hyperbolic_sine(phase) : sine(phase));
+            exact_expr phase_cosine = simplify(hyperbolic
+                ? hyperbolic_cosine(phase) : cosine(phase));
+            exact_expr shifted_sine = sine_numerator * phase_cosine +
+                cosine_numerator * phase_sine;
+            exact_expr shifted_cosine = cosine_numerator * phase_cosine +
+                (hyperbolic ? integer(1) : integer(-1)) *
+                    sine_numerator * phase_sine;
             exact_expr replacement;
             switch(trigonometric.operation()){
             case exact_opcode::sine:
             case exact_opcode::hyperbolic_sine:
-                replacement = sine_numerator / denominator; break;
+                replacement = shifted_sine / denominator; break;
             case exact_opcode::cosine:
             case exact_opcode::hyperbolic_cosine:
-                replacement = cosine_numerator / denominator; break;
+                replacement = shifted_cosine / denominator; break;
             case exact_opcode::tangent:
             case exact_opcode::hyperbolic_tangent:
-                replacement = sine_numerator / cosine_numerator; break;
+                replacement = shifted_sine / shifted_cosine; break;
             default: return false;
             }
             transformed = substitute(transformed, trigonometric, replacement);

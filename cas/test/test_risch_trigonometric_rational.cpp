@@ -77,6 +77,59 @@ int main(){
         }
     }
 
+    // Rationally commensurate slopes share a smaller exact base angle:
+    // x/2, x/3, and x/4 become frequencies 6, 4, and 3 of x/12.
+    exact_expr x_over_two = x / context.integer(2);
+    exact_expr x_over_three = x / context.integer(3);
+    exact_expr x_over_four = x / context.integer(4);
+    exact_expr rationally_commensurate = context.integer(1) /
+        (context.integer(5) + context.cosine(x_over_two) +
+         context.sine(x_over_three) + context.cosine(x_over_four));
+    risch_result rational_lattice_result = context.integrate_elementary(
+        rationally_commensurate, x);
+    if(rational_lattice_result.status != risch_status::elementary ||
+       rational_lattice_result.remainder != context.integer(0)){
+        std::fprintf(stderr, "rational-frequency trig RDE failed: %s\n",
+            rational_lattice_result.diagnostic.c_str());
+        return 1;
+    }
+    exact_expr reversed_rationally_commensurate = context.integer(1) /
+        (context.integer(5) + context.cosine(x_over_four) +
+         context.sine(x_over_three) + context.cosine(x_over_two));
+    risch_result reversed_rational_lattice_result = context.integrate_elementary(
+        reversed_rationally_commensurate, x);
+    assert(reversed_rational_lattice_result.status ==
+        risch_status::elementary);
+    assert(reversed_rational_lattice_result.remainder == context.integer(0));
+
+    exact_expr phase_shifted_rationally_commensurate = context.integer(1) /
+        (context.integer(5) +
+         context.cosine(x_over_two) +
+         context.sine(x_over_three + context.integer(6) * context.pi()) +
+         context.cosine(x_over_four));
+    risch_result phase_shifted_lattice_result = context.integrate_elementary(
+        phase_shifted_rationally_commensurate, x);
+    if(phase_shifted_lattice_result.status != risch_status::elementary ||
+       phase_shifted_lattice_result.remainder != context.integer(0)){
+        std::fprintf(stderr, "phase-shifted rational-frequency RDE failed: %s\n",
+            phase_shifted_lattice_result.diagnostic.c_str());
+        return 1;
+    }
+    exact_expr unsupported_phase = context.integer(1) /
+        (context.integer(3) +
+         context.cosine(x_over_two + context.rational(
+             precq_t(precn_t(1), precn_t(2)))) +
+         context.sine(x_over_three));
+    assert(context.integrate_elementary(unsupported_phase, x).status ==
+        risch_status::unsupported);
+
+    exact_expr irrational_frequency = context.integer(1) /
+        (context.integer(3) + context.cosine(x) +
+         context.sine(context.square_root(context.integer(2)) * x));
+    risch_result irrational_frequency_result = context.integrate_elementary(
+        irrational_frequency, x);
+    assert(irrational_frequency_result.status == risch_status::unsupported);
+
     exact_expr symbolic_frequency = context.symbol("trig_frequency");
     exact_expr symbolic_mixed_frequency = context.integer(1) /
         (context.integer(3) + context.cosine(symbolic_frequency * x) +
