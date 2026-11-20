@@ -102,6 +102,19 @@ int main(){
         risch_status::elementary);
     assert(reversed_rational_lattice_result.remainder == context.integer(0));
 
+    exact_expr negative_frequency_rational = context.integer(1) /
+        (context.integer(5) + context.cosine(-x_over_two) +
+         context.sine(x_over_three) +
+         context.cosine(-x_over_four + context.integer(6) * context.pi()));
+    risch_result negative_frequency_result = context.integrate_elementary(
+        negative_frequency_rational, x);
+    if(negative_frequency_result.status != risch_status::elementary ||
+       negative_frequency_result.remainder != context.integer(0)){
+        std::fprintf(stderr, "negative rational-frequency trig RDE failed: %s\n",
+            negative_frequency_result.diagnostic.c_str());
+        return 1;
+    }
+
     exact_expr phase_shifted_rationally_commensurate = context.integer(1) /
         (context.integer(5) +
          context.cosine(x_over_two) +
@@ -247,9 +260,30 @@ int main(){
         exponential_sine, x);
     assert(exponential_sine_result.status == risch_status::elementary);
     assert(exponential_sine_result.remainder == context.integer(0));
-    assert(context.simplify(context.differentiate(
-        exponential_sine_result.elementary_part, x) - exponential_sine) ==
+    exact_expr exponential_sine_error = context.simplify(context.differentiate(
+        exponential_sine_result.elementary_part, x) - exponential_sine);
+    if(exponential_sine_error != context.integer(0))
+        std::fprintf(stderr, "exp-sine derivative mismatch: %s\nprimitive: %s\n",
+            exponential_sine_error.to_string().c_str(),
+            exponential_sine_result.elementary_part.to_string().c_str());
+    assert(exponential_sine_error == context.integer(0));
+
+    exact_expr quadratic_exponential_hyperbolic = context.power(
+        x, context.integer(2)) * context.exponential(x) *
+        context.hyperbolic_sine(x);
+    risch_result quadratic_exponential_hyperbolic_result =
+        context.integrate_elementary(quadratic_exponential_hyperbolic, x);
+    assert(quadratic_exponential_hyperbolic_result.status ==
+        risch_status::elementary);
+    assert(quadratic_exponential_hyperbolic_result.remainder ==
         context.integer(0));
+    exact_expr quadratic_exponential_hyperbolic_euler =
+        context.power(x, context.integer(2)) *
+        (context.exponential(context.integer(2) * x) - context.integer(1)) /
+        context.integer(2);
+    assert(context.simplify(context.expand(context.differentiate(
+        quadratic_exponential_hyperbolic_result.elementary_part, x) -
+        quadratic_exponential_hyperbolic_euler)) == context.integer(0));
 
     exact_expr exponential_cosine = context.exponential(x) *
         context.cosine(context.integer(2) * x);

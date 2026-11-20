@@ -15728,6 +15728,7 @@ risch_result exact_context::integrate_elementary_impl(
             integration_factor_list(expression, factors);
             exact_expr exponential_factor;
             exact_expr coefficient = integer(1);
+            exact_expr polynomial_cofactor = integer(1);
             int64_t total_power = 0;
             int64_t power_budget = options.maximum_degree >
                 (size_t)std::numeric_limits<int64_t>::max()
@@ -15786,10 +15787,22 @@ risch_result exact_context::integrate_elementary_impl(
                     coefficient = coefficient * factor;
                     continue;
                 }
-                return exact_expr();
+                polynomial_cofactor = polynomial_cofactor * factor;
             }
-            if(!exponential_factor.valid() || angles.empty() ||
-               total_power <= 1)
+            if(!exponential_factor.valid() || angles.empty() || total_power == 0)
+                return exact_expr();
+
+            integration_expr_poly cofactor_polynomial;
+            if(!integration_parse_expr_poly(*this, polynomial_cofactor, variable,
+                    cofactor_polynomial, options.maximum_degree))
+                return exact_expr();
+            integration_expr_trim(*this, cofactor_polynomial);
+            if(options.maximum_degree != SIZE_MAX &&
+               cofactor_polynomial.size() - 1 > options.maximum_degree)
+                return exact_expr();
+            // Preserve the compact sine/cosine antiderivative for the
+            // already-specialized single-trig-factor case below.
+            if(cofactor_polynomial.size() == 1 && total_power == 1)
                 return exact_expr();
 
             exact_expr exponential_argument = exponential_factor.operand(0);
@@ -15876,14 +15889,35 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 rate = simplify(rate);
                 exact_expr exponential_term = exponential(exponent);
-                exact_expr primitive;
-                if(rate == integer(0)) primitive = variable * exponential_term;
-                else{
+                integration_expr_poly rhs(cofactor_polynomial.size(), integer(0));
+                for(size_t i = 0; i < cofactor_polynomial.size(); ++i)
+                    rhs[i] = simplify(coefficient * term.second *
+                                      cofactor_polynomial[i]);
+                integration_expr_trim(*this, rhs);
+
+                integration_expr_poly primitive_polynomial;
+                if(rate == integer(0)){
+                    // Resonance lowers the RDE to Q' = P.
+                    primitive_polynomial.assign(rhs.size() + 1, integer(0));
+                    for(size_t i = 0; i < rhs.size(); ++i)
+                        primitive_polynomial[i + 1] = simplify(
+                            rhs[i] / integer(i + 1));
+                }else{
+                    // Solve Q' + rate*Q = P from the leading coefficient down.
                     add_exponential_trigonometric_condition(rate);
-                    primitive = exponential_term / rate;
+                    primitive_polynomial.assign(rhs.size(), integer(0));
+                    for(size_t i = rhs.size(); i-- > 0;){
+                        exact_expr derivative_coefficient = i + 1 <
+                            primitive_polynomial.size()
+                            ? integer(i + 1) * primitive_polynomial[i + 1]
+                            : integer(0);
+                        primitive_polynomial[i] = simplify(
+                            (rhs[i] - derivative_coefficient) / rate);
+                    }
                 }
-                candidate = candidate + coefficient *
-                    term.second * primitive;
+                candidate = candidate + exponential_term *
+                    integration_expr_poly_expr(*this, primitive_polynomial,
+                                               variable);
                 if(candidate.reachable_node_count() > options.maximum_nodes)
                     return exact_expr();
             }
