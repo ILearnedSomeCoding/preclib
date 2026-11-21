@@ -15799,7 +15799,7 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 polynomial_cofactor = polynomial_cofactor * factor;
             }
-            if(!has_exponential_factor) return exact_expr();
+            if(!has_exponential_factor && angles.empty()) return exact_expr();
 
             integration_expr_poly cofactor_polynomial;
             if(!integration_parse_expr_poly(*this, polynomial_cofactor, variable,
@@ -15822,17 +15822,21 @@ risch_result exact_context::integrate_elementary_impl(
                !integration_parse_expr_poly(*this, exponential_rate, variable,
                    exponential_rate_polynomial, options.maximum_degree))
                 return exact_expr();
-            std::vector<exact_expr> angle_terms, angle_rates;
-            angle_rates.reserve(angles.size());
+            std::vector<exact_expr> angle_terms;
+            std::vector<integration_expr_poly> angle_rate_polynomials;
+            angle_rate_polynomials.reserve(angles.size());
             angle_terms.reserve(angles.size());
             for(const angle_power &entry : angles){
                 exact_expr term = entry.circular ? i() * entry.angle : entry.angle;
                 exact_expr rate = simplify(differentiate(term, variable));
-                if(integration_depends_on(rate, variable) ||
-                   !integration_exact_expression_tree(rate))
+                integration_expr_poly rate_polynomial;
+                if(!integration_exact_expression_tree(rate) ||
+                   !integration_parse_expr_poly(*this, rate, variable,
+                       rate_polynomial, options.maximum_degree))
                     return exact_expr();
                 angle_terms.push_back(std::move(term));
-                angle_rates.push_back(std::move(rate));
+                integration_expr_trim(*this, rate_polynomial);
+                angle_rate_polynomials.push_back(std::move(rate_polynomial));
             }
 
             using frequency_vector = std::vector<int64_t>;
@@ -15897,10 +15901,14 @@ risch_result exact_context::integrate_elementary_impl(
                     if(term.first[i] == 0) continue;
                     exact_expr multiple = integer(term.first[i]);
                     exponent = exponent + multiple * angle_terms[i];
-                    if(rate_polynomial.empty())
-                        rate_polynomial.push_back(integer(0));
-                    rate_polynomial[0] = simplify(rate_polynomial[0] +
-                        multiple * angle_rates[i]);
+                    const integration_expr_poly &angle_rate =
+                        angle_rate_polynomials[i];
+                    if(rate_polynomial.size() < angle_rate.size())
+                        rate_polynomial.resize(angle_rate.size(), integer(0));
+                    for(size_t degree = 0; degree < angle_rate.size(); ++degree)
+                        rate_polynomial[degree] = simplify(
+                            rate_polynomial[degree] +
+                            multiple * angle_rate[degree]);
                 }
                 integration_expr_trim(*this, rate_polynomial);
                 exact_expr exponential_term = exponential(exponent);
