@@ -15789,7 +15789,7 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 polynomial_cofactor = polynomial_cofactor * factor;
             }
-            if(!exponential_factor.valid() || angles.empty() || total_power == 0)
+            if(!exponential_factor.valid())
                 return exact_expr();
 
             integration_expr_poly cofactor_polynomial;
@@ -15808,8 +15808,10 @@ risch_result exact_context::integrate_elementary_impl(
             exact_expr exponential_argument = exponential_factor.operand(0);
             exact_expr exponential_rate = simplify(differentiate(
                 exponential_argument, variable));
-            if(integration_depends_on(exponential_rate, variable) ||
-               !integration_exact_expression_tree(exponential_rate))
+            integration_expr_poly exponential_rate_polynomial;
+            if(!integration_exact_expression_tree(exponential_rate) ||
+               !integration_parse_expr_poly(*this, exponential_rate, variable,
+                   exponential_rate_polynomial, options.maximum_degree))
                 return exact_expr();
             std::vector<exact_expr> angle_terms, angle_rates;
             angle_rates.reserve(angles.size());
@@ -15880,14 +15882,18 @@ risch_result exact_context::integrate_elementary_impl(
             for(const auto &term : coefficients){
                 if(simplify(term.second) == integer(0)) continue;
                 exact_expr exponent = exponential_argument;
-                exact_expr rate = exponential_rate;
+                integration_expr_poly rate_polynomial =
+                    exponential_rate_polynomial;
                 for(size_t i = 0; i < term.first.size(); ++i){
                     if(term.first[i] == 0) continue;
                     exact_expr multiple = integer(term.first[i]);
                     exponent = exponent + multiple * angle_terms[i];
-                    rate = rate + multiple * angle_rates[i];
+                    if(rate_polynomial.empty())
+                        rate_polynomial.push_back(integer(0));
+                    rate_polynomial[0] = simplify(rate_polynomial[0] +
+                        multiple * angle_rates[i]);
                 }
-                rate = simplify(rate);
+                integration_expr_trim(*this, rate_polynomial);
                 exact_expr exponential_term = exponential(exponent);
                 integration_expr_poly rhs(cofactor_polynomial.size(), integer(0));
                 for(size_t i = 0; i < cofactor_polynomial.size(); ++i)
@@ -15896,14 +15902,16 @@ risch_result exact_context::integrate_elementary_impl(
                 integration_expr_trim(*this, rhs);
 
                 integration_expr_poly primitive_polynomial;
-                if(rate == integer(0)){
+                if(rate_polynomial.size() == 1 &&
+                   rate_polynomial[0] == integer(0)){
                     // Resonance lowers the RDE to Q' = P.
                     primitive_polynomial.assign(rhs.size() + 1, integer(0));
                     for(size_t i = 0; i < rhs.size(); ++i)
                         primitive_polynomial[i + 1] = simplify(
                             rhs[i] / integer(i + 1));
-                }else{
-                    // Solve Q' + rate*Q = P from the leading coefficient down.
+                }else if(rate_polynomial.size() == 1){
+                    // Constant-rate RDE: solve Q' + rate*Q = P downward.
+                    exact_expr rate = rate_polynomial[0];
                     add_exponential_trigonometric_condition(rate);
                     primitive_polynomial.assign(rhs.size(), integer(0));
                     for(size_t i = rhs.size(); i-- > 0;){
@@ -15914,6 +15922,62 @@ risch_result exact_context::integrate_elementary_impl(
                         primitive_polynomial[i] = simplify(
                             (rhs[i] - derivative_coefficient) / rate);
                     }
+                }else{
+                    // A nonconstant polynomial rate gives a finite polynomial
+                    // solution only when deg(P) >= deg(rate). Solve its
+                    // uniquely determined coefficients from the top down.
+                    const size_t rate_degree = rate_polynomial.size() - 1;
+                    const size_t rhs_degree = rhs.size() - 1;
+                    if(rhs_degree < rate_degree) return exact_expr();
+                    const size_t primitive_degree = rhs_degree - rate_degree;
+                    primitive_polynomial.assign(primitive_degree + 1,
+                                                integer(0));
+                    add_exponential_trigonometric_condition(
+                        rate_polynomial.back());
+                    bool rde_verified = true;
+                    for(size_t degree = rhs_degree + 1; degree-- > 0;){
+                        exact_expr known = degree + 1 <
+                                primitive_polynomial.size()
+                            ? integer(degree + 1) *
+                                  primitive_polynomial[degree + 1]
+                            : integer(0);
+                        size_t lower_rate_terms = degree < rate_degree
+                            ? degree : rate_degree - 1;
+                        for(size_t j = 0; j <= lower_rate_terms; ++j){
+                            if(degree < j || degree - j >=
+                                    primitive_polynomial.size()) continue;
+                            known = known + rate_polynomial[j] *
+                                primitive_polynomial[degree - j];
+                        }
+                        known = simplify(known);
+                        if(degree >= rate_degree){
+                            size_t coefficient_index = degree - rate_degree;
+                            primitive_polynomial[coefficient_index] = simplify(
+                                (rhs[degree] - known) /
+                                rate_polynomial[rate_degree]);
+                        }else if(!integration_expr_zero(*this,
+                                      known - rhs[degree])){
+                            rde_verified = false;
+                            break;
+                        }
+                    }
+                    if(!rde_verified) return exact_expr();
+
+                    integration_expr_poly reconstructed =
+                        integration_expr_add(*this,
+                            integration_expr_derivative(*this,
+                                primitive_polynomial),
+                            integration_expr_mul(*this, rate_polynomial,
+                                primitive_polynomial));
+                    integration_expr_poly residual = reconstructed;
+                    size_t residual_size = std::max(residual.size(), rhs.size());
+                    residual.resize(residual_size, integer(0));
+                    for(size_t j = 0; j < rhs.size(); ++j)
+                        residual[j] = simplify(residual[j] - rhs[j]);
+                    integration_expr_trim(*this, residual);
+                    if(residual.size() != 1 ||
+                       !integration_expr_zero(*this, residual[0]))
+                        return exact_expr();
                 }
                 candidate = candidate + exponential_term *
                     integration_expr_poly_expr(*this, primitive_polynomial,

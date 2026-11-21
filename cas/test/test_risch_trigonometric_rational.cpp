@@ -48,6 +48,60 @@ int main(){
     assert(sine_result.remainder == context.integer(0));
     assert(sine_result.elementary_part.valid());
 
+    exact_expr exp_x2 = context.exponential(context.power(x,
+        context.integer(2)));
+    exact_expr polynomial_exp_input =
+        (context.integer(1) + context.integer(2) * context.power(x,
+            context.integer(2))) * exp_x2;
+    risch_result polynomial_exp_result = context.integrate_elementary(
+        polynomial_exp_input, x);
+    assert(polynomial_exp_result.status == risch_status::elementary);
+    assert(polynomial_exp_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        polynomial_exp_result.elementary_part, x) - polynomial_exp_input) ==
+        context.integer(0));
+
+    exact_expr polynomial_hyperbolic_input =
+        (context.integer(8) * context.power(x, context.integer(2)) +
+         context.integer(2)) * exp_x2 * context.hyperbolic_sine(x);
+    risch_result polynomial_hyperbolic_result = context.integrate_elementary(
+        polynomial_hyperbolic_input, x);
+    if(polynomial_hyperbolic_result.status != risch_status::elementary ||
+       polynomial_hyperbolic_result.remainder != context.integer(0)){
+        std::fprintf(stderr, "polynomial-rate hyperbolic RDE failed: %s\n",
+            polynomial_hyperbolic_result.diagnostic.c_str());
+        return 1;
+    }
+    exact_expr expected_positive_mode = context.exponential(
+        context.power(x, context.integer(2)) + x);
+    exact_expr expected_negative_mode = context.exponential(
+        context.power(x, context.integer(2)) - x);
+    exact_expr expected_mode_primitive =
+        (context.integer(2) * x - context.integer(1)) *
+            expected_positive_mode -
+        (context.integer(2) * x + context.integer(1)) *
+            expected_negative_mode;
+    exact_expr expected_mode_input =
+        (context.integer(4) * context.power(x, context.integer(2)) +
+         context.integer(1)) *
+        (expected_positive_mode - expected_negative_mode);
+    if(context.simplify(polynomial_hyperbolic_result.elementary_part -
+            expected_mode_primitive) != context.integer(0) ||
+       context.simplify(context.differentiate(
+            polynomial_hyperbolic_result.elementary_part, x) -
+            expected_mode_input) != context.integer(0)){
+        std::fprintf(stderr, "polynomial-rate hyperbolic mode identity failed\n  got=%s\n  derivative error=%s\n",
+            polynomial_hyperbolic_result.elementary_part.to_string().c_str(),
+            context.simplify(context.differentiate(
+                polynomial_hyperbolic_result.elementary_part, x) -
+                expected_mode_input).to_string().c_str());
+        return 1;
+    }
+    exact_expr no_polynomial_mode_solution = exp_x2 *
+        context.hyperbolic_sine(x);
+    assert(context.integrate_elementary(no_polynomial_mode_solution, x).status !=
+        risch_status::elementary);
+
     exact_expr rational_trig = sine_x /
         (context.integer(2) + context.cosine(x));
     risch_result rational_trig_result = context.integrate_elementary(
