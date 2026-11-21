@@ -1327,6 +1327,30 @@ int main(){
                   << '\n';
         return 1;
     }
+    exact_expr nested_log_chain = context.natural_logarithm(
+        context.natural_logarithm(x));
+    exact_expr formal_nested_log_derivative = context.formal_derivative(
+        nested_log_chain, x);
+    exact_expr formal_nested_log_input = formal_nested_log_derivative /
+        (context.integer(1) + nested_log_chain);
+    risch_result formal_nested_log_result = context.integrate_elementary(
+        formal_nested_log_input, x);
+    exact_expr evaluated_nested_log_input =
+        context.differentiate(nested_log_chain, x) /
+        (context.integer(1) + nested_log_chain);
+    exact_expr formal_nested_log_error = context.simplify(context.expand(
+        context.differentiate(formal_nested_log_result.elementary_part, x) -
+        evaluated_nested_log_input));
+    if(formal_nested_log_result.status != risch_status::elementary ||
+       formal_nested_log_result.remainder != context.integer(0) ||
+       formal_nested_log_error != context.integer(0)){
+        std::cerr << "formal derivative chain substitution failed: "
+                  << formal_nested_log_result.diagnostic << " primitive="
+                  << formal_nested_log_result.elementary_part.to_string()
+                  << " derivative error="
+                  << formal_nested_log_error.to_string() << '\n';
+        return 1;
+    }
     exact_expr rational_logarithmic_chain = context.integer(1) / x /
         (context.integer(1) + context.power(logarithmic_chain_parameter,
                                              context.integer(2)));
