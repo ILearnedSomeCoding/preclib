@@ -2942,7 +2942,9 @@ static exact_expr integration_normalize_e_powers(
 
 static exact_expr integration_evaluate_formal_derivatives(
         exact_context &context, const exact_expr &expression,
-        const exact_expr &variable){
+        const exact_expr &variable, size_t node_budget,
+        bool &resource_limited){
+    resource_limited = false;
     std::vector<exact_expr> derivatives;
     std::unordered_set<uint32_t> visited;
     auto collect = [&](auto &&self, const exact_expr &part) -> void{
@@ -2955,26 +2957,50 @@ static exact_expr integration_evaluate_formal_derivatives(
     };
     collect(collect, expression);
     if(derivatives.empty()) return expression;
+    if(node_budget == 0 || expression.reachable_node_count() > node_budget){
+        resource_limited = true;
+        return expression;
+    }
 
     exact_expr normalized = expression;
-    for(const exact_expr &formal : derivatives){
-        exact_expr evaluated = context.differentiate(formal.operand(0), variable);
-        if(evaluated == formal) continue;
-        bool still_formal = false;
-        std::unordered_set<uint32_t> checked;
-        auto contains_derivative = [&](auto &&self,
-                const exact_expr &part) -> void{
-            if(still_formal || !checked.insert(part.id()).second) return;
-            if(part.operation() == exact_opcode::derivative){
-                still_formal = true;
-                return;
+    for(;;){
+        derivatives.clear();
+        visited.clear();
+        collect(collect, normalized);
+        bool changed = false;
+        for(const exact_expr &formal : derivatives){
+            exact_expr evaluated = context.differentiate(
+                formal.operand(0), variable);
+            if(evaluated == formal) continue;
+            if(evaluated.reachable_node_count() > node_budget){
+                resource_limited = true;
+                return expression;
             }
-            for(size_t i = 0; i < part.operand_count(); ++i)
-                self(self, part.operand(i));
-        };
-        contains_derivative(contains_derivative, evaluated);
-        if(!still_formal)
-            normalized = context.substitute(normalized, formal, evaluated);
+            bool still_formal = false;
+            std::unordered_set<uint32_t> checked;
+            auto contains_derivative = [&](auto &&self,
+                    const exact_expr &part) -> void{
+                if(still_formal || !checked.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::derivative){
+                    still_formal = true;
+                    return;
+                }
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            contains_derivative(contains_derivative, evaluated);
+            if(still_formal) continue;
+            exact_expr next = context.substitute(normalized, formal, evaluated);
+            if(next != normalized){
+                if(next.reachable_node_count() > node_budget){
+                    resource_limited = true;
+                    return expression;
+                }
+                normalized = std::move(next);
+                changed = true;
+            }
+        }
+        if(!changed) break;
     }
     return context.simplify(normalized);
 }
@@ -13929,8 +13955,18 @@ static exact_expr integration_symbolic_linear_primitive(
 risch_result exact_context::integrate_elementary(
     const exact_expr &expression, const exact_expr &variable,
     const risch_options &options){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != storage_ || variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "integrate_elementary requires an expression and a symbol in one context");
+    bool derivative_preprocessing_limited = false;
     exact_expr normalized = integration_evaluate_formal_derivatives(
-        *this, expression, variable);
+        *this, expression, variable, options.maximum_nodes,
+        derivative_preprocessing_limited);
+    if(derivative_preprocessing_limited)
+        return {risch_status::resource_limit, integer(0), expression, {},
+                "formal derivative normalization node budget exceeded"};
     std::vector<exact_expr> logarithm_nodes;
     std::unordered_set<uint32_t> logarithm_seen;
     auto collect_logarithm_bases = [&](auto &&self, const exact_expr &part) -> void{

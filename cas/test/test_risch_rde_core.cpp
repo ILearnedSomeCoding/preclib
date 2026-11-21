@@ -1351,6 +1351,53 @@ int main(){
                   << formal_nested_log_error.to_string() << '\n';
         return 1;
     }
+    exact_expr second_formal_nested_log_derivative =
+        context.formal_derivative(formal_nested_log_derivative, x);
+    risch_result second_formal_nested_log_result = context.integrate_elementary(
+        second_formal_nested_log_derivative, x);
+    exact_expr first_nested_log_derivative =
+        context.differentiate(nested_log_chain, x);
+    exact_expr evaluated_second_nested_log_derivative =
+        context.differentiate(first_nested_log_derivative, x);
+    exact_expr second_formal_nested_log_error = context.simplify(
+        context.expand(context.differentiate(
+            second_formal_nested_log_result.elementary_part, x) -
+            evaluated_second_nested_log_derivative));
+    if(second_formal_nested_log_result.status != risch_status::elementary ||
+       second_formal_nested_log_result.remainder != context.integer(0) ||
+       second_formal_nested_log_error != context.integer(0)){
+        std::cerr << "nested formal derivative evaluation failed: "
+                  << second_formal_nested_log_result.diagnostic
+                  << " primitive="
+                  << second_formal_nested_log_result.elementary_part.to_string()
+                  << " derivative error="
+                  << second_formal_nested_log_error.to_string() << '\n';
+        return 1;
+    }
+    risch_options tiny_formal_derivative_budget;
+    tiny_formal_derivative_budget.maximum_nodes = 1;
+    risch_result formal_derivative_budget_result = context.integrate_elementary(
+        formal_nested_log_input, x, tiny_formal_derivative_budget);
+    if(formal_derivative_budget_result.status != risch_status::resource_limit){
+        std::cerr << "formal derivative node budget was not enforced: "
+                  << formal_derivative_budget_result.diagnostic << '\n';
+        return 1;
+    }
+    risch_options expansion_budget;
+    expansion_budget.maximum_nodes =
+        formal_nested_log_derivative.reachable_node_count();
+    risch_result derivative_expansion_budget_result =
+        context.integrate_elementary(formal_nested_log_derivative, x,
+                                     expansion_budget);
+    if(derivative_expansion_budget_result.status !=
+       risch_status::resource_limit ||
+       derivative_expansion_budget_result.diagnostic !=
+           "formal derivative normalization node budget exceeded"){
+        std::cerr << "formal derivative expansion exceeded its node budget "
+                     "without resource_limit: "
+                  << derivative_expansion_budget_result.diagnostic << '\n';
+        return 1;
+    }
     exact_expr rational_logarithmic_chain = context.integer(1) / x /
         (context.integer(1) + context.power(logarithmic_chain_parameter,
                                              context.integer(2)));
