@@ -19593,13 +19593,49 @@ risch_result exact_context::integrate_elementary_impl(
                 risch_result lower = integrate_elementary(transformed_input, parameter, options);
                 if(lower.status != risch_status::elementary ||
                    lower.remainder != integer(0)) continue;
-                // The lower strict identity and f/D(generator) substitution certify the chain rule.
+                exact_expr candidate = substitute(lower.elementary_part,
+                    parameter, generator);
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "logarithmic substitution candidate node budget exceeded";
+                    return true;
+                }
+                exact_expr chain_error = differentiate(candidate, variable) -
+                    expression;
+                if(chain_error.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "logarithmic substitution verification node budget exceeded";
+                    return true;
+                }
+                exact_expr expanded_error = expand(chain_error,
+                    verification_expansion_budget);
+                if(expanded_error.reachable_node_count() >
+                   options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "logarithmic substitution expansion node budget exceeded";
+                    return true;
+                }
+                if(simplify(expanded_error) != integer(0))
+                    continue;
+                std::vector<exact_expr> substituted_conditions;
+                for(const exact_expr &condition : lower.conditions){
+                    exact_expr mapped = substitute(condition, parameter,
+                                                   generator);
+                    if(mapped.reachable_node_count() > options.maximum_nodes){
+                        result.status = risch_status::resource_limit;
+                        result.diagnostic =
+                            "logarithmic substitution condition node budget exceeded";
+                        return true;
+                    }
+                    substituted_conditions.push_back(std::move(mapped));
+                }
                 result.status = risch_status::elementary;
-                result.elementary_part = substitute(lower.elementary_part, parameter, generator);
+                result.elementary_part = std::move(candidate);
                 result.remainder = integer(0);
-                result.conditions.clear();
-                for(const auto &condition : lower.conditions)
-                    result.conditions.push_back(substitute(condition, parameter, generator));
+                result.conditions = std::move(substituted_conditions);
                 result.diagnostic.clear();
                 return true;
             }

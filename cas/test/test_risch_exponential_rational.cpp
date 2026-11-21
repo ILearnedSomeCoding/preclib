@@ -395,6 +395,73 @@ int main(){
     assert(context.simplify(context.differentiate(
         rational_exponential_derivative_result.elementary_part, x) -
         rational_exponential_derivative) == context.integer(0));
+    exact_expr log_exponential_generator = context.natural_logarithm(x);
+    exact_expr reciprocal_log_exponential = context.exponential(
+        context.integer(1) / log_exponential_generator);
+    exact_expr reciprocal_log_primitive = reciprocal_log_exponential /
+        log_exponential_generator;
+    exact_expr reciprocal_log_integrand = reciprocal_log_exponential / x *
+        (-context.integer(1) /
+             context.power(log_exponential_generator, context.integer(2)) -
+         context.integer(1) /
+             context.power(log_exponential_generator, context.integer(3)));
+    risch_result reciprocal_log_result = context.integrate_elementary(
+        reciprocal_log_integrand, x);
+    assert(reciprocal_log_result.status == risch_status::elementary);
+    assert(reciprocal_log_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        reciprocal_log_result.elementary_part, x) -
+        reciprocal_log_integrand, 100000)) == context.integer(0));
+    assert(context.simplify(context.expand(
+        reciprocal_log_result.elementary_part - reciprocal_log_primitive,
+        100000)) == context.integer(0));
+    exact_expr nested_log_generator = context.natural_logarithm(
+        log_exponential_generator);
+    exact_expr nested_log_exponential = context.exponential(
+        context.integer(1) / nested_log_generator);
+    exact_expr nested_log_primitive = nested_log_exponential /
+        nested_log_generator;
+    exact_expr nested_log_integrand = nested_log_exponential /
+        (x * log_exponential_generator) *
+        (-context.integer(1) /
+             context.power(nested_log_generator, context.integer(2)) -
+         context.integer(1) /
+             context.power(nested_log_generator, context.integer(3)));
+    risch_result nested_log_result = context.integrate_elementary(
+        nested_log_integrand, x);
+    assert(nested_log_result.status == risch_status::elementary);
+    assert(nested_log_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        nested_log_result.elementary_part, x) - nested_log_integrand,
+        100000)) == context.integer(0));
+    assert(context.simplify(context.expand(nested_log_result.elementary_part -
+        nested_log_primitive, 100000)) == context.integer(0));
+    exact_expr nonlinear_log_argument = context.power(x,
+        context.integer(2)) + context.integer(1);
+    exact_expr nonlinear_log_generator = context.natural_logarithm(
+        nonlinear_log_argument);
+    exact_expr nonlinear_log_exponential = context.exponential(
+        context.integer(1) / nonlinear_log_generator);
+    exact_expr nonlinear_log_primitive = nonlinear_log_exponential /
+        nonlinear_log_generator;
+    exact_expr nonlinear_log_rate = context.integer(2) * x /
+        nonlinear_log_argument;
+    exact_expr nonlinear_log_integrand = nonlinear_log_exponential *
+        nonlinear_log_rate *
+        (-context.integer(1) /
+             context.power(nonlinear_log_generator, context.integer(2)) -
+         context.integer(1) /
+             context.power(nonlinear_log_generator, context.integer(3)));
+    risch_result nonlinear_log_result = context.integrate_elementary(
+        nonlinear_log_integrand, x);
+    assert(nonlinear_log_result.status == risch_status::elementary);
+    assert(nonlinear_log_result.remainder == context.integer(0));
+    assert(context.simplify(context.expand(context.differentiate(
+        nonlinear_log_result.elementary_part, x) - nonlinear_log_integrand,
+        100000)) == context.integer(0));
+    assert(context.simplify(context.expand(
+        nonlinear_log_result.elementary_part - nonlinear_log_primitive,
+        100000)) == context.integer(0));
     exact_expr quadratic_exponential_derivative =
         context.integer(2) * x * quadratic_exponential;
     risch_result quadratic_exponential_derivative_result =
