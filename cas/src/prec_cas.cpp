@@ -15560,6 +15560,7 @@ risch_result exact_context::integrate_elementary_impl(
         result.diagnostic.clear();
         return true;
     };
+    bool exponential_trig_rational_budget_exceeded = false;
     auto try_verified_elementary = [&]() -> bool{
         auto verify_candidate = [&](exact_expr candidate) -> bool{
         if(!candidate.valid() ||
@@ -15801,17 +15802,28 @@ risch_result exact_context::integrate_elementary_impl(
             }
             if(!has_exponential_factor && angles.empty()) return exact_expr();
 
-            integration_expr_poly cofactor_polynomial;
-            if(!integration_parse_expr_poly(*this, polynomial_cofactor, variable,
-                    cofactor_polynomial, options.maximum_degree))
+            integration_expr_poly cofactor_numerator, cofactor_denominator;
+            if(!integration_parse_expr_rational(*this, polynomial_cofactor,
+                    variable, cofactor_numerator, cofactor_denominator,
+                    options.maximum_degree))
                 return exact_expr();
-            integration_expr_trim(*this, cofactor_polynomial);
-            if(options.maximum_degree != SIZE_MAX &&
-               cofactor_polynomial.size() - 1 > options.maximum_degree)
+            integration_expr_trim(*this, cofactor_numerator);
+            integration_expr_trim(*this, cofactor_denominator);
+            if(cofactor_numerator.empty() || cofactor_denominator.empty() ||
+               (cofactor_denominator.size() == 1 &&
+                integration_expr_zero(*this, cofactor_denominator[0])) ||
+               options.maximum_degree != SIZE_MAX &&
+                   (cofactor_numerator.size() - 1 > options.maximum_degree ||
+                    cofactor_denominator.size() - 1 > options.maximum_degree))
                 return exact_expr();
+            bool cofactor_is_polynomial = cofactor_denominator.size() == 1 &&
+                cofactor_denominator[0] == integer(1);
+            integration_expr_poly cofactor_polynomial = cofactor_is_polynomial
+                ? cofactor_numerator : integration_expr_poly();
             // Preserve the compact sine/cosine antiderivative for the
             // already-specialized single-trig-factor case below.
-            if(cofactor_polynomial.size() == 1 && total_power == 1)
+            if(cofactor_is_polynomial && cofactor_polynomial.size() == 1 &&
+               total_power == 1)
                 return exact_expr();
 
             exponential_argument = simplify(exponential_argument);
@@ -15912,6 +15924,33 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 integration_expr_trim(*this, rate_polynomial);
                 exact_expr exponential_term = exponential(exponent);
+                if(!cofactor_is_polynomial){
+                    exact_expr rhs = coefficient * term.second *
+                        integration_expr_poly_expr(*this,
+                            cofactor_numerator, variable) /
+                        integration_expr_poly_expr(*this,
+                            cofactor_denominator, variable);
+                    std::vector<exact_expr> mode_conditions;
+                    exact_expr mode_reduction, mode_remainder;
+                    bool mode_resource_limited = false;
+                    exact_expr mode_candidate =
+                        integration_hyperexponential_rational(*this, rhs,
+                            exponent, variable, true, options,
+                            &mode_resource_limited, &mode_conditions,
+                            &mode_reduction, &mode_remainder, true);
+                    if(mode_resource_limited)
+                        exponential_trig_rational_budget_exceeded = true;
+                    if(!mode_candidate.valid() || !mode_reduction.valid() ||
+                       !mode_remainder.valid() ||
+                       simplify(mode_remainder) != integer(0))
+                        return exact_expr();
+                    candidate = candidate + mode_reduction;
+                    for(const exact_expr &condition : mode_conditions)
+                        add_exponential_trigonometric_condition(condition);
+                    if(candidate.reachable_node_count() > options.maximum_nodes)
+                        return exact_expr();
+                    continue;
+                }
                 integration_expr_poly rhs(cofactor_polynomial.size(), integer(0));
                 for(size_t i = 0; i < cofactor_polynomial.size(); ++i)
                     rhs[i] = simplify(coefficient * term.second *
@@ -24354,6 +24393,12 @@ risch_result exact_context::integrate_elementary_impl(
             if(symbolic_resource_limited){
                 result.status = risch_status::resource_limit;
                 result.diagnostic = "symbolic rational integration resource budget exceeded";
+                return result;
+            }
+            if(exponential_trig_rational_budget_exceeded){
+                result.status = risch_status::resource_limit;
+                result.diagnostic =
+                    "exponential-trigonometric rational RDE budget exceeded";
                 return result;
             }
             result.diagnostic = "unsupported transcendental or algebraic extension";
