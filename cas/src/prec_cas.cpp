@@ -14342,6 +14342,58 @@ risch_result exact_context::integrate_elementary_impl(
     degree_budget = std::min(degree_budget, (size_t)INT64_MAX);
     const size_t over_budget_degree = degree_budget + 1;
 
+    // A pure exponential of a rational function with a finite pole is
+    // non-elementary. At a pole alpha of g of order m >= 1, g' has order
+    // -(m + 1). For a nonzero rational R of local order k, g'R has order
+    // k - m - 1, strictly below the lower bound k - 1 for ord(R'). Hence
+    // R' + g'R cannot equal 1. The hyperexponential Liouville criterion
+    // reduces an elementary primitive of exp(g) to this rational RDE. The
+    // proof holds over the algebraic closure, so irreducible denominators
+    // are covered without factoring them.
+    exact_expr finite_pole_exponential;
+    exact_expr finite_pole_scalar = integer(1);
+    if(expression.operation() == exact_opcode::exponential){
+        finite_pole_exponential = expression;
+    }else if(expression.operation() == exact_opcode::multiply){
+        bool scalar_product = true;
+        for(size_t i = 0; i < expression.operand_count(); ++i){
+            exact_expr factor = expression.operand(i);
+            if(factor.operation() == exact_opcode::exponential &&
+               !finite_pole_exponential.valid()){
+                finite_pole_exponential = factor;
+            }else if(factor.is_value() &&
+                     !factor.value().is_approximate()){
+                finite_pole_scalar = finite_pole_scalar * factor;
+            }else{
+                scalar_product = false;
+                break;
+            }
+        }
+        if(!scalar_product) finite_pole_exponential = exact_expr();
+    }
+    bool known_nonzero_scalar = finite_pole_scalar.is_value() &&
+        !finite_pole_scalar.value().is_approximate() &&
+        (finite_pole_scalar.value().is_integer() ||
+         finite_pole_scalar.value().is_rational()) &&
+        !finite_pole_scalar.value().is_zero();
+    if(finite_pole_exponential.valid() && known_nonzero_scalar &&
+       integration_exact_expression_tree(expression)){
+        integration_poly exponent_numerator, exponent_denominator;
+        if(integration_parse_rational(finite_pole_exponential.operand(0), variable,
+                exponent_numerator, exponent_denominator, degree_budget,
+                degree_budget) &&
+           integration_normalize_rational(exponent_numerator,
+                                          exponent_denominator) &&
+           exponent_denominator.size() > 1){
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic =
+                "rational exponent has a finite pole; its hyperexponential RDE has no rational solution";
+            return result;
+        }
+    }
+
     // Recognize the exact product rule before treating separate exponentials
     // as independent tower generators: D(prod(exp(g_i))) is
     // sum(D(g_i))*prod(exp(g_i)).

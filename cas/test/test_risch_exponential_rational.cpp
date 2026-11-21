@@ -360,6 +360,41 @@ int main(){
         quadratic_exponential, x);
     assert(quadratic_exponential_result.status ==
         risch_status::proven_nonelementary);
+    exact_expr rational_exponent = context.integer(1) /
+        (context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr rational_exponential = context.exponential(rational_exponent);
+    risch_result rational_exponential_result = context.integrate_elementary(
+        rational_exponential, x);
+    assert(rational_exponential_result.status ==
+        risch_status::proven_nonelementary);
+    assert(rational_exponential_result.elementary_part == context.integer(0));
+    assert(rational_exponential_result.remainder == rational_exponential);
+    assert(rational_exponential_result.diagnostic.find("finite pole") !=
+        std::string::npos);
+    exact_expr finite_pole_scaled_exponential =
+        context.integer(3) * rational_exponential;
+    risch_result scaled_rational_exponential_proof =
+        context.integrate_elementary(finite_pole_scaled_exponential, x);
+    assert(scaled_rational_exponential_proof.status ==
+        risch_status::proven_nonelementary);
+    assert(scaled_rational_exponential_proof.remainder ==
+        finite_pole_scaled_exponential);
+    exact_expr shifted_rational_exponent = x + rational_exponent;
+    exact_expr shifted_rational_exponential =
+        context.exponential(shifted_rational_exponent);
+    assert(context.integrate_elementary(shifted_rational_exponential, x).status ==
+        risch_status::proven_nonelementary);
+    exact_expr rational_exponential_primitive =
+        context.exponential(-context.integer(1) / x);
+    exact_expr rational_exponential_derivative =
+        rational_exponential_primitive / context.power(x, context.integer(2));
+    risch_result rational_exponential_derivative_result =
+        context.integrate_elementary(rational_exponential_derivative, x);
+    assert(rational_exponential_derivative_result.status ==
+        risch_status::elementary);
+    assert(context.simplify(context.differentiate(
+        rational_exponential_derivative_result.elementary_part, x) -
+        rational_exponential_derivative) == context.integer(0));
     exact_expr quadratic_exponential_derivative =
         context.integer(2) * x * quadratic_exponential;
     risch_result quadratic_exponential_derivative_result =
