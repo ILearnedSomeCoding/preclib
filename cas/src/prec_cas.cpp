@@ -20297,10 +20297,14 @@ risch_result exact_context::integrate_elementary_impl(
         integration_poly qn, qd;
         if(!integration_parse_rational(roots[0].operand(0),variable,qn,qd,
                 options.maximum_degree,options.maximum_degree) ||
-           !integration_normalize_rational(qn,qd) || qn.size() != 3 ||
-           qd.size() != 1 || qd[0].is_zero()) return false;
-        for(auto &coefficient : qn) coefficient = coefficient/qd[0];
-        const numeric_value a = qn[2], b = qn[1], c = qn[0];
+           !integration_normalize_rational(qn,qd) || qn.size() > 3 ||
+           qd.size() > 3 || integration_zero_poly(qd)) return false;
+        integration_poly conic_polynomial = integration_mul(qn,qd);
+        integration_trim(conic_polynomial);
+        if(conic_polynomial.size() != 3) return false;
+        const numeric_value a = conic_polynomial[2],
+                            b = conic_polynomial[1],
+                            c = conic_polynomial[0];
         if(a.is_zero() || (b*b-numeric_value(4)*a*c).is_zero()) return false;
 
         numeric_value x0, y0;
@@ -20335,31 +20339,42 @@ risch_result exact_context::integrate_elementary_impl(
         }
         const exact_expr x0_expr = value(x0), y0_expr = value(y0);
         const exact_expr a_expr = value(a), b_expr = value(b);
+        const exact_expr denominator_expr = integration_poly_expr(*this,qd,variable);
         // Intersect y = y0 + t*(x-x0) with the conic to get its rational map.
         const exact_expr displacement =
             (integer(2)*a_expr*x0_expr+b_expr-integer(2)*y0_expr*parameter)/
             (power(parameter,integer(2))-a_expr);
         const exact_expr x_of_t = x0_expr+displacement;
         const exact_expr y_of_t = y0_expr+parameter*displacement;
+        const exact_expr original_root_of_t = y_of_t/
+            substitute(denominator_expr,variable,x_of_t);
+        if(x_of_t.reachable_node_count() > options.maximum_nodes ||
+           y_of_t.reachable_node_count() > options.maximum_nodes ||
+           original_root_of_t.reachable_node_count() > options.maximum_nodes)
+            return false;
         const exact_expr curve_error = power(y_of_t,integer(2))-
             (a_expr*power(x_of_t,integer(2))+b_expr*x_of_t+value(c));
+        if(curve_error.reachable_node_count() > options.maximum_nodes) return false;
         integration_poly curve_n, curve_d;
         if(!integration_parse_rational(curve_error,parameter,curve_n,curve_d,
                 options.maximum_degree,options.maximum_degree) ||
            !integration_normalize_rational(curve_n,curve_d) ||
            !integration_zero_poly(curve_n)) return false;
 
-        exact_expr transformed = substitute(expression,roots[0],y_of_t);
+        exact_expr transformed = substitute(expression,roots[0],original_root_of_t);
         transformed = substitute(transformed,variable,x_of_t)*
                       differentiate(x_of_t,parameter);
         if(transformed.reachable_node_count() > options.maximum_nodes) return false;
         exact_expr parameter_primitive = integration_rational_antiderivative(
             *this,transformed,parameter,options.maximum_degree,
             options.maximum_rothstein_degree,options.maximum_matrix_entries);
-        if(!parameter_primitive.valid()) return false;
+        if(!parameter_primitive.valid() ||
+           parameter_primitive.reachable_node_count() > options.maximum_nodes)
+            return false;
 
         const exact_expr root = roots[0];
-        const exact_expr slope = (root-y0_expr)/(variable-x0_expr);
+        const exact_expr slope =
+            (denominator_expr*root-y0_expr)/(variable-x0_expr);
         auto zero_over_rational_function_field = [&](const exact_expr &identity,
                                                      const exact_expr &field_variable){
             integration_poly numerator, denominator;
@@ -20407,7 +20422,8 @@ risch_result exact_context::integrate_elementary_impl(
                     });
         };
         if(!zero_on_curve(substitute(x_of_t,parameter,slope)-variable) ||
-           !zero_on_curve(substitute(y_of_t,parameter,slope)-root)) return false;
+           !zero_on_curve(substitute(original_root_of_t,parameter,slope)-root))
+            return false;
         exact_expr candidate = substitute(parameter_primitive,parameter,slope);
         if(candidate.reachable_node_count() > options.maximum_nodes) return false;
 

@@ -62,11 +62,23 @@ int main(){
     for(const exact_expr &input : {
             x/nonsquare_leading_root,
             context.integer(1)/((x+context.integer(1))*
-                nonsquare_leading_root)}){
+                nonsquare_leading_root),
+            context.integer(1)/(x+nonsquare_leading_root)}){
         risch_result result = context.integrate_elementary(input,x);
         if(result.status != risch_status::elementary)
             std::fprintf(stderr,"nonsquare-leading case failed for %s: %s\n",
                 input.to_string().c_str(),result.diagnostic.c_str());
+        assert(result.status == risch_status::elementary);
+        assert(result.remainder == context.integer(0));
+    }
+
+    exact_expr rational_radicand = (x+context.integer(1))/(x+context.integer(3));
+    exact_expr rational_root = context.square_root(rational_radicand);
+    for(const exact_expr &input : {
+            context.integer(1)/rational_root,
+            x/rational_root,
+            context.integer(1)/(x*rational_root)}){
+        risch_result result = context.integrate_elementary(input,x);
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
     }
