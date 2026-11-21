@@ -15726,7 +15726,8 @@ risch_result exact_context::integrate_elementary_impl(
         auto exponential_trig_polynomial_candidate = [&]() -> exact_expr{
             std::vector<exact_expr> factors;
             integration_factor_list(expression, factors);
-            exact_expr exponential_factor;
+            exact_expr exponential_argument = integer(0);
+            bool has_exponential_factor = false;
             exact_expr coefficient = integer(1);
             exact_expr polynomial_cofactor = integer(1);
             int64_t total_power = 0;
@@ -15741,18 +15742,27 @@ risch_result exact_context::integrate_elementary_impl(
             };
             std::vector<angle_power> angles;
             for(const exact_expr &factor : factors){
-                if(factor.operation() == exact_opcode::exponential &&
-                   !exponential_factor.valid()){
-                    exponential_factor = factor;
+                if(factor.operation() == exact_opcode::exponential){
+                    exponential_argument = exponential_argument +
+                        factor.operand(0);
+                    has_exponential_factor = true;
                     continue;
                 }
 
                 exact_expr base = factor;
                 int64_t exponent = 1;
                 if(factor.operation() == exact_opcode::power){
-                    if(!integration_signed_exponent(factor.operand(1), exponent) ||
-                       exponent < 0) return exact_expr();
+                    if(!integration_signed_exponent(factor.operand(1),
+                                                    exponent))
+                        return exact_expr();
                     base = factor.operand(0);
+                    if(base.operation() == exact_opcode::exponential){
+                        exponential_argument = exponential_argument +
+                            integer(exponent) * base.operand(0);
+                        has_exponential_factor = true;
+                        continue;
+                    }
+                    if(exponent < 0) return exact_expr();
                 }
                 exact_opcode operation = base.operation();
                 if(operation == exact_opcode::sine ||
@@ -15789,8 +15799,7 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 polynomial_cofactor = polynomial_cofactor * factor;
             }
-            if(!exponential_factor.valid())
-                return exact_expr();
+            if(!has_exponential_factor) return exact_expr();
 
             integration_expr_poly cofactor_polynomial;
             if(!integration_parse_expr_poly(*this, polynomial_cofactor, variable,
@@ -15805,7 +15814,7 @@ risch_result exact_context::integrate_elementary_impl(
             if(cofactor_polynomial.size() == 1 && total_power == 1)
                 return exact_expr();
 
-            exact_expr exponential_argument = exponential_factor.operand(0);
+            exponential_argument = simplify(exponential_argument);
             exact_expr exponential_rate = simplify(differentiate(
                 exponential_argument, variable));
             integration_expr_poly exponential_rate_polynomial;

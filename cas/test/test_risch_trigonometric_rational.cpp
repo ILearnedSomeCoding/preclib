@@ -61,6 +61,119 @@ int main(){
         polynomial_exp_result.elementary_part, x) - polynomial_exp_input) ==
         context.integer(0));
 
+    exact_expr rate_test_primitive = context.power(x, context.integer(2)) +
+        context.integer(3) * x - context.integer(2);
+    for(int rate_degree = 1; rate_degree <= 4; ++rate_degree){
+        exact_expr rate_test_argument = context.power(x,
+            context.integer(rate_degree + 1));
+        exact_expr rate_test_exponential = context.exponential(
+            rate_test_argument);
+        exact_expr rate_test_cofactor = context.expand(
+            context.differentiate(rate_test_primitive, x) +
+            context.differentiate(rate_test_argument, x) *
+                rate_test_primitive);
+        exact_expr rate_test_input = rate_test_cofactor *
+                                     rate_test_exponential;
+        risch_result rate_test_result = context.integrate_elementary(
+            rate_test_input, x);
+        exact_expr rate_test_expected = rate_test_primitive *
+                                        rate_test_exponential;
+        if(rate_test_result.status != risch_status::elementary ||
+           rate_test_result.remainder != context.integer(0) ||
+           context.simplify(rate_test_result.elementary_part -
+               rate_test_expected) != context.integer(0)){
+            std::fprintf(stderr,
+                "polynomial-rate RDE reconstruction failed at degree %d: %s\n",
+                rate_degree, rate_test_result.diagnostic.c_str());
+            return 1;
+        }
+    }
+
+    exact_expr exp_x2_squared = context.power(exp_x2, context.integer(2));
+    exact_expr doubled_rate_input =
+        (context.integer(32) * context.power(x, context.integer(2)) +
+         context.integer(6)) * exp_x2_squared *
+        context.hyperbolic_sine(x);
+    risch_result doubled_rate_result = context.integrate_elementary(
+        doubled_rate_input, x);
+    exact_expr doubled_positive = context.exponential(
+        context.integer(2) * context.power(x, context.integer(2)) + x);
+    exact_expr doubled_negative = context.exponential(
+        context.integer(2) * context.power(x, context.integer(2)) - x);
+    exact_expr doubled_expected = (context.integer(4) * x -
+        context.integer(1)) * doubled_positive -
+        (context.integer(4) * x + context.integer(1)) * doubled_negative;
+    exact_expr doubled_expected_derivative =
+        (context.integer(16) * context.power(x, context.integer(2)) +
+         context.integer(3)) * (doubled_positive - doubled_negative);
+    if(doubled_rate_result.status != risch_status::elementary ||
+       context.simplify(doubled_rate_result.elementary_part -
+           doubled_expected) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           doubled_rate_result.elementary_part, x) -
+           doubled_expected_derivative) != context.integer(0)){
+        std::fprintf(stderr, "positive exponential power mode failed: %s\n",
+            doubled_rate_result.diagnostic.c_str());
+        return 1;
+    }
+
+    exact_expr reciprocal_exp_power = context.power(exp_x2,
+        context.integer(-1));
+    exact_expr reciprocal_exp_input =
+        (context.integer(8) * context.power(x, context.integer(2)) -
+         context.integer(6)) * reciprocal_exp_power *
+        context.hyperbolic_sine(x);
+    risch_result reciprocal_exp_result = context.integrate_elementary(
+        reciprocal_exp_input, x);
+    exact_expr reciprocal_positive = context.exponential(
+        -context.power(x, context.integer(2)) + x);
+    exact_expr reciprocal_negative = context.exponential(
+        -context.power(x, context.integer(2)) - x);
+    exact_expr reciprocal_expected = (-context.integer(2) * x -
+        context.integer(1)) * reciprocal_positive +
+        (context.integer(2) * x - context.integer(1)) * reciprocal_negative;
+    exact_expr reciprocal_expected_derivative =
+        (context.integer(4) * context.power(x, context.integer(2)) -
+         context.integer(3)) * (reciprocal_positive - reciprocal_negative);
+    if(reciprocal_exp_result.status != risch_status::elementary ||
+       context.simplify(reciprocal_exp_result.elementary_part -
+           reciprocal_expected) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           reciprocal_exp_result.elementary_part, x) -
+           reciprocal_expected_derivative) != context.integer(0)){
+        std::fprintf(stderr, "negative exponential power mode failed: %s\n",
+            reciprocal_exp_result.diagnostic.c_str());
+        return 1;
+    }
+
+    exact_expr exp_x = context.exponential(x);
+    exact_expr product_exp_input =
+        (context.integer(4) * context.power(x, context.integer(2)) +
+         context.integer(4) * x + context.integer(2)) * exp_x2 * exp_x *
+        context.hyperbolic_sine(x);
+    risch_result product_exp_result = context.integrate_elementary(
+        product_exp_input, x);
+    exact_expr product_positive = context.exponential(
+        context.power(x, context.integer(2)) + context.integer(2) * x);
+    exact_expr product_negative = context.exponential(
+        context.power(x, context.integer(2)));
+    exact_expr product_expected = x * product_positive -
+        (x + context.integer(1)) * product_negative;
+    exact_expr product_expected_derivative =
+        (context.integer(2) * context.power(x, context.integer(2)) +
+         context.integer(2) * x + context.integer(1)) *
+        (product_positive - product_negative);
+    if(product_exp_result.status != risch_status::elementary ||
+       context.simplify(product_exp_result.elementary_part -
+           product_expected) != context.integer(0) ||
+       context.simplify(context.differentiate(
+           product_exp_result.elementary_part, x) -
+           product_expected_derivative) != context.integer(0)){
+        std::fprintf(stderr, "product exponential mode failed: %s\n",
+            product_exp_result.diagnostic.c_str());
+        return 1;
+    }
+
     exact_expr polynomial_hyperbolic_input =
         (context.integer(8) * context.power(x, context.integer(2)) +
          context.integer(2)) * exp_x2 * context.hyperbolic_sine(x);
