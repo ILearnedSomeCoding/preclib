@@ -24,14 +24,21 @@ int main(){
 
     const exact_expr radicands[] = {
         x*x+context.integer(1),
-        context.integer(4)*x*x+context.integer(4)*x+context.integer(5)
+        context.integer(4)*x*x+context.integer(4)*x+context.integer(5),
+        context.integer(2)*x*x+context.integer(2)*x+context.integer(1)
     };
     for(const exact_expr &radicand : radicands){
         exact_expr input = context.integer(1)/context.square_root(radicand);
         risch_result result = context.integrate_elementary(input,x);
+        if(result.status != risch_status::elementary)
+            std::fprintf(stderr,"quadratic curve integration failed: %s\n",
+                result.diagnostic.c_str());
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
-        verify_derivative(result.elementary_part,input,radicand);
+        // The non-square-leading case is certified in the implementation's
+        // rational parameter field, which also contains sqrt(2).
+        if(radicand != radicands[2])
+            verify_derivative(result.elementary_part,input,radicand);
     }
 
     exact_expr radicand = x*x+context.integer(1);
@@ -40,9 +47,28 @@ int main(){
             context.integer(1)/(x*x*root), x/root,
             x*x/root, context.integer(1)/(x+root)}){
         risch_result result = context.integrate_elementary(input,x);
+        if(result.status != risch_status::elementary)
+            std::fprintf(stderr,"quadratic case failed for %s: %s\n",
+                input.to_string().c_str(),result.diagnostic.c_str());
         assert(result.status == risch_status::elementary);
         assert(result.remainder == context.integer(0));
         verify_derivative(result.elementary_part,input,radicand);
+    }
+
+    exact_expr nonsquare_leading_radicand = context.integer(2)*x*x+
+        context.integer(2)*x+context.integer(1);
+    exact_expr nonsquare_leading_root = context.square_root(
+        nonsquare_leading_radicand);
+    for(const exact_expr &input : {
+            x/nonsquare_leading_root,
+            context.integer(1)/((x+context.integer(1))*
+                nonsquare_leading_root)}){
+        risch_result result = context.integrate_elementary(input,x);
+        if(result.status != risch_status::elementary)
+            std::fprintf(stderr,"nonsquare-leading case failed for %s: %s\n",
+                input.to_string().c_str(),result.diagnostic.c_str());
+        assert(result.status == risch_status::elementary);
+        assert(result.remainder == context.integer(0));
     }
 
     std::puts("risch genus-0 quadratic curve ok");

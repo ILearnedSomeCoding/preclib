@@ -20280,6 +20280,145 @@ risch_result exact_context::integrate_elementary_impl(
             &a,&b,input_holomorphic);
     };
     if(classify_biquadratic_function_field()) return result;
+    auto classify_rational_quadratic_curve = [&]() -> bool{
+        std::vector<exact_expr> roots;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self, const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::square_root &&
+               integration_depends_on(part.operand(0),variable))
+                roots.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self,part.operand(i));
+        };
+        collect(collect,expression);
+        if(roots.size() != 1) return false;
+
+        integration_poly qn, qd;
+        if(!integration_parse_rational(roots[0].operand(0),variable,qn,qd,
+                options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(qn,qd) || qn.size() != 3 ||
+           qd.size() != 1 || qd[0].is_zero()) return false;
+        for(auto &coefficient : qn) coefficient = coefficient/qd[0];
+        const numeric_value a = qn[2], b = qn[1], c = qn[0];
+        if(a.is_zero() || (b*b-numeric_value(4)*a*c).is_zero()) return false;
+
+        numeric_value x0, y0;
+        bool found_point = false;
+        // Search proposes a point; the substitution is checked as an identity below.
+        for(int denominator = 1; denominator <= 8 && !found_point; ++denominator){
+            for(int magnitude = 0; magnitude <= 8 && !found_point; ++magnitude){
+                for(int sign : {1,-1}){
+                    if(magnitude == 0 && sign == -1) continue;
+                    const int numerator = sign*magnitude;
+                    numeric_value candidate_x(precq_t(precn_t(numerator < 0
+                        ? -numerator : numerator),precn_t(denominator)));
+                    if(numerator < 0) candidate_x = -candidate_x;
+                    numeric_value value_at_x = (a*candidate_x+b)*candidate_x+c;
+                    numeric_value candidate_y;
+                    if(value_at_x.is_negative() ||
+                       !exact_nth_root(value_at_x,2,candidate_y)) continue;
+                    x0 = std::move(candidate_x);
+                    y0 = std::move(candidate_y);
+                    found_point = true;
+                    break;
+                }
+            }
+        }
+        if(!found_point) return false;
+
+        exact_expr parameter;
+        for(size_t suffix = 0;; ++suffix){
+            parameter = symbol("_risch_conic_t_"+std::to_string(suffix));
+            if(parameter != variable &&
+               !integration_depends_on(expression,parameter)) break;
+        }
+        const exact_expr x0_expr = value(x0), y0_expr = value(y0);
+        const exact_expr a_expr = value(a), b_expr = value(b);
+        // Intersect y = y0 + t*(x-x0) with the conic to get its rational map.
+        const exact_expr displacement =
+            (integer(2)*a_expr*x0_expr+b_expr-integer(2)*y0_expr*parameter)/
+            (power(parameter,integer(2))-a_expr);
+        const exact_expr x_of_t = x0_expr+displacement;
+        const exact_expr y_of_t = y0_expr+parameter*displacement;
+        const exact_expr curve_error = power(y_of_t,integer(2))-
+            (a_expr*power(x_of_t,integer(2))+b_expr*x_of_t+value(c));
+        integration_poly curve_n, curve_d;
+        if(!integration_parse_rational(curve_error,parameter,curve_n,curve_d,
+                options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(curve_n,curve_d) ||
+           !integration_zero_poly(curve_n)) return false;
+
+        exact_expr transformed = substitute(expression,roots[0],y_of_t);
+        transformed = substitute(transformed,variable,x_of_t)*
+                      differentiate(x_of_t,parameter);
+        if(transformed.reachable_node_count() > options.maximum_nodes) return false;
+        exact_expr parameter_primitive = integration_rational_antiderivative(
+            *this,transformed,parameter,options.maximum_degree,
+            options.maximum_rothstein_degree,options.maximum_matrix_entries);
+        if(!parameter_primitive.valid()) return false;
+
+        const exact_expr root = roots[0];
+        const exact_expr slope = (root-y0_expr)/(variable-x0_expr);
+        auto zero_over_rational_function_field = [&](const exact_expr &identity,
+                                                     const exact_expr &field_variable){
+            integration_poly numerator, denominator;
+            if(integration_parse_rational(identity,field_variable,numerator,
+                    denominator,options.maximum_degree,options.maximum_degree) &&
+               integration_normalize_rational(numerator,denominator))
+                return integration_zero_poly(numerator);
+            std::vector<exact_expr> constant_roots;
+            std::unordered_set<uint32_t> visited;
+            auto collect_constants = [&](auto &&self,const exact_expr &part) -> void{
+                if(!visited.insert(part.id()).second) return;
+                if(part.operation() == exact_opcode::square_root &&
+                   !integration_depends_on(part.operand(0),field_variable) &&
+                   part.operand(0).is_value() &&
+                   !part.operand(0).value().is_approximate())
+                    constant_roots.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self,part.operand(i));
+            };
+            collect_constants(collect_constants,identity);
+            if(constant_roots.size() != 1) return false;
+            integration_expr_poly coefficients;
+            if(!integration_parse_algebraic_quotient(*this,identity,
+                    constant_roots[0],
+                    {-constant_roots[0].operand(0),integer(0),integer(1)},
+                    field_variable,options,coefficients)) return false;
+            return std::none_of(coefficients.begin(),coefficients.end(),
+                [&](const exact_expr &coefficient){
+                    return coefficient != integer(0);
+                });
+        };
+        if(!zero_over_rational_function_field(
+                differentiate(parameter_primitive,parameter)-transformed,
+                parameter)) return false;
+
+        auto zero_on_curve = [&](const exact_expr &identity){
+            exact_expr reduced_identity = substitute(identity,root,parameter);
+            integration_expr_poly coefficients;
+            return integration_parse_algebraic_quotient(*this,reduced_identity,
+                parameter,{-roots[0].operand(0),integer(0),integer(1)},variable,
+                options,coefficients) &&
+                std::none_of(coefficients.begin(),coefficients.end(),
+                    [&](const exact_expr &coefficient){
+                        return coefficient != integer(0);
+                    });
+        };
+        if(!zero_on_curve(substitute(x_of_t,parameter,slope)-variable) ||
+           !zero_on_curve(substitute(y_of_t,parameter,slope)-root)) return false;
+        exact_expr candidate = substitute(parameter_primitive,parameter,slope);
+        if(candidate.reachable_node_count() > options.maximum_nodes) return false;
+
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(candidate);
+        result.remainder = integer(0);
+        result.conditions.clear();
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_rational_quadratic_curve()) return result;
     auto classify_binomial_algebraic_field = [&]() -> bool{
         exact_expr radicand;
         size_t rank = 0;
