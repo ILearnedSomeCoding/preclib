@@ -1116,6 +1116,42 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         negative_positive_rate_result.elementary_part, x) -
         negative_positive_rate_exponential, 100000)) == context.integer(0));
+    exact_expr negative_rate_linear_cofactor = x *
+        negative_positive_rate_exponential;
+    risch_result negative_rate_linear_result = context.integrate_elementary(
+        negative_rate_linear_cofactor, x);
+    assert(negative_rate_linear_result.status == risch_status::elementary);
+    assert(negative_rate_linear_result.remainder == context.integer(0));
+    assert(negative_rate_linear_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        negative_rate_linear_result.elementary_part, x) -
+        negative_rate_linear_cofactor, 100000)) == context.integer(0));
+
+    exact_expr inverse_e_power = context.power(context.e(), -x);
+    exact_expr inverse_e_power_cofactor = x * inverse_e_power;
+    risch_result inverse_e_power_result = context.integrate_elementary(
+        inverse_e_power_cofactor, x);
+    assert(inverse_e_power_result.status == risch_status::elementary);
+    assert(inverse_e_power_result.remainder == context.integer(0));
+    assert(inverse_e_power_result.conditions.empty());
+    exact_expr inverse_e_power_derivative = context.differentiate(
+        inverse_e_power_result.elementary_part, x);
+    inverse_e_power_derivative = context.substitute(inverse_e_power_derivative,
+        context.exponential(-x), inverse_e_power);
+    assert(context.simplify(context.expand(inverse_e_power_derivative -
+        inverse_e_power_cofactor, 100000)) == context.integer(0));
+
+    exact_expr log_two = context.natural_logarithm(context.integer(2));
+    exact_expr inverse_two_power = context.exponential(-log_two * x);
+    exact_expr inverse_two_power_cofactor = x * inverse_two_power;
+    risch_result inverse_two_power_result = context.integrate_elementary(
+        inverse_two_power_cofactor, x);
+    assert(inverse_two_power_result.status == risch_status::elementary);
+    assert(inverse_two_power_result.remainder == context.integer(0));
+    assert(inverse_two_power_result.conditions.empty());
+    assert(context.simplify(context.expand(context.differentiate(
+        inverse_two_power_result.elementary_part, x) -
+        inverse_two_power_cofactor, 100000)) == context.integer(0));
     exact_expr symbolic_rate_e_over_x = context.exponential(a * x) / x;
     risch_result symbolic_rate_e_over_x_result = context.integrate_elementary(
         symbolic_rate_e_over_x, x);

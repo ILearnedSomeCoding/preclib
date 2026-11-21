@@ -6,16 +6,16 @@ static bool check_derivative(exact_context &context,
                              const exact_expr &primitive,
                              const exact_expr &integrand,
                              const exact_expr &variable){
-    exact_expr error = context.differentiate(primitive, variable) - integrand;
     exact_expr x = variable;
     exact_expr x2 = context.power(x, context.integer(2));
     exact_expr exp_x = context.exponential(x);
     exact_expr exp_plus = context.exponential(x + context.i() * x2);
     exact_expr exp_minus = context.exponential(x - context.i() * x2);
-    error = context.substitute(error, exp_plus,
+    exact_expr rewritten = context.substitute(primitive, exp_plus,
         exp_x * (context.cosine(x2) + context.i() * context.sine(x2)));
-    error = context.substitute(error, exp_minus,
+    rewritten = context.substitute(rewritten, exp_minus,
         exp_x * (context.cosine(x2) - context.i() * context.sine(x2)));
+    exact_expr error = context.differentiate(rewritten, variable) - integrand;
     return context.simplify(context.expand(error, 100000)) ==
            context.integer(0);
 }
@@ -106,6 +106,27 @@ int main(){
         std::cerr << "rational-cofactor polynomial-angle RDE failed: "
                   << rational_result.diagnostic << "; got "
                   << rational_result.elementary_part.to_string() << '\n';
+        return 1;
+    }
+    exact_expr circular_rational_cofactor = context.integer(4) * x +
+        context.integer(1) / x - context.integer(1) / x2;
+    exact_expr circular_rational_integrand = circular_rational_cofactor *
+        exp_x * cosine;
+    exact_expr circular_rational_expected = exp_x * (cosine / x +
+        context.integer(2) * sine);
+    risch_result circular_rational_result = context.integrate_elementary(
+        circular_rational_integrand, x);
+    if(circular_rational_result.status != risch_status::elementary ||
+       circular_rational_result.remainder != context.integer(0) ||
+       !circular_rational_result.conditions.empty() ||
+       !check_derivative(context, circular_rational_result.elementary_part,
+                         circular_rational_integrand, x) ||
+       !check_derivative(context, circular_rational_expected,
+                         circular_rational_integrand, x)){
+        std::cerr << "complex-coefficient circular RDE failed: "
+                  << circular_rational_result.diagnostic << "; got "
+                  << circular_rational_result.elementary_part.to_string()
+                  << '\n';
         return 1;
     }
     risch_options tiny_matrix;

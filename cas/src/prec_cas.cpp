@@ -10714,11 +10714,32 @@ expression_coefficient_rde:
         if(integration_expr_zero(context, pivot)){
             return exact_expr();
         }
-        bool pivot_known_nonzero = pivot.is_value()
-            ? !pivot.value().is_zero()
-            : pivot.operation() == exact_opcode::constant_e ||
-              pivot.operation() == exact_opcode::constant_pi ||
-              pivot.operation() == exact_opcode::exponential;
+        auto known_nonzero_pivot = [&](auto &&self,
+                const exact_expr &value) -> bool{
+            if(!integration_exact_expression_tree(value) ||
+               integration_depends_on(value, variable)) return false;
+            if(value.is_value())
+                return !value.value().is_approximate() &&
+                       !value.value().is_zero();
+            if(value.operation() == exact_opcode::constant_e ||
+               value.operation() == exact_opcode::constant_pi ||
+               value.operation() == exact_opcode::constant_i ||
+               value.operation() == exact_opcode::exponential) return true;
+            if(value.operation() == exact_opcode::multiply){
+                for(size_t i = 0; i < value.operand_count(); ++i)
+                    if(!self(self, value.operand(i))) return false;
+                return value.operand_count() != 0;
+            }
+            if(value.operation() == exact_opcode::power){
+                int64_t exponent = 0;
+                return integration_signed_exponent(value.operand(1),
+                    exponent) && (exponent == 0 ||
+                        self(self, value.operand(0)));
+            }
+            return false;
+        };
+        bool pivot_known_nonzero = known_nonzero_pivot(
+            known_nonzero_pivot, pivot);
         if(nonzero_conditions && !pivot_known_nonzero &&
            !record_nonzero_condition(pivot)) return exact_expr();
         a[column] = context.simplify(residual[top] / pivot);
@@ -10780,7 +10801,11 @@ expression_coefficient_rde:
             if(std::find(nonzero_conditions->begin(), nonzero_conditions->end(),
                          condition) == nonzero_conditions->end())
                 nonzero_conditions->push_back(condition);
-    return rational_solution * context.exponential(inner);
+    exact_expr primitive = rational_solution * context.exponential(inner);
+    if(elementary_reduction) *elementary_reduction = primitive;
+    if(remainder_integrand)
+        *remainder_integrand = context.integer(0);
+    return primitive;
 }
 
 // Extend repeated-pole Hermite reduction to exact constant-field numerator
