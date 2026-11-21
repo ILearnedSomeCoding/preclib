@@ -2947,32 +2947,49 @@ static exact_expr integration_evaluate_formal_derivatives(
     resource_limited = false;
     std::vector<exact_expr> derivatives;
     std::unordered_set<uint32_t> visited;
-    auto collect = [&](auto &&self, const exact_expr &part) -> void{
-        if(!visited.insert(part.id()).second) return;
+    auto collect = [&](auto &&self, const exact_expr &part) -> bool{
+        if(visited.find(part.id()) != visited.end()) return true;
+        if(visited.size() >= node_budget){
+            resource_limited = true;
+            return false;
+        }
+        visited.insert(part.id());
         if(part.operation() == exact_opcode::derivative &&
            part.operand_count() == 2 && part.operand(1) == variable)
             derivatives.push_back(part);
-        for(size_t i = 0; i < part.operand_count(); ++i)
-            self(self, part.operand(i));
+        for(size_t i = 0; i < part.operand_count(); ++i){
+            if(!self(self, part.operand(i))) return false;
+        }
+        return true;
     };
-    collect(collect, expression);
+    if(!collect(collect, expression)) return expression;
     if(derivatives.empty()) return expression;
-    if(node_budget == 0 || expression.reachable_node_count() > node_budget){
-        resource_limited = true;
-        return expression;
-    }
+
+    auto within_node_budget = [&](const exact_expr &root){
+        std::unordered_set<uint32_t> counted;
+        auto count = [&](auto &&self, const exact_expr &part) -> bool{
+            if(counted.find(part.id()) != counted.end()) return true;
+            if(counted.size() >= node_budget) return false;
+            counted.insert(part.id());
+            for(size_t i = 0; i < part.operand_count(); ++i){
+                if(!self(self, part.operand(i))) return false;
+            }
+            return true;
+        };
+        return count(count, root);
+    };
 
     exact_expr normalized = expression;
     for(;;){
         derivatives.clear();
         visited.clear();
-        collect(collect, normalized);
+        if(!collect(collect, normalized)) return expression;
         bool changed = false;
         for(const exact_expr &formal : derivatives){
             exact_expr evaluated = context.differentiate(
                 formal.operand(0), variable);
             if(evaluated == formal) continue;
-            if(evaluated.reachable_node_count() > node_budget){
+            if(!within_node_budget(evaluated)){
                 resource_limited = true;
                 return expression;
             }
@@ -2992,7 +3009,7 @@ static exact_expr integration_evaluate_formal_derivatives(
             if(still_formal) continue;
             exact_expr next = context.substitute(normalized, formal, evaluated);
             if(next != normalized){
-                if(next.reachable_node_count() > node_budget){
+                if(!within_node_budget(next)){
                     resource_limited = true;
                     return expression;
                 }
@@ -3002,7 +3019,12 @@ static exact_expr integration_evaluate_formal_derivatives(
         }
         if(!changed) break;
     }
-    return context.simplify(normalized);
+    exact_expr simplified = context.simplify(normalized);
+    if(!within_node_budget(simplified)){
+        resource_limited = true;
+        return expression;
+    }
+    return simplified;
 }
 
 static bool integration_depends_on(const exact_expr &expression,
@@ -14319,6 +14341,57 @@ risch_result exact_context::integrate_elementary_impl(
                                     options.maximum_nodes);
     degree_budget = std::min(degree_budget, (size_t)INT64_MAX);
     const size_t over_budget_degree = degree_budget + 1;
+
+    // Recognize the exact product rule before treating separate exponentials
+    // as independent tower generators: D(prod(exp(g_i))) is
+    // sum(D(g_i))*prod(exp(g_i)).
+    std::vector<exact_expr> product_factors;
+    auto flatten_product = [&](auto &&self, const exact_expr &part) -> void{
+        if(part.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self, part.operand(i));
+        }else product_factors.push_back(part);
+    };
+    flatten_product(flatten_product, expression);
+    std::vector<exact_expr> exponential_factors;
+    std::vector<exact_expr> remaining_factors;
+    exact_expr exponential_product_rate = integer(0);
+    for(const exact_expr &factor : product_factors){
+        if(factor.operation() == exact_opcode::exponential &&
+           factor.operand_count() == 1){
+            exponential_factors.push_back(factor);
+            exponential_product_rate = exponential_product_rate +
+                differentiate(factor.operand(0), variable);
+        }else remaining_factors.push_back(factor);
+    }
+    if(!exponential_factors.empty()){
+        exact_expr coefficient = remaining_factors.empty() ? integer(1) :
+            remaining_factors.size() == 1 ? remaining_factors[0]
+                                           : multiply(remaining_factors);
+        const size_t verification_expansion_budget =
+            std::min((size_t)100000, options.maximum_nodes);
+        exponential_product_rate = simplify(expand(
+            exponential_product_rate, verification_expansion_budget));
+        if(exponential_product_rate.reachable_node_count() <=
+               options.maximum_nodes &&
+           simplify(expand(coefficient - exponential_product_rate,
+                           verification_expansion_budget)) == integer(0)){
+            exact_expr candidate = exponential_factors.size() == 1
+                ? exponential_factors[0] : multiply(exponential_factors);
+            exact_expr error = differentiate(candidate, variable) - expression;
+            if(candidate.reachable_node_count() <= options.maximum_nodes &&
+               error.reachable_node_count() <= options.maximum_nodes &&
+               simplify(expand(error, verification_expansion_budget)) ==
+                   integer(0)){
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.diagnostic.clear();
+                return result;
+            }
+        }
+    }
+
     std::vector<exact_expr> logarithm_generators;
     std::unordered_set<uint32_t> affine_log_seen;
     auto collect_affine_logs = [&](auto &&self, const exact_expr &part) -> void{

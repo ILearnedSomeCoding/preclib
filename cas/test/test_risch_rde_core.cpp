@@ -1374,6 +1374,78 @@ int main(){
                   << second_formal_nested_log_error.to_string() << '\n';
         return 1;
     }
+    exact_expr formal_log_slope = context.symbol("formal_log_slope");
+    exact_expr formal_log_offset = context.symbol("formal_log_offset");
+    exact_expr formal_affine_log = context.natural_logarithm(
+        formal_log_slope * x + formal_log_offset);
+    exact_expr formal_affine_log_input =
+        context.formal_derivative(formal_affine_log, x) /
+        (context.integer(1) + formal_affine_log);
+    risch_result formal_affine_log_result = context.integrate_elementary(
+        formal_affine_log_input, x);
+    exact_expr formal_affine_log_expected = context.differentiate(
+        formal_affine_log, x) / (context.integer(1) + formal_affine_log);
+    exact_expr formal_affine_log_error = context.simplify(context.expand(
+        context.differentiate(formal_affine_log_result.elementary_part, x) -
+        formal_affine_log_expected));
+    if(formal_affine_log_result.status != risch_status::elementary ||
+       formal_affine_log_result.remainder != context.integer(0) ||
+       formal_affine_log_error != context.integer(0)){
+        std::cerr << "parameterized formal logarithmic chain failed: "
+                  << formal_affine_log_result.diagnostic << " primitive="
+                  << formal_affine_log_result.elementary_part.to_string()
+                  << " derivative error="
+                  << formal_affine_log_error.to_string() << '\n';
+        return 1;
+    }
+    exact_expr formal_rational_log_argument =
+        (context.power(x, context.integer(2)) + context.integer(1)) /
+        (x + context.integer(2));
+    exact_expr formal_rational_log =
+        context.natural_logarithm(formal_rational_log_argument);
+    exact_expr formal_rational_log_input =
+        context.formal_derivative(formal_rational_log, x) /
+        (context.integer(1) + formal_rational_log);
+    risch_result formal_rational_log_result = context.integrate_elementary(
+        formal_rational_log_input, x);
+    exact_expr formal_rational_log_expected = context.differentiate(
+        formal_rational_log, x) / (context.integer(1) + formal_rational_log);
+    exact_expr formal_rational_log_error = context.simplify(context.expand(
+        context.differentiate(formal_rational_log_result.elementary_part, x) -
+        formal_rational_log_expected));
+    if(formal_rational_log_result.status != risch_status::elementary ||
+       formal_rational_log_result.remainder != context.integer(0) ||
+       formal_rational_log_error != context.integer(0)){
+        std::cerr << "formal rational logarithmic chain failed: "
+                  << formal_rational_log_result.diagnostic << " primitive="
+                  << formal_rational_log_result.elementary_part.to_string()
+                  << " derivative error="
+                  << formal_rational_log_error.to_string() << '\n';
+        return 1;
+    }
+    exact_expr independent_exponential_product =
+        (context.integer(1) + context.integer(2) * x) *
+        context.exponential(x) *
+        context.exponential(context.power(x, context.integer(2)));
+    risch_result independent_exponential_product_result =
+        context.integrate_elementary(independent_exponential_product, x);
+    exact_expr independent_exponential_product_error =
+        context.simplify(context.expand(context.differentiate(
+            independent_exponential_product_result.elementary_part, x) -
+            independent_exponential_product));
+    if(independent_exponential_product_result.status !=
+           risch_status::elementary ||
+       independent_exponential_product_result.remainder != context.integer(0) ||
+       independent_exponential_product_error != context.integer(0)){
+        std::cerr << "independent exponential product rule failed: "
+                  << independent_exponential_product_result.diagnostic
+                  << " primitive="
+                  << independent_exponential_product_result.elementary_part.to_string()
+                  << " derivative error="
+                  << independent_exponential_product_error.to_string()
+                  << '\n';
+        return 1;
+    }
     risch_options tiny_formal_derivative_budget;
     tiny_formal_derivative_budget.maximum_nodes = 1;
     risch_result formal_derivative_budget_result = context.integrate_elementary(
