@@ -150,6 +150,45 @@ int main(){
     assert(context.simplify(context.expand(context.differentiate(
         exponential_square_chain_result.elementary_part, x) -
         exponential_square_chain, 100000)) == context.integer(0));
+
+    // Substituting t = exp(x) reduces this mixed exponential tower to the
+    // ordinary logistic integral in t.  The strict Risch entry must recurse
+    // through the generator and certify the back-substituted derivative.
+    exact_expr nested_logistic_integrand = t /
+        (context.integer(1) + context.exponential(t));
+    risch_result nested_logistic_result = context.integrate_elementary(
+        nested_logistic_integrand, x);
+    exact_expr nested_logistic_expected = t - context.natural_logarithm(
+        context.integer(1) + context.exponential(t));
+    if(nested_logistic_result.status != risch_status::elementary)
+        std::fprintf(stderr, "nested logistic substitution failed: %s; remainder=%s\n",
+            nested_logistic_result.diagnostic.c_str(),
+            nested_logistic_result.remainder.to_string().c_str());
+    assert(nested_logistic_result.status == risch_status::elementary);
+    assert(nested_logistic_result.remainder == context.integer(0));
+    assert(context.simplify(nested_logistic_result.elementary_part -
+        nested_logistic_expected) == context.integer(0));
+    exact_expr nested_logistic_variable = context.symbol(
+        "nested_logistic_variable");
+    exact_expr nested_logistic_inner = context.integer(1) /
+        (context.integer(1) + context.exponential(nested_logistic_variable));
+    exact_expr nested_logistic_inner_primitive = nested_logistic_variable -
+        context.natural_logarithm(context.integer(1) +
+            context.exponential(nested_logistic_variable));
+    risch_result nested_logistic_inner_result = context.integrate_elementary(
+        nested_logistic_inner, nested_logistic_variable);
+    assert(nested_logistic_inner_result.status == risch_status::elementary);
+    assert(nested_logistic_inner_result.remainder == context.integer(0));
+    assert(context.simplify(nested_logistic_inner_result.elementary_part -
+        nested_logistic_inner_primitive) == context.integer(0));
+    assert(context.simplify(context.differentiate(t, x) - t) ==
+        context.integer(0));
+    risch_options shallow_nested_substitution;
+    shallow_nested_substitution.maximum_recursion_depth = 1;
+    risch_result shallow_nested_logistic = context.integrate_elementary(
+        nested_logistic_integrand, x, shallow_nested_substitution);
+    assert(shallow_nested_logistic.status == risch_status::resource_limit);
+
     risch_options options;
     options.maximum_recursion_depth = 1;
 

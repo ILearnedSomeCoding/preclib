@@ -595,6 +595,43 @@ int main(){
         return 1;
     }
 
+    exact_expr quadratic_repeated_pole = exponential /
+        context.power(context.power(x, context.integer(2)) +
+                      context.integer(1), context.integer(2));
+    risch_result quadratic_repeated_pole_result = context.integrate_elementary(
+        quadratic_repeated_pole, x);
+    exact_expr quadratic_denominator =
+        context.power(x, context.integer(2)) + context.integer(1);
+    exact_expr quadratic_repeated_expected_elementary =
+        x * exponential / (context.integer(2) * quadratic_denominator);
+    exact_expr quadratic_repeated_expected_remainder =
+        (context.integer(1) / context.integer(2) -
+         context.power(x, context.integer(2))) * exponential /
+        quadratic_denominator;
+    exact_expr quadratic_reconstruction_numerator =
+        (context.integer(1) - context.power(x, context.integer(2))) /
+            context.integer(2) +
+        context.power(x, context.integer(2)) * quadratic_denominator +
+        (context.integer(1) / context.integer(2) -
+         context.power(x, context.integer(2))) * quadratic_denominator -
+        context.integer(1);
+    if(quadratic_repeated_pole_result.status !=
+           risch_status::proven_nonelementary ||
+       !is_zero(context, quadratic_repeated_pole_result.elementary_part -
+           quadratic_repeated_expected_elementary) ||
+       !is_zero(context, quadratic_repeated_pole_result.remainder -
+           quadratic_repeated_expected_remainder) ||
+       !is_zero(context, quadratic_reconstruction_numerator)){
+        std::cerr << "quadratic repeated-pole hyperexponential RDE failed: "
+                  << quadratic_repeated_pole_result.diagnostic
+                  << " elementary="
+                  << quadratic_repeated_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << quadratic_repeated_pole_result.remainder.to_string()
+                  << '\n';
+        return 1;
+    }
+
     std::cout << "risch hyperexponential polynomial reduction ok\n";
     return 0;
 }

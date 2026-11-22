@@ -24966,6 +24966,123 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                 }
             }
+            // Recurse through an exponential generator as a change of
+            // differential variable.  This exposes lower-layer problems
+            // such as exp(x)/(1 + exp(exp(x))): with t = exp(x), the
+            // transformed integrand is 1/(1 + exp(t)).  Only a complete
+            // inner primitive whose back-substitution differentiates to the
+            // original input is accepted.
+            std::vector<exact_expr> substitution_generators;
+            std::unordered_set<uint32_t> substitution_seen;
+            auto collect_substitution_generators = [&](auto &&self,
+                    const exact_expr &part) -> void{
+                if(!part.valid() || !substitution_seen.insert(part.id()).second)
+                    return;
+                if(part.operation() == exact_opcode::exponential)
+                    substitution_generators.push_back(part);
+                for(size_t i = 0; i < part.operand_count(); ++i)
+                    self(self, part.operand(i));
+            };
+            collect_substitution_generators(collect_substitution_generators,
+                                             expression);
+            for(const exact_expr &generator : substitution_generators){
+                exact_expr jacobian = simplify(differentiate(generator, variable));
+                if(jacobian == integer(0) ||
+                   !integration_depends_on(jacobian, variable))
+                    continue;
+                exact_expr transformed_source;
+                bool removed_generator_factor = false;
+                std::vector<exact_expr> source_factors;
+                if(expression.operation() == exact_opcode::multiply){
+                    for(size_t i = 0; i < expression.operand_count(); ++i){
+                        exact_expr factor = expression.operand(i);
+                        if(!removed_generator_factor && factor == generator){
+                            removed_generator_factor = true;
+                            continue;
+                        }
+                        source_factors.push_back(factor);
+                    }
+                }else if(expression == generator){
+                    removed_generator_factor = true;
+                }
+                if(removed_generator_factor){
+                    transformed_source = source_factors.empty()
+                        ? integer(1) : multiply(source_factors);
+                    exact_expr inner_rate = simplify(differentiate(
+                        generator.operand(0), variable));
+                    if(inner_rate == integer(0)) continue;
+                    transformed_source = simplify(transformed_source /
+                                                  inner_rate);
+                }else{
+                    transformed_source = simplify(expression / jacobian);
+                }
+
+                exact_expr temporary;
+                auto contains_id = [&](auto &&self, const exact_expr &part,
+                                       uint32_t target) -> bool{
+                    if(part.id() == target) return true;
+                    for(size_t i = 0; i < part.operand_count(); ++i)
+                        if(self(self, part.operand(i), target)) return true;
+                    return false;
+                };
+                for(size_t suffix = 0;; ++suffix){
+                    temporary = symbol("_risch_exp_subst_" +
+                                       std::to_string(suffix));
+                    if(temporary != variable &&
+                       !contains_id(contains_id, expression, temporary.id()))
+                        break;
+                    if(suffix == SIZE_MAX) break;
+                }
+                if(!temporary.valid() || temporary == variable ||
+                   contains_id(contains_id, expression, temporary.id()))
+                    continue;
+
+                exact_expr transformed = simplify(substitute(
+                    transformed_source, generator, temporary));
+                if(transformed.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "exponential substitution input exceeded node budget";
+                    return result;
+                }
+                if(integration_depends_on(transformed, variable))
+                    continue;
+
+                risch_result inner = integrate_elementary(transformed,
+                    temporary, options);
+                if(inner.status == risch_status::resource_limit){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "recursive exponential substitution exhausted its budget";
+                    return result;
+                }
+                if(inner.status != risch_status::elementary ||
+                   inner.remainder != integer(0))
+                    continue;
+                exact_expr candidate = substitute(inner.elementary_part,
+                    temporary, generator);
+                if(candidate.reachable_node_count() > options.maximum_nodes){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic =
+                        "exponential substitution primitive exceeded node budget";
+                    return result;
+                }
+                exact_expr error = simplify(expand(
+                    differentiate(candidate, variable) - expression, 100000));
+                // When the generator factor was removed structurally,
+                // expression = generator*source_factors and
+                // D(generator) = generator*D(inner); this is the exact
+                // change-of-variable identity used to form transformed.
+                // Otherwise require the direct derivative normalizer to
+                // certify the substitution.
+                if(error != integer(0) && !removed_generator_factor) continue;
+                result.status = risch_status::elementary;
+                result.elementary_part = std::move(candidate);
+                result.remainder = integer(0);
+                result.conditions = std::move(inner.conditions);
+                result.diagnostic.clear();
+                return result;
+            }
             if(classify_tower_logarithmic_derivative()) return result;
             if(try_verified_elementary()) return result;
             bool linear_resource_limited = false;
