@@ -206,27 +206,37 @@ int main(){
     assert(context.simplify(context.integer(1) + triple_exponential -
         triple_exponential - context.integer(1)) == context.integer(0));
 
-    // Inverse circular and hyperbolic functions are valid local differential
-    // generators too. The exact derivative factor is removed before solving
-    // the lower exponential rational integral.
-    std::vector<exact_expr> inverse_generators = {
+    // Other-base logarithms and inverse circular/hyperbolic functions are
+    // local differential generators too. Their exact Jacobians are removed
+    // before solving the lower integral.
+    std::vector<exact_expr> recursive_generators = {
+        context.logarithm_base_2(x),
+        context.logarithm_base_10(x),
         context.arc_sine(x),
         context.arc_cosine(x),
         context.arc_tangent(x),
         context.inverse_hyperbolic_sine(x),
         context.inverse_hyperbolic_cosine(x),
         context.inverse_hyperbolic_tangent(x),
-        context.arc_tangent(context.power(x, context.integer(2)))
+        context.arc_tangent(context.power(x, context.integer(2))),
+        context.arc_tangent(a * x)
     };
     for(size_t inverse_index = 0;
-        inverse_index < inverse_generators.size(); ++inverse_index){
-        const exact_expr &inverse_generator = inverse_generators[inverse_index];
+        inverse_index < recursive_generators.size(); ++inverse_index){
+        const exact_expr &inverse_generator = recursive_generators[inverse_index];
+        exact_expr normalized_generator = context.simplify(inverse_generator);
+        if(inverse_generator.operation() == exact_opcode::logarithm_base_2)
+            normalized_generator = context.natural_logarithm(x) /
+                context.natural_logarithm(context.integer(2));
+        else if(inverse_generator.operation() == exact_opcode::logarithm_base_10)
+            normalized_generator = context.natural_logarithm(x) /
+                context.natural_logarithm(context.integer(10));
         exact_expr inverse_logistic = context.differentiate(
             inverse_generator, x) /
             (context.integer(1) + context.exponential(inverse_generator));
-        exact_expr inverse_logistic_expected = inverse_generator -
+        exact_expr inverse_logistic_expected = normalized_generator -
             context.natural_logarithm(context.integer(1) +
-                context.exponential(inverse_generator));
+                context.exponential(normalized_generator));
         risch_result inverse_logistic_result = context.integrate_elementary(
             inverse_logistic, x);
         if(inverse_logistic_result.status != risch_status::elementary){
@@ -237,8 +247,32 @@ int main(){
         }
         assert(inverse_logistic_result.status == risch_status::elementary);
         assert(inverse_logistic_result.remainder == context.integer(0));
-        assert(context.simplify(inverse_logistic_result.elementary_part -
-            inverse_logistic_expected) == context.integer(0));
+        if(inverse_generator.operation() == exact_opcode::logarithm_base_2 ||
+           inverse_generator.operation() == exact_opcode::logarithm_base_10){
+            assert(inverse_logistic_result.elementary_part.to_string() ==
+                inverse_logistic_expected.to_string());
+        }else{
+            assert(context.simplify(inverse_logistic_result.elementary_part -
+                inverse_logistic_expected) == context.integer(0));
+        }
+        if(inverse_index + 1 == recursive_generators.size())
+            assert(inverse_logistic_result.conditions.empty());
+
+        if(inverse_generator.operation() != exact_opcode::logarithm_base_2 &&
+           inverse_generator.operation() != exact_opcode::logarithm_base_10){
+            exact_expr inverse_rational_input = context.differentiate(
+                inverse_generator, x) /
+                (context.integer(1) + context.power(inverse_generator,
+                    context.integer(2)));
+            exact_expr inverse_rational_expected =
+                context.arc_tangent(normalized_generator);
+            risch_result inverse_rational_result = context.integrate_elementary(
+                inverse_rational_input, x);
+            assert(inverse_rational_result.status == risch_status::elementary);
+            assert(inverse_rational_result.remainder == context.integer(0));
+            assert(context.simplify(inverse_rational_result.elementary_part -
+                inverse_rational_expected) == context.integer(0));
+        }
     }
 
     exact_expr sine_generator = context.sine(x);

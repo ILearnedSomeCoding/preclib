@@ -325,4 +325,8 @@
 - `feat`: 递归生成元换元扩展到反三角与反双曲函数，使用完整 Jacobian 变换 cofactor。
 - `fix`: 非乘积形式的复合换元按完整 `D(generator)` 除 cofactor；不再丢掉内层链导数。
 - `test`: 覆盖六类反函数 logistic 积分及复合生成元 `atan(x^2)`。
+- `test`: 检查 `atan(a*x)` 在显式链式导数抵消后不遗留多余的 `a!=0` 条件。
+- `test`: 反函数生成元增加有理 cofactor `D(g)/(1+g^2)` 的 R0 递归回归。
+- `feat`: 将 `log_2`、`log_10` 纳入严格入口的递归生成元换元，导数使用精确 `ln(base)`。
+- `test`: 为不同底数对数增加 logistic cofactor 递归积分回归。
 - `docs`: 记录反函数换元的局部可微域条件与尚未支持的通用代数扩张边界。

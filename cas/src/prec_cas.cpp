@@ -25046,6 +25046,14 @@ risch_result exact_context::integrate_elementary_impl(
                 case exact_opcode::natural_logarithm:
                     outer = integer(1) / inner;
                     break;
+                case exact_opcode::logarithm_base_2:
+                    outer = integer(1) /
+                        (inner * natural_logarithm(integer(2)));
+                    break;
+                case exact_opcode::logarithm_base_10:
+                    outer = integer(1) /
+                        (inner * natural_logarithm(integer(10)));
+                    break;
                 case exact_opcode::sine:
                     outer = cosine(inner);
                     break;
