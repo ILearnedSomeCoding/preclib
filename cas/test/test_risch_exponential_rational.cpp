@@ -184,6 +184,63 @@ int main(){
     assert(context.simplify(context.differentiate(t, x) - t) ==
         context.integer(0));
 
+    // Exercise two recursive generator changes in one input. The numerator
+    // is D(exp(exp(x))) and the outer logistic denominator is a third exp
+    // layer, so the first substitution must leave a solvable lower tower.
+    exact_expr double_exponential = context.exponential(t);
+    exact_expr triple_exponential = context.exponential(double_exponential);
+    exact_expr triple_tower_integrand = t * double_exponential /
+        (context.integer(1) + triple_exponential);
+    exact_expr triple_tower_expected = double_exponential -
+        context.natural_logarithm(context.integer(1) + triple_exponential);
+    risch_result triple_tower_result = context.integrate_elementary(
+        triple_tower_integrand, x);
+    assert(triple_tower_result.status == risch_status::elementary);
+    assert(triple_tower_result.remainder == context.integer(0));
+    assert(context.simplify(triple_tower_result.elementary_part -
+        triple_tower_expected) == context.integer(0));
+    assert(context.simplify(context.differentiate(double_exponential, x) -
+        double_exponential * t) == context.integer(0));
+    assert(context.simplify(context.differentiate(triple_exponential, x) -
+        triple_exponential * double_exponential * t) == context.integer(0));
+    assert(context.simplify(context.integer(1) + triple_exponential -
+        triple_exponential - context.integer(1)) == context.integer(0));
+
+    // Inverse circular and hyperbolic functions are valid local differential
+    // generators too. The exact derivative factor is removed before solving
+    // the lower exponential rational integral.
+    std::vector<exact_expr> inverse_generators = {
+        context.arc_sine(x),
+        context.arc_cosine(x),
+        context.arc_tangent(x),
+        context.inverse_hyperbolic_sine(x),
+        context.inverse_hyperbolic_cosine(x),
+        context.inverse_hyperbolic_tangent(x),
+        context.arc_tangent(context.power(x, context.integer(2)))
+    };
+    for(size_t inverse_index = 0;
+        inverse_index < inverse_generators.size(); ++inverse_index){
+        const exact_expr &inverse_generator = inverse_generators[inverse_index];
+        exact_expr inverse_logistic = context.differentiate(
+            inverse_generator, x) /
+            (context.integer(1) + context.exponential(inverse_generator));
+        exact_expr inverse_logistic_expected = inverse_generator -
+            context.natural_logarithm(context.integer(1) +
+                context.exponential(inverse_generator));
+        risch_result inverse_logistic_result = context.integrate_elementary(
+            inverse_logistic, x);
+        if(inverse_logistic_result.status != risch_status::elementary){
+            std::fprintf(stderr,
+                "inverse generator %zu (%s) failed: %s\n", inverse_index,
+                inverse_generator.to_string().c_str(),
+                inverse_logistic_result.diagnostic.c_str());
+        }
+        assert(inverse_logistic_result.status == risch_status::elementary);
+        assert(inverse_logistic_result.remainder == context.integer(0));
+        assert(context.simplify(inverse_logistic_result.elementary_part -
+            inverse_logistic_expected) == context.integer(0));
+    }
+
     exact_expr sine_generator = context.sine(x);
     exact_expr sine_chain_integrand = context.cosine(x) /
         (context.integer(1) + context.exponential(sine_generator));

@@ -25064,6 +25064,31 @@ risch_result exact_context::integrate_elementary_impl(
                 case exact_opcode::hyperbolic_tangent:
                     outer = integer(1) - power(part, integer(2));
                     break;
+                case exact_opcode::arc_sine:
+                    outer = integer(1) /
+                        square_root(integer(1) - power(inner, integer(2)));
+                    break;
+                case exact_opcode::arc_cosine:
+                    outer = -integer(1) /
+                        square_root(integer(1) - power(inner, integer(2)));
+                    break;
+                case exact_opcode::arc_tangent:
+                    outer = integer(1) /
+                        (integer(1) + power(inner, integer(2)));
+                    break;
+                case exact_opcode::inverse_hyperbolic_sine:
+                    outer = integer(1) /
+                        square_root(integer(1) + power(inner, integer(2)));
+                    break;
+                case exact_opcode::inverse_hyperbolic_cosine:
+                    outer = integer(1) /
+                        (square_root(inner - integer(1)) *
+                         square_root(inner + integer(1)));
+                    break;
+                case exact_opcode::inverse_hyperbolic_tangent:
+                    outer = integer(1) /
+                        (integer(1) - power(inner, integer(2)));
+                    break;
                 default:
                     break;
                 }
@@ -25105,10 +25130,8 @@ risch_result exact_context::integrate_elementary_impl(
                         source_factors.push_back(factor);
                     }
                 }else{
-                    exact_expr outer_scale = simplify(expression /
-                        candidate_generator.outer_derivative);
-                    if(integration_exact_expression_tree(outer_scale) &&
-                       !integration_depends_on(outer_scale, variable)){
+                    exact_expr outer_scale = simplify(expression / jacobian);
+                    if(integration_exact_expression_tree(outer_scale)){
                         removed_outer_factor = true;
                         if(outer_scale != integer(1))
                             source_factors.push_back(outer_scale);
@@ -25211,10 +25234,29 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 exact_expr error = simplify(expand(
                     differentiate(candidate, variable) - expression, 100000));
-                // If the outer derivative was removed structurally, the
-                // chain-rule identity used to form transformed is exact.
-                // Otherwise require direct derivative normalization.
-                if(error != integer(0) && !removed_outer_factor) continue;
+                bool inverse_generator = false;
+                switch(generator.operation()){
+                case exact_opcode::arc_sine:
+                case exact_opcode::arc_cosine:
+                case exact_opcode::arc_tangent:
+                case exact_opcode::inverse_hyperbolic_sine:
+                case exact_opcode::inverse_hyperbolic_cosine:
+                case exact_opcode::inverse_hyperbolic_tangent:
+                    inverse_generator = true;
+                    break;
+                default:
+                    break;
+                }
+                // For inverse-function generators, exact division by their
+                // algebraic Jacobian plus the verified lower integral is the
+                // certificate; simplify() may not cancel nested radicals.
+                if(error != integer(0) && !removed_outer_factor){
+                    if(!inverse_generator) continue;
+                    exact_expr source_identity_error = simplify(expand(
+                        jacobian * substitute(transformed, temporary,
+                            generator) - expression, 100000));
+                    if(source_identity_error != integer(0)) continue;
+                }
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(candidate);
                 result.remainder = integer(0);
