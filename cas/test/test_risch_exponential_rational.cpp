@@ -183,6 +183,82 @@ int main(){
         nested_logistic_inner_primitive) == context.integer(0));
     assert(context.simplify(context.differentiate(t, x) - t) ==
         context.integer(0));
+
+    exact_expr sine_generator = context.sine(x);
+    exact_expr sine_chain_integrand = context.cosine(x) /
+        (context.integer(1) + context.exponential(sine_generator));
+    risch_result sine_chain_result = context.integrate_elementary(
+        sine_chain_integrand, x);
+    exact_expr sine_chain_expected = sine_generator -
+        context.natural_logarithm(context.integer(1) +
+            context.exponential(sine_generator));
+    assert(sine_chain_result.status == risch_status::elementary);
+    assert(sine_chain_result.remainder == context.integer(0));
+    assert(context.simplify(sine_chain_result.elementary_part -
+        sine_chain_expected) == context.integer(0));
+    assert(context.simplify(context.differentiate(sine_generator, x) -
+        context.cosine(x)) == context.integer(0));
+
+    exact_expr cosine_generator = context.cosine(x);
+    exact_expr cosine_chain_integrand = -context.sine(x) /
+        (context.integer(1) + context.exponential(cosine_generator));
+    risch_result cosine_chain_result = context.integrate_elementary(
+        cosine_chain_integrand, x);
+    exact_expr cosine_chain_expected = cosine_generator -
+        context.natural_logarithm(context.integer(1) +
+            context.exponential(cosine_generator));
+    assert(cosine_chain_result.status == risch_status::elementary);
+    assert(cosine_chain_result.remainder == context.integer(0));
+    assert(context.simplify(cosine_chain_result.elementary_part -
+        cosine_chain_expected) == context.integer(0));
+
+    exact_expr scaled_sine_argument = a * x;
+    exact_expr scaled_sine_generator = context.sine(scaled_sine_argument);
+    exact_expr scaled_cosine_generator = context.cosine(scaled_sine_argument);
+    exact_expr scaled_logistic_denominator = context.integer(1) +
+        context.exponential(scaled_sine_generator);
+    exact_expr explicit_slope_integrand = a * scaled_cosine_generator /
+        scaled_logistic_denominator;
+    risch_result explicit_slope_result = context.integrate_elementary(
+        explicit_slope_integrand, x);
+    exact_expr scaled_logistic_primitive = scaled_sine_generator -
+        context.natural_logarithm(scaled_logistic_denominator);
+    assert(explicit_slope_result.status == risch_status::elementary);
+    assert(explicit_slope_result.remainder == context.integer(0));
+    assert(explicit_slope_result.conditions.empty());
+    assert(context.simplify(explicit_slope_result.elementary_part -
+        scaled_logistic_primitive) == context.integer(0));
+
+    exact_expr implicit_slope_integrand = scaled_cosine_generator /
+        scaled_logistic_denominator;
+    risch_result implicit_slope_result = context.integrate_elementary(
+        implicit_slope_integrand, x);
+    assert(implicit_slope_result.status == risch_status::elementary);
+    assert(implicit_slope_result.remainder == context.integer(0));
+    assert(std::find(implicit_slope_result.conditions.begin(),
+        implicit_slope_result.conditions.end(), a) !=
+        implicit_slope_result.conditions.end());
+    assert(context.simplify(implicit_slope_result.elementary_part -
+        scaled_logistic_primitive / a) == context.integer(0));
+
+    exact_expr logarithm_generator = context.natural_logarithm(x);
+    exact_expr logarithm_exponential_square = context.exponential(
+        context.power(logarithm_generator, context.integer(2)));
+    exact_expr logarithm_chain_integrand = logarithm_generator *
+        logarithm_exponential_square /
+        (x * (context.integer(1) + logarithm_exponential_square));
+    risch_result logarithm_chain_result = context.integrate_elementary(
+        logarithm_chain_integrand, x);
+    exact_expr logarithm_chain_expected = context.natural_logarithm(
+        context.integer(1) + logarithm_exponential_square) /
+        context.integer(2);
+    assert(logarithm_chain_result.status == risch_status::elementary);
+    assert(logarithm_chain_result.remainder == context.integer(0));
+    assert(context.simplify(logarithm_chain_result.elementary_part -
+        logarithm_chain_expected) == context.integer(0));
+    assert(context.simplify(context.differentiate(logarithm_generator, x) -
+        context.integer(1) / x) == context.integer(0));
+
     risch_options shallow_nested_substitution;
     shallow_nested_substitution.maximum_recursion_depth = 1;
     risch_result shallow_nested_logistic = context.integrate_elementary(

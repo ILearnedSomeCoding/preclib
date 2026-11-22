@@ -14697,10 +14697,35 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr elementary = simplify(constant * lower.elementary_part);
         if(elementary.reachable_node_count() > options.maximum_nodes)
             return false;
+        std::vector<exact_expr> conditions;
+        for(const exact_expr &condition : lower.conditions){
+            bool redundant = false;
+            if(condition.operation() == exact_opcode::symbol){
+                exact_expr scale_ratio = simplify(constant / condition);
+                if(scale_ratio.is_value() &&
+                   !scale_ratio.value().is_approximate() &&
+                   !scale_ratio.value().is_zero()){
+                    try{
+                        exact_expr specialized_primitive = substitute(
+                            elementary, condition, integer(0));
+                        exact_expr specialized_integrand = substitute(
+                            expression, condition, integer(0));
+                        redundant = simplify(expand(differentiate(
+                            specialized_primitive, variable) -
+                            specialized_integrand, 100000)) == integer(0);
+                    }catch(const std::exception &){
+                        redundant = false;
+                    }
+                }
+            }
+            if(!redundant && std::find(conditions.begin(), conditions.end(),
+                    condition) == conditions.end())
+                conditions.push_back(condition);
+        }
         result.status = risch_status::elementary;
         result.elementary_part = std::move(elementary);
         result.remainder = integer(0);
-        result.conditions = std::move(lower.conditions);
+        result.conditions = std::move(conditions);
         result.diagnostic.clear();
         return true;
     };
@@ -20040,8 +20065,31 @@ risch_result exact_context::integrate_elementary_impl(
             transformed * dx_dt_without_slope);
         if(integration_depends_on(transformed_integrand, variable)) return false;
 
+        // Keep parameter-only coefficients out of the rational Risch solve.
+        // Besides making its coefficient field smaller, this lets an explicit
+        // chain factor cancel the slope before any nonzero condition is added.
+        exact_expr scalar = integer(1);
+        std::vector<exact_expr> rational_factors;
+        if(transformed_integrand.operation() == exact_opcode::multiply){
+            for(size_t i = 0; i < transformed_integrand.operand_count(); ++i){
+                exact_expr factor = transformed_integrand.operand(i);
+                if(!integration_depends_on(factor, parameter) &&
+                   integration_exact_expression_tree(factor))
+                    scalar = scalar * factor;
+                else rational_factors.push_back(factor);
+            }
+        }else if(!integration_depends_on(transformed_integrand, parameter)){
+            scalar = transformed_integrand;
+        }else{
+            rational_factors.push_back(transformed_integrand);
+        }
+        exact_expr rational_source = rational_factors.empty()
+            ? integer(1) : rational_factors.size() == 1
+                ? rational_factors[0] : multiply(rational_factors);
+        rational_source = simplify(rational_source);
+
         integration_poly numerator, rational_denominator;
-        if(!integration_parse_rational(transformed_integrand, parameter,
+        if(!integration_parse_rational(rational_source, parameter,
                 numerator, rational_denominator, options.maximum_degree,
                 options.maximum_degree) ||
            !integration_normalize_rational(numerator, rational_denominator))
@@ -20072,12 +20120,19 @@ risch_result exact_context::integrate_elementary_impl(
         exact_expr half_angle = angle / integer(2);
         exact_expr back_substitution = hyperbolic
             ? hyperbolic_tangent(half_angle) : tangent(half_angle);
-        exact_expr candidate = substitute(parameter_primitive, parameter,
-                                          back_substitution) / slope;
+        exact_expr scale_after_substitution = simplify(scalar / slope);
+        exact_expr candidate = simplify(scale_after_substitution * substitute(
+            parameter_primitive, parameter, back_substitution));
         result.status = risch_status::elementary;
         result.elementary_part = std::move(candidate);
         result.remainder = integer(0);
         result.conditions = std::move(parameter_result.conditions);
+        if(!scale_after_substitution.is_value() &&
+           !is_provably_nonzero_constant(
+               is_provably_nonzero_constant, slope) &&
+           std::find(result.conditions.begin(), result.conditions.end(), slope) ==
+               result.conditions.end())
+            result.conditions.push_back(slope);
         result.diagnostic.clear();
         return true;
     };
@@ -24966,87 +25021,174 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                 }
             }
-            // Recurse through an exponential generator as a change of
-            // differential variable.  This exposes lower-layer problems
-            // such as exp(x)/(1 + exp(exp(x))): with t = exp(x), the
-            // transformed integrand is 1/(1 + exp(t)).  Only a complete
-            // inner primitive whose back-substitution differentiates to the
-            // original input is accepted.
-            std::vector<exact_expr> substitution_generators;
+            // Recurse through elementary generators as a change of
+            // differential variable. This exposes lower-layer problems such
+            // as exp(x)/(1 + exp(exp(x))) and cos(x)/(1 + exp(sin(x))).
+            // Only a complete inner primitive with an exact chain-rule
+            // certificate is accepted.
+            struct substitution_generator{
+                exact_expr value;
+                exact_expr outer_derivative;
+            };
+            std::vector<substitution_generator> substitution_generators;
             std::unordered_set<uint32_t> substitution_seen;
             auto collect_substitution_generators = [&](auto &&self,
                     const exact_expr &part) -> void{
                 if(!part.valid() || !substitution_seen.insert(part.id()).second)
                     return;
-                if(part.operation() == exact_opcode::exponential)
-                    substitution_generators.push_back(part);
+                exact_expr inner = part.operand_count() == 1
+                    ? part.operand(0) : exact_expr();
+                exact_expr outer;
+                switch(part.operation()){
+                case exact_opcode::exponential:
+                    outer = part;
+                    break;
+                case exact_opcode::natural_logarithm:
+                    outer = integer(1) / inner;
+                    break;
+                case exact_opcode::sine:
+                    outer = cosine(inner);
+                    break;
+                case exact_opcode::cosine:
+                    outer = -sine(inner);
+                    break;
+                case exact_opcode::hyperbolic_sine:
+                    outer = hyperbolic_cosine(inner);
+                    break;
+                case exact_opcode::hyperbolic_cosine:
+                    outer = hyperbolic_sine(inner);
+                    break;
+                case exact_opcode::tangent:
+                    outer = integer(1) + power(part, integer(2));
+                    break;
+                case exact_opcode::hyperbolic_tangent:
+                    outer = integer(1) - power(part, integer(2));
+                    break;
+                default:
+                    break;
+                }
+                if(outer.valid())
+                    substitution_generators.push_back({part, outer});
                 for(size_t i = 0; i < part.operand_count(); ++i)
                     self(self, part.operand(i));
             };
             collect_substitution_generators(collect_substitution_generators,
                                              expression);
-            for(const exact_expr &generator : substitution_generators){
-                exact_expr jacobian = simplify(differentiate(generator, variable));
+            for(const substitution_generator &candidate_generator :
+                    substitution_generators){
+                const exact_expr &generator = candidate_generator.value;
+                exact_expr inner_rate = simplify(differentiate(
+                    generator.operand(0), variable));
+                if(inner_rate == integer(0)) continue;
+                exact_expr jacobian = simplify(
+                    candidate_generator.outer_derivative * inner_rate);
                 if(jacobian == integer(0) ||
                    !integration_depends_on(jacobian, variable))
                     continue;
                 exact_expr transformed_source;
-                bool removed_generator_factor = false;
+                bool removed_outer_factor = false;
                 std::vector<exact_expr> source_factors;
                 if(expression.operation() == exact_opcode::multiply){
                     for(size_t i = 0; i < expression.operand_count(); ++i){
                         exact_expr factor = expression.operand(i);
-                        if(!removed_generator_factor && factor == generator){
-                            removed_generator_factor = true;
-                            continue;
+                        if(!removed_outer_factor){
+                            exact_expr outer_scale = simplify(factor /
+                                candidate_generator.outer_derivative);
+                            if(integration_exact_expression_tree(outer_scale) &&
+                               !integration_depends_on(outer_scale, variable)){
+                                removed_outer_factor = true;
+                                if(outer_scale != integer(1))
+                                    source_factors.push_back(outer_scale);
+                                continue;
+                            }
                         }
                         source_factors.push_back(factor);
                     }
-                }else if(expression == generator){
-                    removed_generator_factor = true;
+                }else{
+                    exact_expr outer_scale = simplify(expression /
+                        candidate_generator.outer_derivative);
+                    if(integration_exact_expression_tree(outer_scale) &&
+                       !integration_depends_on(outer_scale, variable)){
+                        removed_outer_factor = true;
+                        if(outer_scale != integer(1))
+                            source_factors.push_back(outer_scale);
+                    }
                 }
-                if(removed_generator_factor){
+                if(removed_outer_factor){
+                    std::vector<exact_expr> rate_factors;
+                    auto append_factors = [&](auto &&self,
+                            const exact_expr &part,
+                            std::vector<exact_expr> &factors) -> void{
+                        if(part.operation() == exact_opcode::multiply){
+                            for(size_t i = 0; i < part.operand_count(); ++i)
+                                self(self, part.operand(i), factors);
+                        }else factors.push_back(part);
+                    };
+                    std::vector<exact_expr> flattened_source_factors;
+                    for(const exact_expr &factor : source_factors)
+                        append_factors(append_factors, factor,
+                                       flattened_source_factors);
+                    source_factors = std::move(flattened_source_factors);
+                    append_factors(append_factors, inner_rate, rate_factors);
+                    std::vector<exact_expr> remaining_rate_factors;
+                    for(const exact_expr &rate_factor : rate_factors){
+                        auto matching_factor = std::find_if(
+                            source_factors.begin(), source_factors.end(),
+                            [&](const exact_expr &source_factor){
+                                return source_factor == rate_factor &&
+                                    integration_exact_expression_tree(
+                                        source_factor);
+                            });
+                        if(matching_factor != source_factors.end() &&
+                           integration_exact_expression_tree(rate_factor))
+                            source_factors.erase(matching_factor);
+                        else remaining_rate_factors.push_back(rate_factor);
+                    }
                     transformed_source = source_factors.empty()
                         ? integer(1) : multiply(source_factors);
-                    exact_expr inner_rate = simplify(differentiate(
-                        generator.operand(0), variable));
-                    if(inner_rate == integer(0)) continue;
-                    transformed_source = simplify(transformed_source /
-                                                  inner_rate);
+                    if(!remaining_rate_factors.empty())
+                        transformed_source = simplify(transformed_source /
+                            multiply(remaining_rate_factors));
                 }else{
                     transformed_source = simplify(expression / jacobian);
                 }
 
                 exact_expr temporary;
-                auto contains_id = [&](auto &&self, const exact_expr &part,
+                auto contains_id = [&](const exact_expr &root,
                                        uint32_t target) -> bool{
-                    if(part.id() == target) return true;
-                    for(size_t i = 0; i < part.operand_count(); ++i)
-                        if(self(self, part.operand(i), target)) return true;
-                    return false;
+                    std::unordered_set<uint32_t> visited;
+                    auto walk = [&](auto &&self,
+                                    const exact_expr &part) -> bool{
+                        if(part.id() == target) return true;
+                        if(!visited.insert(part.id()).second) return false;
+                        for(size_t i = 0; i < part.operand_count(); ++i)
+                            if(self(self, part.operand(i))) return true;
+                        return false;
+                    };
+                    return walk(walk, root);
                 };
                 for(size_t suffix = 0;; ++suffix){
                     temporary = symbol("_risch_exp_subst_" +
                                        std::to_string(suffix));
                     if(temporary != variable &&
-                       !contains_id(contains_id, expression, temporary.id()))
+                       !contains_id(expression, temporary.id()))
                         break;
                     if(suffix == SIZE_MAX) break;
                 }
                 if(!temporary.valid() || temporary == variable ||
-                   contains_id(contains_id, expression, temporary.id()))
+                   contains_id(expression, temporary.id()))
                     continue;
 
                 exact_expr transformed = simplify(substitute(
                     transformed_source, generator, temporary));
+                if(integration_depends_on(transformed, variable))
+                    continue;
                 if(transformed.reachable_node_count() > options.maximum_nodes){
                     result.status = risch_status::resource_limit;
                     result.diagnostic =
                         "exponential substitution input exceeded node budget";
                     return result;
                 }
-                if(integration_depends_on(transformed, variable))
-                    continue;
 
                 risch_result inner = integrate_elementary(transformed,
                     temporary, options);
@@ -25069,13 +25211,10 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 exact_expr error = simplify(expand(
                     differentiate(candidate, variable) - expression, 100000));
-                // When the generator factor was removed structurally,
-                // expression = generator*source_factors and
-                // D(generator) = generator*D(inner); this is the exact
-                // change-of-variable identity used to form transformed.
-                // Otherwise require the direct derivative normalizer to
-                // certify the substitution.
-                if(error != integer(0) && !removed_generator_factor) continue;
+                // If the outer derivative was removed structurally, the
+                // chain-rule identity used to form transformed is exact.
+                // Otherwise require direct derivative normalization.
+                if(error != integer(0) && !removed_outer_factor) continue;
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(candidate);
                 result.remainder = integer(0);
