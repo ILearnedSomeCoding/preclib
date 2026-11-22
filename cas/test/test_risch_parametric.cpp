@@ -334,8 +334,10 @@ int main(){
         assert(context.integrate_elementary(integrable, x).status == risch_status::elementary);
         risch_options tiny_rde;
         tiny_rde.maximum_matrix_entries = 1;
+        // The exact finite-pole certificate precedes matrix-based RDE work,
+        // so this proof remains available even under a tiny matrix budget.
         assert(context.integrate_elementary(context.exponential(inner), x, tiny_rde).status ==
-            risch_status::resource_limit);
+            risch_status::proven_nonelementary);
         exact_expr positive = context.exponential(inner);
         exact_expr negative = context.exponential(-context.integer(2) * inner);
         exact_expr laurent_input = context.differentiate(inner, x) *

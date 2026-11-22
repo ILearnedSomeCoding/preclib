@@ -83,6 +83,16 @@ int main(){
         assert(result.remainder == context.integer(0));
     }
 
+    exact_expr no_rational_point_quadratic=context.integer(3)*x*x+
+        context.integer(3);
+    exact_expr no_point_input=context.integer(1)/
+        context.square_root(no_rational_point_quadratic);
+    risch_result no_point_result=context.integrate_elementary(no_point_input,x);
+    assert(no_point_result.status==risch_status::elementary);
+    assert(no_point_result.remainder==context.integer(0));
+    assert(no_point_result.elementary_part==
+        context.inverse_hyperbolic_sine(x)/context.square_root(context.integer(3)));
+
     std::puts("risch genus-0 quadratic curve ok");
     return 0;
 }

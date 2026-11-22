@@ -20280,6 +20280,61 @@ risch_result exact_context::integrate_elementary_impl(
             &a,&b,input_holomorphic);
     };
     if(classify_biquadratic_function_field()) return result;
+    auto classify_positive_quadratic_inverse_sqrt = [&]() -> bool{
+        if(expression.reachable_node_count() > options.maximum_nodes) return false;
+        std::vector<exact_expr> roots;
+        std::unordered_set<uint32_t> seen;
+        auto collect = [&](auto &&self,const exact_expr &part) -> void{
+            if(!seen.insert(part.id()).second) return;
+            if(part.operation() == exact_opcode::square_root &&
+               integration_depends_on(part.operand(0),variable))
+                roots.push_back(part);
+            for(size_t i = 0; i < part.operand_count(); ++i)
+                self(self,part.operand(i));
+        };
+        collect(collect,expression);
+        if(roots.size() != 1) return false;
+        const exact_expr radicand=roots[0].operand(0);
+        const exact_expr canonical_root=square_root(radicand);
+        if(expression != integer(1)/canonical_root) return false;
+
+        integration_poly numerator, denominator;
+        if(!integration_parse_rational(radicand,variable,numerator,
+                denominator,options.maximum_degree,options.maximum_degree) ||
+           !integration_normalize_rational(numerator,denominator) ||
+           numerator.size() != 3 || denominator.size() != 1 ||
+           denominator[0].is_zero()) return false;
+        for(auto &coefficient : numerator) coefficient = coefficient/denominator[0];
+        const numeric_value a=numerator[2], b=numerator[1], c=numerator[0];
+        const numeric_value discriminant=numeric_value(4)*a*c-b*b;
+        if(a.is_approximate() || discriminant.is_approximate() ||
+           a.is_negative() || a.is_zero() || discriminant.is_negative() ||
+           discriminant.is_zero()) return false;
+
+        // 4*a*P = (2*a*x+b)^2 + discriminant; positivity makes the
+        // principal inverse-hyperbolic-sine derivative the positive root.
+        integration_poly lhs=numerator;
+        for(auto &coefficient : lhs)
+            coefficient=coefficient*numeric_value(4)*a;
+        integration_poly linear{b,numeric_value(2)*a};
+        integration_poly rhs=integration_mul(linear,linear);
+        if(rhs.empty()) rhs.push_back(numeric_value(0));
+        rhs[0]=rhs[0]+discriminant;
+        if(integration_sub(lhs,rhs)!=integration_poly{numeric_value(0)})
+            return false;
+
+        const exact_expr linear_expr=integer(2)*value(a)*variable+value(b);
+        exact_expr candidate=inverse_hyperbolic_sine(
+            linear_expr/square_root(value(discriminant)))/square_root(value(a));
+        if(candidate.reachable_node_count()>options.maximum_nodes) return false;
+        result.status=risch_status::elementary;
+        result.elementary_part=std::move(candidate);
+        result.remainder=integer(0);
+        result.conditions.clear();
+        result.diagnostic.clear();
+        return true;
+    };
+    if(classify_positive_quadratic_inverse_sqrt()) return result;
     auto classify_rational_quadratic_curve = [&]() -> bool{
         std::vector<exact_expr> roots;
         std::unordered_set<uint32_t> seen;
