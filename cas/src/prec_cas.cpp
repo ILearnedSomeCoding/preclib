@@ -15940,6 +15940,10 @@ risch_result exact_context::integrate_elementary_impl(
         return true;
         };
         bool exponential_trigonometric_certificate = false;
+        bool polynomial_angle_non_elementary_certificate = false;
+        bool polynomial_angle_polynomial_rde_eligible = false;
+        bool polynomial_angle_simple_pole_obstruction = false;
+        exact_expr polynomial_angle_proof_coefficient;
         std::vector<exact_expr> exponential_trigonometric_conditions;
         auto add_exponential_trigonometric_condition =
             [&](const exact_expr &condition){
@@ -15989,9 +15993,14 @@ risch_result exact_context::integrate_elementary_impl(
                         has_exponential_factor = true;
                         continue;
                     }
-                    if(exponent < 0) return exact_expr();
                 }
                 exact_opcode operation = base.operation();
+                if(exponent < 0 &&
+                   (operation == exact_opcode::sine ||
+                    operation == exact_opcode::cosine ||
+                    operation == exact_opcode::hyperbolic_sine ||
+                    operation == exact_opcode::hyperbolic_cosine))
+                    return exact_expr();
                 if(operation == exact_opcode::sine ||
                    operation == exact_opcode::cosine ||
                    operation == exact_opcode::hyperbolic_sine ||
@@ -16049,8 +16058,12 @@ risch_result exact_context::integrate_elementary_impl(
             // Preserve the compact sine/cosine antiderivative for the
             // already-specialized single-trig-factor case below.
             if(cofactor_is_polynomial && cofactor_polynomial.size() == 1 &&
-               total_power == 1)
-                return exact_expr();
+               total_power == 1 && angles.size() == 1){
+                exact_expr angle_rate = simplify(differentiate(
+                    angles[0].angle, variable));
+                if(!integration_depends_on(angle_rate, variable))
+                    return exact_expr();
+            }
 
             exponential_argument = simplify(exponential_argument);
             exact_expr exponential_rate = simplify(differentiate(
@@ -16075,6 +16088,92 @@ risch_result exact_context::integrate_elementary_impl(
                 angle_terms.push_back(std::move(term));
                 integration_expr_trim(*this, rate_polynomial);
                 angle_rate_polynomials.push_back(std::move(rate_polynomial));
+            }
+
+            if(!has_exponential_factor && angles.size() == 1 &&
+               angles[0].circular &&
+               ((angles[0].sine == 1 && angles[0].cosine == 0 &&
+                 angles[0].hyperbolic_sine == 0 &&
+                 angles[0].hyperbolic_cosine == 0) ||
+                (angles[0].cosine == 1 && angles[0].sine == 0 &&
+                 angles[0].hyperbolic_sine == 0 &&
+                 angles[0].hyperbolic_cosine == 0)) &&
+               angle_rate_polynomials[0].size() > 1 &&
+               integration_exact_expression_tree(coefficient) &&
+               !integration_depends_on(coefficient, variable) &&
+               coefficient != integer(0)){
+                exact_expr phase_rate = simplify(differentiate(
+                    angles[0].angle, variable));
+                integration_expr_poly phase_rate_coefficients;
+                bool exact_rational_phase_rate =
+                    integration_parse_expr_poly(*this, phase_rate, variable,
+                        phase_rate_coefficients, options.maximum_degree);
+                integration_expr_trim(*this, phase_rate_coefficients);
+                exact_rational_phase_rate = exact_rational_phase_rate &&
+                    phase_rate_coefficients.size() > 1;
+                for(const exact_expr &entry : phase_rate_coefficients){
+                    if(!entry.is_value() || entry.value().is_approximate() ||
+                       !(entry.value().is_integer() ||
+                         entry.value().is_rational())){
+                        exact_rational_phase_rate = false;
+                        break;
+                    }
+                }
+
+                bool exact_rational_cofactor = false;
+                if(cofactor_is_polynomial){
+                    bool all_rational = true;
+                    bool nonzero_cofactor = false;
+                    for(const exact_expr &entry : cofactor_polynomial){
+                        if(!entry.is_value() || entry.value().is_approximate() ||
+                           !(entry.value().is_integer() ||
+                             entry.value().is_rational())){
+                            all_rational = false;
+                            break;
+                        }
+                        nonzero_cofactor = nonzero_cofactor ||
+                            !entry.value().is_zero();
+                    }
+                    exact_rational_cofactor = all_rational && nonzero_cofactor;
+                }
+
+                bool simple_pole_obstruction = false;
+                if(!cofactor_is_polynomial){
+                    auto to_rational_poly = [](const integration_expr_poly &source,
+                                               integration_poly &destination){
+                        destination.clear();
+                        destination.reserve(source.size());
+                        for(const exact_expr &entry : source){
+                            if(!entry.is_value() ||
+                               entry.value().is_approximate() ||
+                               !(entry.value().is_integer() ||
+                                 entry.value().is_rational()))
+                                return false;
+                            destination.push_back(entry.value());
+                        }
+                        integration_trim(destination);
+                        return true;
+                    };
+                    integration_poly numerator, denominator;
+                    if(to_rational_poly(cofactor_numerator, numerator) &&
+                       to_rational_poly(cofactor_denominator, denominator) &&
+                       integration_normalize_rational(numerator, denominator) &&
+                       !integration_zero_poly(numerator) &&
+                       denominator.size() > 1 &&
+                       integration_gcd_poly(denominator,
+                           integration_derivative_poly(denominator)).size() == 1 &&
+                       integration_gcd_poly(numerator,denominator).size() == 1)
+                        simple_pole_obstruction = true;
+                }
+                if(exact_rational_phase_rate && exact_rational_cofactor)
+                    polynomial_angle_polynomial_rde_eligible = true;
+                polynomial_angle_non_elementary_certificate =
+                    exact_rational_phase_rate && simple_pole_obstruction;
+                polynomial_angle_simple_pole_obstruction =
+                    polynomial_angle_non_elementary_certificate;
+                if(polynomial_angle_polynomial_rde_eligible ||
+                   polynomial_angle_non_elementary_certificate)
+                    polynomial_angle_proof_coefficient = coefficient;
             }
 
             using frequency_vector = std::vector<int64_t>;
@@ -16210,7 +16309,11 @@ risch_result exact_context::integrate_elementary_impl(
                     // uniquely determined coefficients from the top down.
                     const size_t rate_degree = rate_polynomial.size() - 1;
                     const size_t rhs_degree = rhs.size() - 1;
-                    if(rhs_degree < rate_degree) return exact_expr();
+                    if(rhs_degree < rate_degree){
+                        if(polynomial_angle_polynomial_rde_eligible)
+                            polynomial_angle_non_elementary_certificate = true;
+                        return exact_expr();
+                    }
                     const size_t primitive_degree = rhs_degree - rate_degree;
                     primitive_polynomial.assign(primitive_degree + 1,
                                                 integer(0));
@@ -16243,7 +16346,11 @@ risch_result exact_context::integrate_elementary_impl(
                             break;
                         }
                     }
-                    if(!rde_verified) return exact_expr();
+                    if(!rde_verified){
+                        if(polynomial_angle_polynomial_rde_eligible)
+                            polynomial_angle_non_elementary_certificate = true;
+                        return exact_expr();
+                    }
 
                     integration_expr_poly reconstructed =
                         integration_expr_add(*this,
@@ -16258,8 +16365,11 @@ risch_result exact_context::integrate_elementary_impl(
                         residual[j] = simplify(residual[j] - rhs[j]);
                     integration_expr_trim(*this, residual);
                     if(residual.size() != 1 ||
-                       !integration_expr_zero(*this, residual[0]))
+                       !integration_expr_zero(*this, residual[0])){
+                        if(polynomial_angle_polynomial_rde_eligible)
+                            polynomial_angle_non_elementary_certificate = true;
                         return exact_expr();
+                    }
                 }
                 candidate = candidate + exponential_term *
                     integration_expr_poly_expr(*this, primitive_polynomial,
@@ -16272,6 +16382,22 @@ risch_result exact_context::integrate_elementary_impl(
         };
         exact_expr exponential_trig_polynomial =
             exponential_trig_polynomial_candidate();
+        if(polynomial_angle_non_elementary_certificate &&
+           !exponential_trig_polynomial.valid()){
+            result.status = risch_status::proven_nonelementary;
+            result.elementary_part = integer(0);
+            result.remainder = expression;
+            result.diagnostic = polynomial_angle_simple_pole_obstruction
+                ? "polynomial-phase exponential modes have no rational RDE solution: "
+                  "a simple finite pole obstructs the mode RDE"
+                : "polynomial-phase exponential modes have no rational RDE solution: "
+                  "the exact polynomial mode RDE has a nonzero residual";
+            if(!is_provably_nonzero_constant(is_provably_nonzero_constant,
+                    polynomial_angle_proof_coefficient))
+                result.conditions.push_back(
+                    polynomial_angle_proof_coefficient);
+            return true;
+        }
         if(exponential_trig_polynomial.valid()){
             if(verify_candidate(exponential_trig_polynomial)){
                 result.conditions = exponential_trigonometric_conditions;

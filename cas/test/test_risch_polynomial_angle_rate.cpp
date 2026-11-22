@@ -151,11 +151,98 @@ int main(){
         return 1;
     }
 
-    // The degree bound must not turn a failed polynomial RDE search into a
-    // proof of non-elementarity.
-    risch_result unsupported = context.integrate_elementary(sine, x);
-    if(unsupported.status == risch_status::proven_nonelementary){
-        std::cerr << "failed polynomial-angle RDE was misreported as a proof\n";
+    risch_result sine_non_elementary = context.integrate_elementary(sine, x);
+    if(sine_non_elementary.status != risch_status::proven_nonelementary ||
+       sine_non_elementary.elementary_part != context.integer(0) ||
+       sine_non_elementary.remainder != sine){
+        std::cerr << "sin(x^2) polynomial-phase obstruction was not certified: "
+                  << sine_non_elementary.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr amplitude_parameter = context.symbol("amplitude");
+    risch_result conditional_sine = context.integrate_elementary(
+        amplitude_parameter * sine, x);
+    if(conditional_sine.status != risch_status::proven_nonelementary ||
+       conditional_sine.remainder != amplitude_parameter * sine ||
+       conditional_sine.conditions.size() != 1 ||
+       conditional_sine.conditions[0] != amplitude_parameter){
+        std::cerr << "symbolic amplitude nonzero condition was lost: "
+                  << conditional_sine.diagnostic << '\n';
+        return 1;
+    }
+    if(context.integrate_elementary(context.integer(0) * sine, x).status !=
+       risch_status::elementary){
+        std::cerr << "zero amplitude was not treated as elementary zero\n";
+        return 1;
+    }
+    exact_expr phase_parameter = context.symbol("phase_scale");
+    risch_result symbolic_phase = context.integrate_elementary(
+        context.sine(phase_parameter * x2), x);
+    if(symbolic_phase.status == risch_status::proven_nonelementary){
+        std::cerr << "symbolic phase degeneration was misclassified\n";
+        return 1;
+    }
+    exact_expr x3 = context.power(x, context.integer(3));
+    exact_expr cosine_x3 = context.cosine(x3);
+    risch_result cosine_non_elementary = context.integrate_elementary(
+        cosine_x3, x);
+    if(cosine_non_elementary.status != risch_status::proven_nonelementary ||
+       cosine_non_elementary.elementary_part != context.integer(0) ||
+       cosine_non_elementary.remainder != cosine_x3){
+        std::cerr << "cos(x^3) polynomial-phase obstruction was not certified: "
+                  << cosine_non_elementary.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr polynomial_amplitude = x + context.integer(1);
+    exact_expr weighted_sine_x3 = polynomial_amplitude * context.sine(x3);
+    risch_result weighted_non_elementary = context.integrate_elementary(
+        weighted_sine_x3, x);
+    if(weighted_non_elementary.status != risch_status::proven_nonelementary ||
+       weighted_non_elementary.remainder != weighted_sine_x3){
+        std::cerr << "low-degree polynomial amplitude obstruction failed: "
+                  << weighted_non_elementary.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr x2_sine_x2 = x2 * sine;
+    risch_result x2_sine_x2_result = context.integrate_elementary(
+        x2_sine_x2, x);
+    if(x2_sine_x2_result.status != risch_status::proven_nonelementary ||
+       x2_sine_x2_result.remainder != x2_sine_x2){
+        std::cerr << "downward polynomial RDE obstruction failed: "
+                  << x2_sine_x2_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr sine_over_x = sine / x;
+    risch_result sine_over_x_result = context.integrate_elementary(
+        sine_over_x, x);
+    if(sine_over_x_result.status != risch_status::proven_nonelementary ||
+       sine_over_x_result.remainder != sine_over_x){
+        std::cerr << "simple-pole mode obstruction failed: "
+                  << sine_over_x_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr sine_over_quadratic = sine / (x2 + context.integer(1));
+    risch_result sine_over_quadratic_result = context.integrate_elementary(
+        sine_over_quadratic, x);
+    if(sine_over_quadratic_result.status !=
+           risch_status::proven_nonelementary ||
+       sine_over_quadratic_result.remainder != sine_over_quadratic){
+        std::cerr << "complex simple-pole mode obstruction failed: "
+                  << sine_over_quadratic_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr x_sine_x2 = x * sine;
+    exact_expr x_sine_x2_primitive = -context.cosine(x2) /
+        context.integer(2);
+    risch_result x_sine_x2_result = context.integrate_elementary(x_sine_x2, x);
+    if(x_sine_x2_result.status != risch_status::elementary ||
+       x_sine_x2_result.remainder != context.integer(0) ||
+       !check_trigonometric_derivative(context,
+           x_sine_x2_result.elementary_part, x_sine_x2, x) ||
+       !check_trigonometric_derivative(context, x_sine_x2_primitive,
+           x_sine_x2, x)){
+        std::cerr << "degree-bound neighboring elementary case failed: "
+                  << x_sine_x2_result.diagnostic << '\n';
         return 1;
     }
     exact_expr nonpolynomial_angle = context.sine(context.exponential(x));
