@@ -10402,8 +10402,10 @@ static exact_expr integration_hyperexponential_rational(
     std::vector<exact_expr> *nonzero_conditions = nullptr,
     exact_expr *elementary_reduction = nullptr,
     exact_expr *remainder_integrand = nullptr,
-    bool partial_reduction_only = false){
+    bool partial_reduction_only = false,
+    bool *no_rational_solution = nullptr){
     if(resource_limited) *resource_limited = false;
+    if(no_rational_solution) *no_rational_solution = false;
     if(elementary_reduction) *elementary_reduction = exact_expr();
     if(remainder_integrand) *remainder_integrand = exact_expr();
     auto exceeds_matrix_budget = [&](size_t rows, size_t columns){
@@ -10793,6 +10795,8 @@ expression_coefficient_rde:
         const size_t top = equation_column.size() - 1;
         for(size_t degree = top + 1; degree < residual.size(); ++degree)
             if(!integration_expr_zero(context, residual[degree])){
+                if(no_rational_solution && rde_conditions.empty())
+                    *no_rational_solution = true;
                 return exact_expr();
             }
         if(top >= residual.size())
@@ -10842,6 +10846,8 @@ expression_coefficient_rde:
     integration_expr_trim(context, residual);
     if(residual.size() != 1 ||
        !integration_expr_zero(context, residual[0])){
+        if(no_rational_solution && rde_conditions.empty())
+            *no_rational_solution = true;
         return exact_expr();
     }
     integration_expr_poly reconstructed{context.integer(0)};
@@ -15943,6 +15949,8 @@ risch_result exact_context::integrate_elementary_impl(
         bool polynomial_angle_non_elementary_certificate = false;
         bool polynomial_angle_polynomial_rde_eligible = false;
         bool polynomial_angle_simple_pole_obstruction = false;
+        bool polynomial_angle_rational_rde_eligible = false;
+        bool polynomial_angle_rational_rde_obstruction = false;
         exact_expr polynomial_angle_proof_coefficient;
         std::vector<exact_expr> exponential_trigonometric_conditions;
         auto add_exponential_trigonometric_condition =
@@ -16138,6 +16146,7 @@ risch_result exact_context::integrate_elementary_impl(
                 }
 
                 bool simple_pole_obstruction = false;
+                bool exact_rational_rational_cofactor = false;
                 if(!cofactor_is_polynomial){
                     auto to_rational_poly = [](const integration_expr_poly &source,
                                                integration_poly &destination){
@@ -16160,18 +16169,24 @@ risch_result exact_context::integrate_elementary_impl(
                        integration_normalize_rational(numerator, denominator) &&
                        !integration_zero_poly(numerator) &&
                        denominator.size() > 1 &&
-                       integration_gcd_poly(denominator,
-                           integration_derivative_poly(denominator)).size() == 1 &&
-                       integration_gcd_poly(numerator,denominator).size() == 1)
-                        simple_pole_obstruction = true;
+                       integration_gcd_poly(numerator,denominator).size() == 1){
+                        exact_rational_rational_cofactor = true;
+                        simple_pole_obstruction =
+                            integration_gcd_poly(denominator,
+                                integration_derivative_poly(denominator)).size() == 1;
+                    }
                 }
                 if(exact_rational_phase_rate && exact_rational_cofactor)
                     polynomial_angle_polynomial_rde_eligible = true;
+                polynomial_angle_rational_rde_eligible =
+                    exact_rational_phase_rate &&
+                    exact_rational_rational_cofactor;
                 polynomial_angle_non_elementary_certificate =
                     exact_rational_phase_rate && simple_pole_obstruction;
                 polynomial_angle_simple_pole_obstruction =
                     polynomial_angle_non_elementary_certificate;
                 if(polynomial_angle_polynomial_rde_eligible ||
+                   polynomial_angle_rational_rde_eligible ||
                    polynomial_angle_non_elementary_certificate)
                     polynomial_angle_proof_coefficient = coefficient;
             }
@@ -16258,13 +16273,23 @@ risch_result exact_context::integrate_elementary_impl(
                     std::vector<exact_expr> mode_conditions;
                     exact_expr mode_reduction, mode_remainder;
                     bool mode_resource_limited = false;
+                    bool mode_no_rational_solution = false;
                     exact_expr mode_candidate =
                         integration_hyperexponential_rational(*this, rhs,
                             exponent, variable, true, options,
                             &mode_resource_limited, &mode_conditions,
-                            &mode_reduction, &mode_remainder, true);
+                            &mode_reduction, &mode_remainder, true,
+                            &mode_no_rational_solution);
                     if(mode_resource_limited)
                         exponential_trig_rational_budget_exceeded = true;
+                    if(!mode_candidate.valid() &&
+                       polynomial_angle_rational_rde_eligible &&
+                       mode_no_rational_solution && mode_conditions.empty()){
+                        polynomial_angle_rational_rde_obstruction = true;
+                        polynomial_angle_non_elementary_certificate = true;
+                        polynomial_angle_simple_pole_obstruction = false;
+                        return exact_expr();
+                    }
                     if(!mode_candidate.valid() || !mode_reduction.valid() ||
                        !mode_remainder.valid() ||
                        simplify(mode_remainder) != integer(0))
@@ -16390,8 +16415,11 @@ risch_result exact_context::integrate_elementary_impl(
             result.diagnostic = polynomial_angle_simple_pole_obstruction
                 ? "polynomial-phase exponential modes have no rational RDE solution: "
                   "a simple finite pole obstructs the mode RDE"
-                : "polynomial-phase exponential modes have no rational RDE solution: "
-                  "the exact polynomial mode RDE has a nonzero residual";
+                : polynomial_angle_rational_rde_obstruction
+                  ? "polynomial-phase exponential modes have no rational RDE solution: "
+                    "the exact bounded rational RDE is inconsistent"
+                  : "polynomial-phase exponential modes have no rational RDE solution: "
+                    "the exact polynomial mode RDE has a nonzero residual";
             if(!is_provably_nonzero_constant(is_provably_nonzero_constant,
                     polynomial_angle_proof_coefficient))
                 result.conditions.push_back(

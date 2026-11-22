@@ -231,6 +231,66 @@ int main(){
                   << sine_over_quadratic_result.diagnostic << '\n';
         return 1;
     }
+    for(const exact_expr &repeated_pole_input : {
+            sine / x2,
+            sine / context.power(x2 + context.integer(1),
+                                context.integer(2)),
+            sine / context.power(x2 + context.integer(1),
+                                context.integer(3))}){
+        risch_result repeated_pole_result = context.integrate_elementary(
+            repeated_pole_input, x);
+        if(repeated_pole_result.status != risch_status::proven_nonelementary ||
+           repeated_pole_result.elementary_part != context.integer(0) ||
+           repeated_pole_result.remainder != repeated_pole_input ||
+           repeated_pole_result.diagnostic.find(
+               "exact bounded rational RDE is inconsistent") ==
+               std::string::npos){
+            std::cerr << "repeated-pole mode RDE obstruction failed: "
+                      << repeated_pole_result.diagnostic << "; got "
+                      << repeated_pole_result.elementary_part.to_string()
+                      << '\n';
+            return 1;
+        }
+    }
+    exact_expr repeated_pole_elementary_input =
+        (context.integer(-4) - context.integer(3) /
+            context.power(x, context.integer(4))) * sine;
+    exact_expr repeated_pole_elementary_expected =
+        context.integer(2) * cosine / x + sine /
+            context.power(x, context.integer(3));
+    risch_result repeated_pole_elementary_result = context.integrate_elementary(
+        repeated_pole_elementary_input, x);
+    if(repeated_pole_elementary_result.status != risch_status::elementary ||
+       repeated_pole_elementary_result.remainder != context.integer(0) ||
+       !check_trigonometric_derivative(context,
+           repeated_pole_elementary_result.elementary_part,
+           repeated_pole_elementary_input, x) ||
+       !check_trigonometric_derivative(context,
+           repeated_pole_elementary_expected,
+           repeated_pole_elementary_input, x)){
+        std::cerr << "elementary repeated-pole RDE was misclassified: "
+                  << repeated_pole_elementary_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr symbolic_amplitude = context.symbol("amplitude");
+    exact_expr symbolic_repeated_pole = symbolic_amplitude * sine / x2;
+    risch_result symbolic_repeated_pole_result = context.integrate_elementary(
+        symbolic_repeated_pole, x);
+    if(symbolic_repeated_pole_result.status ==
+           risch_status::proven_nonelementary &&
+       (symbolic_repeated_pole_result.conditions.size() != 1 ||
+        symbolic_repeated_pole_result.conditions[0] != symbolic_amplitude ||
+        symbolic_repeated_pole_result.remainder != symbolic_repeated_pole)){
+        std::cerr << "symbolic amplitude condition was not preserved\n";
+        std::cerr << "  status=" << (int)symbolic_repeated_pole_result.status
+                  << " diagnostic=" << symbolic_repeated_pole_result.diagnostic
+                  << " remainder=" << symbolic_repeated_pole_result.remainder.to_string()
+                  << " conditions=";
+        for(const exact_expr &condition : symbolic_repeated_pole_result.conditions)
+            std::cerr << condition.to_string() << ";";
+        std::cerr << '\n';
+        return 1;
+    }
     exact_expr x_sine_x2 = x * sine;
     exact_expr x_sine_x2_primitive = -context.cosine(x2) /
         context.integer(2);
