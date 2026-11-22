@@ -329,4 +329,6 @@
 - `test`: 反函数生成元增加有理 cofactor `D(g)/(1+g^2)` 的 R0 递归回归。
 - `feat`: 将 `log_2`、`log_10` 纳入严格入口的递归生成元换元，导数使用精确 `ln(base)`。
 - `test`: 为不同底数对数增加 logistic cofactor 递归积分回归。
+- `feat`: 将平方根提升为递归代数生成元，精确使用 `D(sqrt(g))=D(g)/(2*sqrt(g))`。
+- `test`: 增加复合平方根生成元下 logistic 与三角 cofactor 的递归积分回归。
 - `docs`: 记录反函数换元的局部可微域条件与尚未支持的通用代数扩张边界。

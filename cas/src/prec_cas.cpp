@@ -25043,6 +25043,9 @@ risch_result exact_context::integrate_elementary_impl(
                 case exact_opcode::exponential:
                     outer = part;
                     break;
+                case exact_opcode::square_root:
+                    outer = integer(1) / (integer(2) * part);
+                    break;
                 case exact_opcode::natural_logarithm:
                     outer = integer(1) / inner;
                     break;
@@ -25242,24 +25245,25 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 exact_expr error = simplify(expand(
                     differentiate(candidate, variable) - expression, 100000));
-                bool inverse_generator = false;
+                bool algebraic_jacobian_generator = false;
                 switch(generator.operation()){
+                case exact_opcode::square_root:
                 case exact_opcode::arc_sine:
                 case exact_opcode::arc_cosine:
                 case exact_opcode::arc_tangent:
                 case exact_opcode::inverse_hyperbolic_sine:
                 case exact_opcode::inverse_hyperbolic_cosine:
                 case exact_opcode::inverse_hyperbolic_tangent:
-                    inverse_generator = true;
+                    algebraic_jacobian_generator = true;
                     break;
                 default:
                     break;
                 }
-                // For inverse-function generators, exact division by their
-                // algebraic Jacobian plus the verified lower integral is the
+                // For algebraic and inverse-function generators, exact
+                // Jacobian cancellation plus the verified lower integral is the
                 // certificate; simplify() may not cancel nested radicals.
                 if(error != integer(0) && !removed_outer_factor){
-                    if(!inverse_generator) continue;
+                    if(!algebraic_jacobian_generator) continue;
                     exact_expr source_identity_error = simplify(expand(
                         jacobian * substitute(transformed, temporary,
                             generator) - expression, 100000));

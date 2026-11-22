@@ -206,12 +206,14 @@ int main(){
     assert(context.simplify(context.integer(1) + triple_exponential -
         triple_exponential - context.integer(1)) == context.integer(0));
 
-    // Other-base logarithms and inverse circular/hyperbolic functions are
+    // Other-base logarithms, square roots and inverse circular/hyperbolic functions are
     // local differential generators too. Their exact Jacobians are removed
     // before solving the lower integral.
     std::vector<exact_expr> recursive_generators = {
         context.logarithm_base_2(x),
         context.logarithm_base_10(x),
+        context.square_root(context.power(x, context.integer(2)) +
+            context.integer(1)),
         context.arc_sine(x),
         context.arc_cosine(x),
         context.arc_tangent(x),
@@ -221,9 +223,9 @@ int main(){
         context.arc_tangent(context.power(x, context.integer(2))),
         context.arc_tangent(a * x)
     };
-    for(size_t inverse_index = 0;
-        inverse_index < recursive_generators.size(); ++inverse_index){
-        const exact_expr &inverse_generator = recursive_generators[inverse_index];
+    for(size_t generator_index = 0;
+        generator_index < recursive_generators.size(); ++generator_index){
+        const exact_expr &inverse_generator = recursive_generators[generator_index];
         exact_expr normalized_generator = context.simplify(inverse_generator);
         if(inverse_generator.operation() == exact_opcode::logarithm_base_2)
             normalized_generator = context.natural_logarithm(x) /
@@ -241,7 +243,7 @@ int main(){
             inverse_logistic, x);
         if(inverse_logistic_result.status != risch_status::elementary){
             std::fprintf(stderr,
-                "inverse generator %zu (%s) failed: %s\n", inverse_index,
+                "recursive generator %zu (%s) failed: %s\n", generator_index,
                 inverse_generator.to_string().c_str(),
                 inverse_logistic_result.diagnostic.c_str());
         }
@@ -255,10 +257,11 @@ int main(){
             assert(context.simplify(inverse_logistic_result.elementary_part -
                 inverse_logistic_expected) == context.integer(0));
         }
-        if(inverse_index + 1 == recursive_generators.size())
+        if(generator_index + 1 == recursive_generators.size())
             assert(inverse_logistic_result.conditions.empty());
 
-        if(inverse_generator.operation() != exact_opcode::logarithm_base_2 &&
+        if(inverse_generator.operation() != exact_opcode::square_root &&
+           inverse_generator.operation() != exact_opcode::logarithm_base_2 &&
            inverse_generator.operation() != exact_opcode::logarithm_base_10){
             exact_expr inverse_rational_input = context.differentiate(
                 inverse_generator, x) /
@@ -274,6 +277,24 @@ int main(){
                 inverse_rational_expected) == context.integer(0));
         }
     }
+
+    exact_expr algebraic_generator = context.square_root(
+        context.power(x, context.integer(2)) + context.integer(1));
+    exact_expr algebraic_sine_input = context.differentiate(
+        algebraic_generator, x) * context.sine(algebraic_generator);
+    risch_result algebraic_sine_result = context.integrate_elementary(
+        algebraic_sine_input, x);
+    assert(algebraic_sine_result.status == risch_status::elementary);
+    assert(algebraic_sine_result.remainder == context.integer(0));
+    exact_expr half_angle_tangent = context.tangent(
+        algebraic_generator / context.integer(2));
+    exact_expr algebraic_sine_expected = -context.integer(2) /
+        (context.integer(1) + context.power(half_angle_tangent,
+            context.integer(2)));
+    // The exact trig backend uses the equivalent half-angle form; its
+    // difference from -cos(g) is an integration constant.
+    assert(context.simplify(algebraic_sine_result.elementary_part -
+        algebraic_sine_expected) == context.integer(0));
 
     exact_expr sine_generator = context.sine(x);
     exact_expr sine_chain_integrand = context.cosine(x) /
