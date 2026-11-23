@@ -25046,6 +25046,22 @@ risch_result exact_context::integrate_elementary_impl(
                 case exact_opcode::square_root:
                     outer = integer(1) / (integer(2) * part);
                     break;
+                case exact_opcode::power:
+                    if(part.operand_count() == 2 &&
+                       part.operand(1).is_value() &&
+                       !part.operand(1).value().is_approximate()){
+                        const precq_t exponent = part.operand(1).value().rational();
+                        const precn_t &numerator = exponent.numerator();
+                        const precn_t &denominator = exponent.denominator();
+                        if(!exponent.is_negative() && numerator.rsiz == 1 &&
+                           denominator.rsiz == 1 && numerator.a[0] > 0 &&
+                           denominator.a[0] > numerator.a[0] &&
+                           denominator.a[0] <= degree_budget){
+                            outer = part.operand(1) *
+                                power(inner, part.operand(1) - integer(1));
+                        }
+                    }
+                    break;
                 case exact_opcode::natural_logarithm:
                     outer = integer(1) / inner;
                     break;
