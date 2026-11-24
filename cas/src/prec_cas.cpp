@@ -25053,9 +25053,9 @@ risch_result exact_context::integrate_elementary_impl(
                         const precq_t exponent = part.operand(1).value().rational();
                         const precn_t &numerator = exponent.numerator();
                         const precn_t &denominator = exponent.denominator();
-                        if(!exponent.is_negative() && numerator.rsiz == 1 &&
-                           denominator.rsiz == 1 && numerator.a[0] > 0 &&
-                           denominator.a[0] > numerator.a[0] &&
+                        if(numerator.rsiz == 1 && denominator.rsiz == 1 &&
+                           numerator.a[0] > 0 &&
+                           denominator.a[0] > 1 &&
                            denominator.a[0] <= degree_budget){
                             outer = part.operand(1) *
                                 power(inner, part.operand(1) - integer(1));

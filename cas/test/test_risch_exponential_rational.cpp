@@ -321,6 +321,32 @@ int main(){
         two_thirds_exponential_result.elementary_part, x) -
         two_thirds_exponential_input) == context.integer(0));
 
+    exact_expr five_thirds_power = context.power(x,
+        context.rational(precq_t(precn_t(5), precn_t(3))));
+    exact_expr five_thirds_exponential_input =
+        context.differentiate(five_thirds_power, x) *
+        context.exponential(five_thirds_power);
+    risch_result five_thirds_exponential_result = context.integrate_elementary(
+        five_thirds_exponential_input, x);
+    assert(five_thirds_exponential_result.status == risch_status::elementary);
+    assert(five_thirds_exponential_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        five_thirds_exponential_result.elementary_part, x) -
+        five_thirds_exponential_input) == context.integer(0));
+
+    exact_expr negative_cube_root = context.power(x,
+        context.rational(precq_t(precn_t(1), precn_t(3), true)));
+    exact_expr negative_cube_root_input =
+        context.differentiate(negative_cube_root, x) *
+        context.exponential(negative_cube_root);
+    risch_result negative_cube_root_result = context.integrate_elementary(
+        negative_cube_root_input, x);
+    assert(negative_cube_root_result.status == risch_status::elementary);
+    assert(negative_cube_root_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        negative_cube_root_result.elementary_part, x) -
+        negative_cube_root_input) == context.integer(0));
+
     exact_expr sine_generator = context.sine(x);
     exact_expr sine_chain_integrand = context.cosine(x) /
         (context.integer(1) + context.exponential(sine_generator));
