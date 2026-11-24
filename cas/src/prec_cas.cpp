@@ -25031,44 +25031,8 @@ risch_result exact_context::integrate_elementary_impl(
                 exact_expr outer_derivative;
                 bool direct_jacobian = false;
             };
-            struct algebraic_generator_summary{
-                uint32_t root_ids[2] = {};
-                size_t root_count = 0;
-                bool variable_dependent = false;
-            };
-            std::unordered_map<uint32_t,algebraic_generator_summary>
-                algebraic_summary_cache;
-            auto summarize_algebraic_generators = [&](auto &&self,
-                    const exact_expr &node) -> algebraic_generator_summary{
-                auto cached = algebraic_summary_cache.find(node.id());
-                if(cached != algebraic_summary_cache.end()) return cached->second;
-                algebraic_generator_summary summary;
-                summary.variable_dependent = node == variable;
-                auto add_root_id = [&](uint32_t id){
-                    for(size_t i = 0; i < summary.root_count; ++i)
-                        if(summary.root_ids[i] == id) return;
-                    if(summary.root_count < 2)
-                        summary.root_ids[summary.root_count++] = id;
-                };
-                for(size_t i = 0; i < node.operand_count(); ++i){
-                    algebraic_generator_summary child = self(self,node.operand(i));
-                    summary.variable_dependent |= child.variable_dependent;
-                    for(size_t j = 0; j < child.root_count; ++j)
-                        add_root_id(child.root_ids[j]);
-                }
-                bool algebraic = node.operation() == exact_opcode::square_root;
-                if(node.operation() == exact_opcode::power &&
-                   node.operand_count() == 2 && node.operand(1).is_value() &&
-                   !node.operand(1).value().is_approximate()){
-                    const precq_t exponent = node.operand(1).value().rational();
-                    const precn_t &denominator = exponent.denominator();
-                    algebraic = denominator.rsiz == 1 && denominator.a[0] > 1;
-                }
-                if(algebraic && summary.variable_dependent) add_root_id(node.id());
-                algebraic_summary_cache.emplace(node.id(),summary);
-                return summary;
-            };
             std::vector<substitution_generator> substitution_generators;
+            std::vector<substitution_generator> direct_substitution_generators;
             std::unordered_map<uint32_t,uint8_t> substitution_seen;
             std::unordered_set<uint32_t> substitution_generator_seen;
             auto collect_substitution_generators = [&](auto &&self,
@@ -25160,22 +25124,23 @@ risch_result exact_context::integrate_elementary_impl(
                     outer = integer(1) /
                         (integer(1) - power(inner, integer(2)));
                     break;
-                case exact_opcode::add:
-                case exact_opcode::multiply:{
-                    if(is_generator_argument && summarize_algebraic_generators(
-                            summarize_algebraic_generators,part).root_count >= 2){
-                        outer = differentiate(part,variable);
-                        direct_jacobian = true;
-                    }
-                    break;
-                }
                 default:
                     break;
                 }
+                bool arithmetic_generator_argument = is_generator_argument &&
+                    (part.operation() == exact_opcode::add ||
+                     part.operation() == exact_opcode::multiply ||
+                     part.operation() == exact_opcode::power);
+                if(arithmetic_generator_argument){
+                    outer = differentiate(part,variable);
+                    direct_jacobian = true;
+                }
                 if(outer.valid() &&
-                   substitution_generator_seen.insert(part.id()).second)
-                    substitution_generators.push_back({part, outer,
-                                                       direct_jacobian});
+                   substitution_generator_seen.insert(part.id()).second){
+                    substitution_generator candidate{part,outer,direct_jacobian};
+                    (direct_jacobian ? direct_substitution_generators :
+                        substitution_generators).push_back(candidate);
+                }
                 bool has_function_argument = false;
                 switch(part.operation()){
                 case exact_opcode::exponential:
@@ -25206,6 +25171,9 @@ risch_result exact_context::integrate_elementary_impl(
             };
             collect_substitution_generators(collect_substitution_generators,
                                              expression,false);
+            substitution_generators.insert(substitution_generators.end(),
+                direct_substitution_generators.begin(),
+                direct_substitution_generators.end());
             for(const substitution_generator &candidate_generator :
                     substitution_generators){
                 const exact_expr &generator = candidate_generator.value;
@@ -25343,7 +25311,7 @@ risch_result exact_context::integrate_elementary_impl(
                 }
                 exact_expr error = simplify(expand(
                     differentiate(candidate, variable) - expression, 100000));
-                bool algebraic_jacobian_generator =
+                bool direct_jacobian_generator =
                     candidate_generator.direct_jacobian;
                 switch(generator.operation()){
                 case exact_opcode::square_root:
@@ -25353,16 +25321,16 @@ risch_result exact_context::integrate_elementary_impl(
                 case exact_opcode::inverse_hyperbolic_sine:
                 case exact_opcode::inverse_hyperbolic_cosine:
                 case exact_opcode::inverse_hyperbolic_tangent:
-                    algebraic_jacobian_generator = true;
+                    direct_jacobian_generator = true;
                     break;
                 default:
                     break;
                 }
-                // For algebraic and inverse-function generators, exact
-                // Jacobian cancellation plus the verified lower integral is the
-                // certificate; simplify() may not cancel nested radicals.
+                // Direct-Jacobian and inverse-function generators use an exact
+                // source substitution identity when expression simplification
+                // cannot cancel their nested derivatives.
                 if(error != integer(0) && !removed_outer_factor){
-                    if(!algebraic_jacobian_generator) continue;
+                    if(!direct_jacobian_generator) continue;
                     exact_expr source_identity_error = simplify(expand(
                         jacobian * substitute(transformed, temporary,
                             generator) - expression, 100000));

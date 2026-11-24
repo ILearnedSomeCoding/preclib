@@ -393,6 +393,31 @@ int main(){
         three_root_sine_chain_primitive,x)-three_root_sine_input) ==
         context.integer(0));
 
+    exact_expr powered_root_sum = context.power(three_root_sum,
+        context.integer(2));
+    exact_expr powered_root_sine_input = context.differentiate(
+        powered_root_sum,x) * context.sine(powered_root_sum);
+    risch_result powered_root_sine_result = context.integrate_elementary(
+        powered_root_sine_input,x);
+    assert(powered_root_sine_result.status == risch_status::elementary);
+    assert(powered_root_sine_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        -context.cosine(powered_root_sum),x)-powered_root_sine_input) ==
+        context.integer(0));
+
+    exact_expr symbolic_power_generator = context.power(
+        context.power(x,context.integer(2)) + context.integer(1),
+        context.symbol("a"));
+    exact_expr symbolic_power_sine_input = context.differentiate(
+        symbolic_power_generator,x) * context.sine(symbolic_power_generator);
+    risch_result symbolic_power_sine_result = context.integrate_elementary(
+        symbolic_power_sine_input,x);
+    assert(symbolic_power_sine_result.status == risch_status::elementary);
+    assert(symbolic_power_sine_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        -context.cosine(symbolic_power_generator),x)-
+        symbolic_power_sine_input) == context.integer(0));
+
     exact_expr three_root_product = context.square_root(x) *
         context.square_root(x + context.integer(1)) *
         context.square_root(x + context.integer(2));
