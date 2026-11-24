@@ -347,6 +347,66 @@ int main(){
         negative_cube_root_result.elementary_part, x) -
         negative_cube_root_input) == context.integer(0));
 
+    exact_expr sine_base = context.sine(x);
+    exact_expr radical_over_sine = context.power(sine_base,
+        context.rational(precq_t(precn_t(1), precn_t(3))));
+    exact_expr mixed_radical_exponential_input =
+        context.differentiate(radical_over_sine, x) *
+        context.exponential(radical_over_sine);
+    risch_result mixed_radical_exponential_result = context.integrate_elementary(
+        mixed_radical_exponential_input, x);
+    assert(mixed_radical_exponential_result.status == risch_status::elementary);
+    assert(mixed_radical_exponential_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        mixed_radical_exponential_result.elementary_part, x) -
+        mixed_radical_exponential_input) == context.integer(0));
+
+    exact_expr three_root_sum = context.square_root(x) +
+        context.square_root(x + context.integer(1)) +
+        context.square_root(x + context.integer(2));
+    exact_expr three_root_sum_input = context.differentiate(three_root_sum,x) *
+        context.exponential(three_root_sum);
+    risch_result three_root_sum_result = context.integrate_elementary(
+        three_root_sum_input,x);
+    assert(three_root_sum_result.status == risch_status::elementary);
+    assert(three_root_sum_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        three_root_sum_result.elementary_part,x)-three_root_sum_input) ==
+        context.integer(0));
+
+    exact_expr three_root_sine_input = context.differentiate(three_root_sum,x) *
+        context.sine(three_root_sum);
+    risch_result three_root_sine_result = context.integrate_elementary(
+        three_root_sine_input,x);
+    assert(three_root_sine_result.status == risch_status::elementary);
+    assert(three_root_sine_result.remainder == context.integer(0));
+    exact_expr three_root_sine_half_angle = context.tangent(
+        three_root_sum / context.integer(2));
+    exact_expr three_root_sine_expected = -context.integer(2) /
+        (context.integer(1) + context.power(three_root_sine_half_angle,
+            context.integer(2)));
+    assert(three_root_sine_result.elementary_part ==
+        context.simplify(three_root_sine_expected));
+    exact_expr three_root_sine_chain_primitive =
+        -context.cosine(three_root_sum);
+    assert(context.simplify(context.differentiate(
+        three_root_sine_chain_primitive,x)-three_root_sine_input) ==
+        context.integer(0));
+
+    exact_expr three_root_product = context.square_root(x) *
+        context.square_root(x + context.integer(1)) *
+        context.square_root(x + context.integer(2));
+    exact_expr three_root_product_input =
+        context.differentiate(three_root_product,x) *
+        context.exponential(three_root_product);
+    risch_result three_root_product_result = context.integrate_elementary(
+        three_root_product_input,x);
+    assert(three_root_product_result.status == risch_status::elementary);
+    assert(three_root_product_result.remainder == context.integer(0));
+    assert(context.simplify(context.differentiate(
+        three_root_product_result.elementary_part,x)-three_root_product_input) ==
+        context.integer(0));
+
     exact_expr sine_generator = context.sine(x);
     exact_expr sine_chain_integrand = context.cosine(x) /
         (context.integer(1) + context.exponential(sine_generator));
