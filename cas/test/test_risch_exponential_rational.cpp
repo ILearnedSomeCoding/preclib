@@ -418,6 +418,25 @@ int main(){
         -context.cosine(symbolic_power_generator),x)-
         symbolic_power_sine_input) == context.integer(0));
 
+    exact_expr nested_trigonometric_generator = context.sine(
+        context.exponential(x));
+    exact_expr nested_trigonometric_input = context.differentiate(
+        nested_trigonometric_generator,x) *
+        context.cosine(nested_trigonometric_generator);
+    risch_result nested_trigonometric_result = context.integrate_elementary(
+        nested_trigonometric_input,x);
+    assert(nested_trigonometric_result.status == risch_status::elementary);
+    assert(nested_trigonometric_result.remainder == context.integer(0));
+    exact_expr nested_trigonometric_half_angle = context.tangent(
+        nested_trigonometric_generator / context.integer(2));
+    exact_expr nested_trigonometric_expected = context.integer(2) *
+        nested_trigonometric_half_angle /
+        (context.integer(1) + context.power(nested_trigonometric_half_angle,
+            context.integer(2)));
+    assert(context.simplify(context.expand(
+        nested_trigonometric_result.elementary_part-
+        nested_trigonometric_expected,100000)) == context.integer(0));
+
     exact_expr three_root_product = context.square_root(x) *
         context.square_root(x + context.integer(1)) *
         context.square_root(x + context.integer(2));

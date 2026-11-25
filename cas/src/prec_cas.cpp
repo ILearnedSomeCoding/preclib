@@ -25127,11 +25127,35 @@ risch_result exact_context::integrate_elementary_impl(
                 default:
                     break;
                 }
-                bool arithmetic_generator_argument = is_generator_argument &&
-                    (part.operation() == exact_opcode::add ||
-                     part.operation() == exact_opcode::multiply ||
-                     part.operation() == exact_opcode::power);
-                if(arithmetic_generator_argument){
+                bool compositional_generator = false;
+                switch(part.operation()){
+                case exact_opcode::add:
+                case exact_opcode::multiply:
+                case exact_opcode::power:
+                case exact_opcode::square_root:
+                case exact_opcode::exponential:
+                case exact_opcode::sine:
+                case exact_opcode::cosine:
+                case exact_opcode::tangent:
+                case exact_opcode::hyperbolic_sine:
+                case exact_opcode::hyperbolic_cosine:
+                case exact_opcode::hyperbolic_tangent:
+                case exact_opcode::arc_sine:
+                case exact_opcode::arc_cosine:
+                case exact_opcode::arc_tangent:
+                case exact_opcode::inverse_hyperbolic_sine:
+                case exact_opcode::inverse_hyperbolic_cosine:
+                case exact_opcode::inverse_hyperbolic_tangent:
+                case exact_opcode::natural_logarithm:
+                case exact_opcode::logarithm_base_2:
+                case exact_opcode::logarithm_base_10:
+                    compositional_generator = true;
+                    break;
+                default:
+                    break;
+                }
+                if(is_generator_argument && compositional_generator &&
+                   part.operand_count() != 0){
                     outer = differentiate(part,variable);
                     direct_jacobian = true;
                 }
@@ -25326,15 +25350,15 @@ risch_result exact_context::integrate_elementary_impl(
                 default:
                     break;
                 }
-                // Direct-Jacobian and inverse-function generators use an exact
-                // source substitution identity when expression simplification
-                // cannot cancel their nested derivatives.
-                if(error != integer(0) && !removed_outer_factor){
-                    if(!direct_jacobian_generator) continue;
+                // A direct Jacobian candidate must always replay its source
+                // identity, even when a common factor was extracted above.
+                if(error != integer(0) && direct_jacobian_generator){
                     exact_expr source_identity_error = simplify(expand(
                         jacobian * substitute(transformed, temporary,
                             generator) - expression, 100000));
                     if(source_identity_error != integer(0)) continue;
+                }else if(error != integer(0) && !removed_outer_factor){
+                    continue;
                 }
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(candidate);
