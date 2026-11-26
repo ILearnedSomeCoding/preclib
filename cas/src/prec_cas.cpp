@@ -15219,15 +15219,23 @@ risch_result exact_context::integrate_elementary_impl(
                 continue;
             integration_expr_trim(*this, exponent);
             if(exponent.size() < 3) continue;
-            bool rational_coefficients = true;
-            for(const exact_expr &coefficient : exponent)
-                if(!coefficient.is_value() ||
-                   !(coefficient.value().is_rational() ||
-                     coefficient.value().is_integer())){
-                    rational_coefficients = false;
+            auto exact_constant = [&](const exact_expr &coefficient){
+                return integration_exact_expression_tree(coefficient) &&
+                    !integration_depends_on(coefficient, variable);
+            };
+            bool exact_exponent_coefficients = true;
+            bool rational_exponent_coefficients = true;
+            for(const exact_expr &coefficient : exponent){
+                if(!exact_constant(coefficient)){
+                    exact_exponent_coefficients = false;
                     break;
                 }
-            if(!rational_coefficients) continue;
+                if(!coefficient.is_value() ||
+                   !(coefficient.value().is_rational() ||
+                     coefficient.value().is_integer()))
+                    rational_exponent_coefficients = false;
+            }
+            if(!exact_exponent_coefficients) continue;
 
             integration_poly log_numerator, log_denominator;
             if(!integration_parse_rational(logarithm.operand(0), variable,
@@ -15339,15 +15347,39 @@ risch_result exact_context::integrate_elementary_impl(
                rate.size() < 2 ||
                rate.size() - 1 > degree_budget)
                 continue;
+            std::vector<exact_expr> exponent_conditions;
+            if(!rational_exponent_coefficients){
+                exact_expr leading_parameter = exponent.back();
+                bool leading_parameter_nonzero = false;
+                if(leading_parameter.is_value())
+                    leading_parameter_nonzero =
+                        !leading_parameter.value().is_approximate() &&
+                        !leading_parameter.value().is_zero();
+                else if(leading_parameter.operation() == exact_opcode::symbol)
+                    leading_parameter_nonzero = storage_->has_assumption(
+                        leading_parameter.root_, exact_storage::assumed_positive);
+                else if(leading_parameter.operation() == exact_opcode::constant_e ||
+                        leading_parameter.operation() == exact_opcode::constant_pi ||
+                        leading_parameter.operation() == exact_opcode::constant_i ||
+                        leading_parameter.operation() == exact_opcode::exponential)
+                    leading_parameter_nonzero = true;
+                if(!leading_parameter_nonzero)
+                    exponent_conditions.push_back(leading_parameter);
+            }
+            bool exact_constant_forcing = true;
             bool rational_forcing = true;
-            for(const exact_expr &coefficient : forcing)
-                if(!coefficient.is_value() ||
-                   !(coefficient.value().is_rational() ||
-                     coefficient.value().is_integer())){
-                    rational_forcing = false;
+            for(const exact_expr &coefficient : forcing){
+                if(!integration_exact_expression_tree(coefficient) ||
+                   integration_depends_on(coefficient, variable)){
+                    exact_constant_forcing = false;
                     break;
                 }
-            if(!rational_forcing) continue;
+                if(!coefficient.is_value() ||
+                   !(coefficient.value().is_rational() ||
+                     coefficient.value().is_integer()))
+                    rational_forcing = false;
+            }
+            if(!exact_constant_forcing) continue;
             exact_expr reconstruction_error = simplify(expand(
                 expression - exponential_factor * logarithm_derivative *
                     integration_expr_poly_expr(*this, forcing, logarithm),
@@ -15408,6 +15440,7 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                 }
                 if(!rde_verified){
+                    if(!rational_forcing) continue;
                     set_non_elementary_remainder();
                     return true;
                 }
@@ -15425,6 +15458,7 @@ risch_result exact_context::integrate_elementary_impl(
                 result.status = risch_status::elementary;
                 result.elementary_part = std::move(candidate);
                 result.remainder = integer(0);
+                result.conditions = std::move(exponent_conditions);
                 result.diagnostic.clear();
                 return true;
             }
@@ -15437,6 +15471,7 @@ risch_result exact_context::integrate_elementary_impl(
             // exhausts that bound; if deg(Q)<deg(P') or the low-degree
             // equations fail, the hyperexponential Liouville criterion
             // certifies that no elementary primitive exists in this tower.
+            if(!rational_forcing || !rational_exponent_coefficients) continue;
             set_non_elementary_remainder();
             return true;
         }
