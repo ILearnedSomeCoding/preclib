@@ -88,6 +88,28 @@ int main(){
         context.differentiate(ratio_result.elementary_part, x) - ratio_input,
         100000)) == context.integer(0));
 
+    exact_expr log_shift = ratio_log + context.integer(1);
+    exact_expr rational_forcing = -u / context.power(log_shift,
+        context.integer(2)) + context.integer(3) * u *
+        context.power(ratio_log, context.integer(2)) / log_shift;
+    exact_expr rational_input = context.exponential(
+        context.power(ratio_log, context.integer(3))) * rational_forcing *
+        context.differentiate(ratio_log, x);
+    exact_expr rational_expected = context.exponential(
+        context.power(ratio_log, context.integer(3))) * u / log_shift;
+    risch_options rational_options;
+    rational_options.maximum_degree = 12;
+    rational_options.maximum_matrix_entries = 4096;
+    rational_options.maximum_nodes = 2048;
+    risch_result rational_result = context.integrate_elementary(
+        rational_input, x, rational_options);
+    assert(rational_result.status == risch_status::elementary);
+    assert(context.simplify(rational_result.elementary_part -
+                            rational_expected) == context.integer(0));
+    assert(context.simplify(context.expand(
+        context.differentiate(rational_result.elementary_part, x) -
+        rational_input, 100000)) == context.integer(0));
+
     exact_expr symbolic_rate_unresolved = context.exponential(
         a * context.power(t, context.integer(3))) / x;
     risch_result unresolved = context.integrate_elementary(

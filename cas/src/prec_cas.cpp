@@ -5990,6 +5990,8 @@ static bool integration_expr_cancel_polynomial_gcd(
         return true;
     }catch(const std::length_error &){
         return false;
+    }catch(const std::invalid_argument &){
+        return false;
     }
 }
 
@@ -15258,6 +15260,25 @@ risch_result exact_context::integrate_elementary_impl(
                 cofactor / logarithm_derivative);
             integration_expr_poly forcing, rate =
                 integration_expr_derivative(*this, exponent);
+            std::vector<exact_expr> exponent_conditions;
+            if(!rational_exponent_coefficients){
+                exact_expr leading_parameter = exponent.back();
+                bool leading_parameter_nonzero = false;
+                if(leading_parameter.is_value())
+                    leading_parameter_nonzero =
+                        !leading_parameter.value().is_approximate() &&
+                        !leading_parameter.value().is_zero();
+                else if(leading_parameter.operation() == exact_opcode::symbol)
+                    leading_parameter_nonzero = storage_->has_assumption(
+                        leading_parameter.root_, exact_storage::assumed_positive);
+                else if(leading_parameter.operation() == exact_opcode::constant_e ||
+                        leading_parameter.operation() == exact_opcode::constant_pi ||
+                        leading_parameter.operation() == exact_opcode::constant_i ||
+                        leading_parameter.operation() == exact_opcode::exponential)
+                    leading_parameter_nonzero = true;
+                if(!leading_parameter_nonzero)
+                    exponent_conditions.push_back(leading_parameter);
+            }
             integration_poly rational_forcing_numerator;
             integration_poly rational_forcing_denominator;
             if(integration_parse_rational(forcing_expression, logarithm,
@@ -15337,8 +15358,82 @@ risch_result exact_context::integrate_elementary_impl(
                 return true;
             }
             if(!integration_parse_expr_poly(*this, forcing_expression,
-                    logarithm, forcing, degree_budget))
+                    logarithm, forcing, degree_budget)){
+                exact_expr formal_logarithm;
+                size_t formal_suffix = 0;
+                do{
+                    formal_logarithm = symbol("_risch_log_rde_" +
+                        std::to_string(formal_suffix++));
+                }while(integration_depends_on(expression, formal_logarithm));
+                exact_expr formal_exponent = substitute(
+                    exponential_factor.operand(0), logarithm,
+                    formal_logarithm);
+                exact_expr formal_forcing = substitute(forcing_expression,
+                    logarithm, formal_logarithm);
+                bool rational_rde_limited = false;
+                bool no_rational_solution = false;
+                exact_expr rational_reduction, rational_remainder;
+                std::vector<exact_expr> rational_conditions;
+                exact_expr rational_candidate =
+                    integration_hyperexponential_rational(*this,
+                        formal_forcing, formal_exponent, formal_logarithm,
+                        true, options, &rational_rde_limited,
+                        &rational_conditions, &rational_reduction,
+                        &rational_remainder, true, &no_rational_solution);
+                if(rational_rde_limited){
+                    result.status = risch_status::resource_limit;
+                    result.diagnostic = "logarithmic rational RDE budget "
+                        "exceeded";
+                    return true;
+                }
+                if(rational_candidate.valid() && rational_reduction.valid() &&
+                   rational_remainder.valid() &&
+                   simplify(rational_remainder) == integer(0)){
+                    rational_candidate = substitute(rational_candidate,
+                        formal_logarithm, logarithm);
+                    exact_expr derivative_error = simplify(expand(
+                        differentiate(rational_candidate, variable) - expression,
+                        std::min(options.maximum_nodes, (size_t)100000)));
+                    bool verified = derivative_error == integer(0);
+                    if(!verified){
+                        exact_expr scaled_error = simplify(derivative_error /
+                            (exponential_factor * logarithm_derivative));
+                        integration_expr_poly error_numerator,
+                            error_denominator;
+                        if(integration_parse_expr_rational(*this, scaled_error,
+                                logarithm, error_numerator, error_denominator,
+                                degree_budget)){
+                            verified = true;
+                            for(const exact_expr &entry : error_numerator)
+                                if(!integration_expr_zero(*this, entry)){
+                                    verified = false;
+                                    break;
+                                }
+                        }
+                    }
+                    if(verified){
+                        if(rational_candidate.reachable_node_count() >
+                           options.maximum_nodes){
+                            result.status = risch_status::resource_limit;
+                            result.diagnostic = "logarithmic rational RDE "
+                                "result node budget exceeded";
+                            return true;
+                        }
+                        result.status = risch_status::elementary;
+                        result.elementary_part = std::move(rational_candidate);
+                        result.remainder = integer(0);
+                        result.conditions = std::move(exponent_conditions);
+                        for(const exact_expr &condition : rational_conditions)
+                            if(std::find(result.conditions.begin(),
+                                    result.conditions.end(), condition) ==
+                               result.conditions.end())
+                                result.conditions.push_back(condition);
+                        result.diagnostic.clear();
+                        return true;
+                    }
+                }
                 continue;
+            }
             integration_expr_trim(*this, forcing);
             integration_expr_trim(*this, rate);
             if(forcing.empty() ||
@@ -15347,25 +15442,6 @@ risch_result exact_context::integrate_elementary_impl(
                rate.size() < 2 ||
                rate.size() - 1 > degree_budget)
                 continue;
-            std::vector<exact_expr> exponent_conditions;
-            if(!rational_exponent_coefficients){
-                exact_expr leading_parameter = exponent.back();
-                bool leading_parameter_nonzero = false;
-                if(leading_parameter.is_value())
-                    leading_parameter_nonzero =
-                        !leading_parameter.value().is_approximate() &&
-                        !leading_parameter.value().is_zero();
-                else if(leading_parameter.operation() == exact_opcode::symbol)
-                    leading_parameter_nonzero = storage_->has_assumption(
-                        leading_parameter.root_, exact_storage::assumed_positive);
-                else if(leading_parameter.operation() == exact_opcode::constant_e ||
-                        leading_parameter.operation() == exact_opcode::constant_pi ||
-                        leading_parameter.operation() == exact_opcode::constant_i ||
-                        leading_parameter.operation() == exact_opcode::exponential)
-                    leading_parameter_nonzero = true;
-                if(!leading_parameter_nonzero)
-                    exponent_conditions.push_back(leading_parameter);
-            }
             bool exact_constant_forcing = true;
             bool rational_forcing = true;
             for(const exact_expr &coefficient : forcing){
