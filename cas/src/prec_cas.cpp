@@ -15393,6 +15393,41 @@ risch_result exact_context::integrate_elementary_impl(
                 result.diagnostic = "logarithmic hyperexponential RDE has "
                     "no polynomial solution within its degree bound";
             };
+            auto known_nonzero_constant = [&](auto &&self,
+                    const exact_expr &constant) -> bool{
+                if(!exact_constant(constant)) return false;
+                if(constant.is_value())
+                    return !constant.value().is_approximate() &&
+                        !constant.value().is_zero();
+                if(constant.operation() == exact_opcode::symbol)
+                    return storage_->has_assumption(constant.root_,
+                        exact_storage::assumed_positive);
+                if(constant.operation() == exact_opcode::constant_e ||
+                   constant.operation() == exact_opcode::constant_pi ||
+                   constant.operation() == exact_opcode::constant_i ||
+                   constant.operation() == exact_opcode::exponential)
+                    return true;
+                if(constant.operation() == exact_opcode::multiply){
+                    for(size_t i = 0; i < constant.operand_count(); ++i)
+                        if(!self(self, constant.operand(i))) return false;
+                    return constant.operand_count() != 0;
+                }
+                if(constant.operation() == exact_opcode::power){
+                    int64_t power = 0;
+                    return integration_signed_exponent(constant.operand(1),
+                        power) && (power == 0 ||
+                            self(self, constant.operand(0)));
+                }
+                return false;
+            };
+            auto require_nonzero = [&](std::vector<exact_expr> &conditions,
+                    const exact_expr &constant){
+                if(known_nonzero_constant(known_nonzero_constant, constant))
+                    return;
+                if(std::find(conditions.begin(), conditions.end(), constant) ==
+                   conditions.end())
+                    conditions.push_back(constant);
+            };
 
             const size_t rate_degree = rate.size() - 1;
             const size_t forcing_degree = forcing.size() - 1;
@@ -15440,8 +15475,32 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                 }
                 if(!rde_verified){
-                    if(!rational_forcing) continue;
+                    if(rational_forcing && rational_exponent_coefficients){
+                        set_non_elementary_remainder();
+                        return true;
+                    }
+                    std::vector<exact_expr> proof_conditions =
+                        exponent_conditions;
+                    if(!rational_exponent_coefficients)
+                        require_nonzero(proof_conditions, exponent.back());
+                    exact_expr obstruction = integer(0);
+                    for(size_t i = 0; i < check_size; ++i){
+                        exact_expr left = i < lhs.size() ? lhs[i] : integer(0);
+                        exact_expr right = i < forcing.size()
+                            ? forcing[i] : integer(0);
+                        obstruction = simplify(left - right);
+                        if(!integration_expr_zero(*this, obstruction)) break;
+                    }
+                    if(!integration_exact_expression_tree(obstruction) ||
+                       integration_depends_on(obstruction, variable))
+                        continue;
+                    require_nonzero(proof_conditions, obstruction);
                     set_non_elementary_remainder();
+                    result.conditions = std::move(proof_conditions);
+                    if(!result.conditions.empty())
+                        result.diagnostic = "logarithmic hyperexponential RDE "
+                            "has no solution under the returned nonzero "
+                            "conditions";
                     return true;
                 }
                 exact_expr candidate = integration_expr_poly_expr(*this,
@@ -15471,8 +15530,19 @@ risch_result exact_context::integrate_elementary_impl(
             // exhausts that bound; if deg(Q)<deg(P') or the low-degree
             // equations fail, the hyperexponential Liouville criterion
             // certifies that no elementary primitive exists in this tower.
-            if(!rational_forcing || !rational_exponent_coefficients) continue;
+            if(rational_forcing && rational_exponent_coefficients){
+                set_non_elementary_remainder();
+                return true;
+            }
+            std::vector<exact_expr> proof_conditions = exponent_conditions;
+            if(!rational_exponent_coefficients)
+                require_nonzero(proof_conditions, exponent.back());
+            require_nonzero(proof_conditions, forcing.back());
             set_non_elementary_remainder();
+            result.conditions = std::move(proof_conditions);
+            if(!result.conditions.empty())
+                result.diagnostic = "logarithmic hyperexponential RDE has no "
+                    "solution under the returned nonzero conditions";
             return true;
         }
         return false;

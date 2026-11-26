@@ -30,10 +30,10 @@ int main(){
     exact_expr underdetermined_input = context.exponential(exponent) * a * t / x;
     risch_result underdetermined = context.integrate_elementary(
         underdetermined_input, x);
-    if(underdetermined.status == risch_status::proven_nonelementary)
-        assert(std::find(underdetermined.conditions.begin(),
-                         underdetermined.conditions.end(), a) !=
-               underdetermined.conditions.end());
+    assert(underdetermined.status == risch_status::proven_nonelementary);
+    assert(std::find(underdetermined.conditions.begin(),
+                     underdetermined.conditions.end(), a) !=
+           underdetermined.conditions.end());
 
     exact_expr c = context.symbol("c");
     exact_expr u = context.symbol("u");
@@ -61,6 +61,41 @@ int main(){
     assert(context.simplify(context.expand(
         context.differentiate(parameterized.elementary_part, x) -
         parameterized_input, 100000)) == context.integer(0));
+
+    exact_expr ratio_log = context.natural_logarithm(
+        x / (x + context.integer(1)));
+    exact_expr ratio_exponent = a * context.power(ratio_log,
+        context.integer(3)) + c * context.power(ratio_log,
+        context.integer(2));
+    exact_expr ratio_forcing =
+        context.integer(3) * a * u * context.power(ratio_log,
+            context.integer(3)) +
+        (context.integer(3) * a * v + context.integer(2) * c * u) *
+            context.power(ratio_log, context.integer(2)) +
+        context.integer(2) * c * v * ratio_log + u;
+    exact_expr ratio_input = context.exponential(ratio_exponent) *
+        ratio_forcing * context.differentiate(ratio_log, x);
+    exact_expr ratio_expected = context.exponential(ratio_exponent) *
+        (u * ratio_log + v);
+    risch_result ratio_result = context.integrate_elementary(ratio_input, x);
+    assert(ratio_result.status == risch_status::elementary);
+    assert(context.simplify(ratio_result.elementary_part - ratio_expected) ==
+           context.integer(0));
+    assert(std::find(ratio_result.conditions.begin(),
+                     ratio_result.conditions.end(), a) !=
+           ratio_result.conditions.end());
+    assert(context.simplify(context.expand(
+        context.differentiate(ratio_result.elementary_part, x) - ratio_input,
+        100000)) == context.integer(0));
+
+    exact_expr symbolic_rate_unresolved = context.exponential(
+        a * context.power(t, context.integer(3))) / x;
+    risch_result unresolved = context.integrate_elementary(
+        symbolic_rate_unresolved, x);
+    assert(unresolved.status == risch_status::proven_nonelementary);
+    assert(std::find(unresolved.conditions.begin(), unresolved.conditions.end(),
+                     a) != unresolved.conditions.end());
+
     context.assume(a, "positive");
     risch_result assumed_parameterized = context.integrate_elementary(
         parameterized_input, x);
