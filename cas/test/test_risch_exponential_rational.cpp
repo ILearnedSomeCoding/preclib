@@ -508,6 +508,25 @@ int main(){
     assert(context.simplify(implicit_slope_result.elementary_part -
         scaled_logistic_primitive / a) == context.integer(0));
 
+    exact_expr quadratic_sine_argument = a * context.power(x,
+        context.integer(2));
+    exact_expr quadratic_sine = context.sine(quadratic_sine_argument);
+    exact_expr quadratic_sine_rate = context.differentiate(
+        quadratic_sine_argument, x);
+    risch_result implicit_quadratic_sine = context.integrate_elementary(
+        x * quadratic_sine, x);
+    assert(implicit_quadratic_sine.status == risch_status::elementary);
+    assert(implicit_quadratic_sine.remainder == context.integer(0));
+    assert(std::find(implicit_quadratic_sine.conditions.begin(),
+        implicit_quadratic_sine.conditions.end(), a) !=
+        implicit_quadratic_sine.conditions.end());
+
+    risch_result explicit_quadratic_sine = context.integrate_elementary(
+        quadratic_sine_rate * quadratic_sine, x);
+    assert(explicit_quadratic_sine.status == risch_status::elementary);
+    assert(explicit_quadratic_sine.remainder == context.integer(0));
+    assert(explicit_quadratic_sine.conditions.empty());
+
     exact_expr logarithm_generator = context.natural_logarithm(x);
     exact_expr logarithm_exponential_square = context.exponential(
         context.power(logarithm_generator, context.integer(2)));

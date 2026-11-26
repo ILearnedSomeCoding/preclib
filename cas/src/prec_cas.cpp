@@ -4173,8 +4173,61 @@ static bool integration_laurent_monomial(
     return false;
 }
 
+static bool integration_laurent_expr_monomial(
+    exact_context &context, const exact_expr &expression,
+    const exact_expr &variable, exact_expr &coefficient,
+    numeric_value &exponent){
+    if(expression.is_value()){
+        if(expression.value().is_approximate()) return false;
+        coefficient = context.simplify(coefficient * expression);
+        return true;
+    }
+    if(expression == variable){
+        exponent = exponent + numeric_value(1);
+        return true;
+    }
+    if(expression.operation() == exact_opcode::square_root &&
+       expression.operand(0) == variable){
+        exponent = exponent + numeric_value(
+            precq_t(precn_t(1), precn_t(2)));
+        return true;
+    }
+    if(expression.operation() == exact_opcode::power){
+        const exact_expr &base = expression.operand(0);
+        const exact_expr &power = expression.operand(1);
+        if(!power.is_value() || power.value().is_approximate()) return false;
+        numeric_value power_value = power.value();
+        if(base == variable){
+            exponent = exponent + power_value;
+            return true;
+        }
+        if(base.operation() == exact_opcode::square_root &&
+           base.operand(0) == variable){
+            exponent = exponent + power_value * numeric_value(
+                precq_t(precn_t(1), precn_t(2)));
+            return true;
+        }
+        if(integration_depends_on(expression, variable)) return false;
+        if(!integration_exact_expression_tree(expression)) return false;
+        coefficient = context.simplify(coefficient * expression);
+        return true;
+    }
+    if(expression.operation() == exact_opcode::multiply){
+        for(size_t i = 0; i < expression.operand_count(); ++i)
+            if(!integration_laurent_expr_monomial(context,
+                    expression.operand(i), variable, coefficient, exponent))
+                return false;
+        return true;
+    }
+    if(integration_depends_on(expression, variable) ||
+       !integration_exact_expression_tree(expression)) return false;
+    coefficient = context.simplify(coefficient * expression);
+    return true;
+}
+
 // Integrate sum_r x^r P_r(t), t=log(c*x^b), by solving
-// b*Q' + (r+1)Q = P_r. Rational-power groups remain independent over Q.
+// b*Q' + (r+1)Q = P_r. Rational-power groups remain independent over the
+// exact constant field, including symbolic parameters.
 static exact_expr integration_log_laurent_polynomial(
     exact_context &context, const exact_expr &expression,
     const exact_expr &variable, size_t maximum_degree){
@@ -4231,12 +4284,12 @@ static exact_expr integration_log_laurent_polynomial(
         return exact_expr();
     struct exponent_group{
         numeric_value exponent;
-        integration_poly polynomial;
+        integration_expr_poly polynomial;
     };
     std::vector<exponent_group> groups;
     auto collect_monomials = [&](auto &&self, const exact_expr &term,
                                  std::vector<std::pair<numeric_value,
-                                                       numeric_value>> &out)
+                                                       exact_expr>> &out)
         -> bool{
         if(term.operation() == exact_opcode::add){
             for(size_t i = 0; i < term.operand_count(); ++i)
@@ -4244,13 +4297,14 @@ static exact_expr integration_log_laurent_polynomial(
             return true;
         }
         if(term.is_value() && term.value().is_zero()) return true;
-        numeric_value coefficient(1), exponent(0);
-        if(!integration_laurent_monomial(term, coordinate, coefficient,
-                                         exponent))
+        exact_expr coefficient = context.integer(1);
+        numeric_value exponent(0);
+        if(!integration_laurent_expr_monomial(context, term, coordinate,
+                                               coefficient, exponent))
             return false;
         for(auto &entry : out){
             if(entry.first == exponent){
-                entry.second = entry.second + coefficient;
+                entry.second = context.simplify(entry.second + coefficient);
                 return true;
             }
         }
@@ -4272,7 +4326,7 @@ static exact_expr integration_log_laurent_polynomial(
         coefficient_expression = context.simplify(coefficient_expression);
         if(coefficient_expression.is_value() &&
            coefficient_expression.value().is_zero()) continue;
-        std::vector<std::pair<numeric_value, numeric_value>> monomials;
+        std::vector<std::pair<numeric_value, exact_expr>> monomials;
         if(!collect_monomials(collect_monomials, coefficient_expression,
                               monomials))
             return exact_expr();
@@ -4283,54 +4337,58 @@ static exact_expr integration_log_laurent_polynomial(
                 });
             if(group == groups.end()){
                 groups.push_back({monomial.first,
-                    integration_poly(coefficients.size(), numeric_value(0))});
+                    integration_expr_poly(coefficients.size(),
+                                          context.integer(0))});
                 group = groups.end() - 1;
             }
-            group->polynomial[i] = group->polynomial[i] + monomial.second;
+            group->polynomial[i] = context.simplify(
+                group->polynomial[i] + monomial.second);
         }
     }
     exact_expr candidate = context.integer(0);
     for(exponent_group &group : groups){
-        integration_trim(group.polynomial);
+        integration_expr_trim(context, group.polynomial);
         bool zero = std::all_of(group.polynomial.begin(),
-            group.polynomial.end(), [](const numeric_value &coefficient){
-                return coefficient.is_zero();
+            group.polynomial.end(), [&](const exact_expr &coefficient){
+                return integration_expr_zero(context, coefficient);
             });
         if(zero) continue;
-        integration_poly q;
+        integration_expr_poly q;
         if(group.exponent == numeric_value(-1)){
-            q.assign(group.polynomial.size() + 1, numeric_value(0));
+            q.assign(group.polynomial.size() + 1, context.integer(0));
             for(size_t i = 0; i < group.polynomial.size(); ++i)
-                q[i + 1] = group.polynomial[i] /
-                    (generator_slope * numeric_value(i + 1));
+                q[i + 1] = context.simplify(group.polynomial[i] /
+                    context.value(generator_slope * numeric_value(i + 1)));
             for(size_t i = 0; i < group.polynomial.size(); ++i)
-                if(q[i + 1] * generator_slope * numeric_value(i + 1) !=
-                   group.polynomial[i])
+                if(!integration_expr_zero(context, context.simplify(
+                       q[i + 1] * context.value(generator_slope *
+                           numeric_value(i + 1)) - group.polynomial[i])))
                     return exact_expr();
             candidate = candidate + context.value(coordinate_scale) *
-                integration_poly_expr(context, q,
-                                                            generator);
+                integration_expr_poly_expr(context, q, generator);
             continue;
         }
         numeric_value lambda = group.exponent + numeric_value(1);
         if(lambda.is_zero()) return exact_expr();
-        q.assign(group.polynomial.size(), numeric_value(0));
+        q.assign(group.polynomial.size(), context.integer(0));
         for(size_t i = group.polynomial.size(); i-- > 0;){
-            numeric_value rhs = group.polynomial[i];
+            exact_expr rhs = group.polynomial[i];
             if(i + 1 < q.size())
-                rhs = rhs - generator_slope * numeric_value(i + 1) * q[i + 1];
-            q[i] = rhs / lambda;
+                rhs = context.simplify(rhs - context.value(
+                    generator_slope * numeric_value(i + 1)) * q[i + 1]);
+            q[i] = context.simplify(rhs / context.value(lambda));
         }
         for(size_t i = 0; i < group.polynomial.size(); ++i){
-            numeric_value reconstructed = lambda * q[i];
+            exact_expr reconstructed = context.value(lambda) * q[i];
             if(i + 1 < q.size())
-                reconstructed = reconstructed + generator_slope *
-                    numeric_value(i + 1) * q[i + 1];
-            if(reconstructed != group.polynomial[i]) return exact_expr();
+                reconstructed = reconstructed + context.value(
+                    generator_slope * numeric_value(i + 1)) * q[i + 1];
+            if(!integration_expr_zero(context, context.simplify(
+                    reconstructed - group.polynomial[i]))) return exact_expr();
         }
         exact_expr factor = context.power(monomial_base, context.value(lambda));
         candidate = candidate + context.value(coordinate_scale) * factor *
-            integration_poly_expr(context, q, generator);
+            integration_expr_poly_expr(context, q, generator);
     }
     return candidate;
 }
@@ -14574,6 +14632,20 @@ risch_result exact_context::integrate_elementary_impl(
             }
         }
     }
+    exact_expr early_log_laurent = integration_log_laurent_polynomial(
+        *this, expression, variable, options.maximum_degree);
+    if(early_log_laurent.valid()){
+        if(early_log_laurent.reachable_node_count() > options.maximum_nodes){
+            result.status = risch_status::resource_limit;
+            result.diagnostic = "log-Laurent primitive exceeded node budget";
+            return result;
+        }
+        result.status = risch_status::elementary;
+        result.elementary_part = std::move(early_log_laurent);
+        result.remainder = integer(0);
+        result.diagnostic.clear();
+        return result;
+    }
     // A repeated affine pole in a logarithmic generator has a direct RDE
     // solution over the exact constant field:
     //   int(D(t)/(a*t+b)^m) = (a*t+b)^(1-m)/(a*(1-m)),
@@ -16666,18 +16738,6 @@ risch_result exact_context::integrate_elementary_impl(
                 if(std::find(result.conditions.begin(), result.conditions.end(),
                              condition) == result.conditions.end())
                     result.conditions.push_back(condition);
-            result.diagnostic.clear();
-            return true;
-        }
-        exact_expr primitive_candidate = integration_log_laurent_polynomial(
-            *this, expression, variable, options.maximum_degree);
-        if(primitive_candidate.valid()){
-            // This branch verifies the exact coefficient RDE in Q before
-            // constructing x^(r+1)*Q(log(x)); its chain-rule identity is the
-            // certificate, including fractional powers outside Q(x).
-            result.status = risch_status::elementary;
-            result.elementary_part = std::move(primitive_candidate);
-            result.remainder = integer(0);
             result.diagnostic.clear();
             return true;
         }
