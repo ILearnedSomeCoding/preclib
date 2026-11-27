@@ -8,6 +8,8 @@
 - `test`: 覆盖符号系数重复极点，并验证 `D(elementary_part)+remainder=input`。
 - `feat`: 对数超指数 RDE 的部分 Hermite 归约增加显式仿射极点后备路径，支持带符号常数偏移的重复极点。
 - `test`: 增加 `(ln(x)+a)^-2` 参数化重复极点回归，验证抽出的部分原函数与余项精确重构输入。
+- `feat`: `diff(expr, x, n)` 与 `differentiate(expr, x, n)` 支持 n 阶导数，并限制 `0 <= n <= 10000`。
+- `test`: 覆盖 `D^100(x^2*exp(x))`、零阶恒等及阶数上限异常。
 
 ## 2026-11-26
 

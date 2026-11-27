@@ -2640,6 +2640,24 @@ exact_expr exact_context::differentiate(const exact_expr &expression,
     return simplify(derivative(expression.root_));
 }
 
+exact_expr exact_context::differentiate(const exact_expr &expression,
+                                        const exact_expr &variable,
+                                        size_t order){
+    if(!expression.valid() || !variable.valid() ||
+       expression.storage_ != storage_ || variable.storage_ != storage_ ||
+       storage_->node(variable.root_).op != exact_opcode::symbol)
+        throw std::invalid_argument(
+            "differentiate requires an expression and a symbol in one context");
+    if(order > 10000)
+        throw std::out_of_range("differentiate order exceeds 10000");
+    exact_expr result = expression;
+    for(size_t i = 0; i < order; ++i){
+        result = differentiate(result, variable);
+        if(result == integer(0)) break;
+    }
+    return result;
+}
+
 namespace{
 
 using integration_poly = std::vector<numeric_value>;

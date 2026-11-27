@@ -494,8 +494,18 @@ class parser{
             return state_.context.formal_derivative(arguments[0], arguments[1]);
         }
         if(name == "diff" || name == "differentiate"){
+            if(arguments.size() == 3){
+                precz_t order = require_integer(arguments[2]);
+                if(order.is_negative())
+                    throw std::runtime_error("diff order must be nonnegative");
+                if(precz_t(10000) < order)
+                    throw std::runtime_error("diff order exceeds 10000");
+                return state_.context.differentiate(
+                    arguments[0], arguments[1], (size_t)(uint64_t)order);
+            }
             if(arguments.size() != 2)
-                throw std::runtime_error("diff requires an expression and a variable");
+                throw std::runtime_error(
+                    "diff requires an expression, variable, and optional order");
             return state_.context.differentiate(arguments[0], arguments[1]);
         }
         if(name == "integrate" || name == "int"){
@@ -728,7 +738,7 @@ static const char *help_text(){
         "              prime_power_q\n"
         "solve: solve(expr, {x}), exact_solve(expr, {x}),\n"
         "       solve({equations}, {variables}), exact_solve({equations}, {variables})\n"
-        "calculus: diff(expr, x), int(expr, x), D(y, x), dsolve(equation, y, x)\n"
+        "calculus: diff(expr, x[, n]), int(expr, x), D(y, x), dsolve(equation, y, x)\n"
         "functions: exp, expm1, ln, log, log10, log2, Si, Ci, Ei, erf,\n"
         "           partial_gamma(a, x), erf, erfi, sin, cos, tan, asin, acos, atan,\n"
         "           sinh, cosh, tanh, asinh, acosh, atanh, LogRootSum(P, W, x)\n"

@@ -300,6 +300,8 @@ public:
                                  const exact_expr &variable);
     exact_expr differentiate(const exact_expr &expression,
                              const exact_expr &variable);
+    exact_expr differentiate(const exact_expr &expression,
+                             const exact_expr &variable, size_t order);
     exact_expr integrate(const exact_expr &expression,
                          const exact_expr &variable);
     risch_result integrate_elementary(

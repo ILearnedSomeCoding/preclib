@@ -2080,6 +2080,21 @@ int main(){
     assert(context.differentiate(polynomial_for_diff, x) ==
            context.integer(3) * context.power(x, context.integer(2)) +
            context.integer(2));
+    exact_expr exponential_quadratic = context.exponential(x) *
+        context.power(x, context.integer(2));
+    exact_expr hundredth_derivative = context.differentiate(
+        exponential_quadratic, x, 100);
+    exact_expr hundredth_expected = context.exponential(x) *
+        (context.power(x, context.integer(2)) + context.integer(200) * x +
+         context.integer(9900));
+    assert(context.simplify(hundredth_derivative - hundredth_expected) ==
+           context.integer(0));
+    assert(context.differentiate(exponential_quadratic, x, 0) ==
+           exponential_quadratic);
+    bool derivative_order_limit_enforced = false;
+    try{ context.differentiate(exponential_quadratic, x, 10001); }
+    catch(const std::out_of_range &){ derivative_order_limit_enforced = true; }
+    assert(derivative_order_limit_enforced);
     exact_expr elementary_integrand = context.exponential(context.integer(3) * x) +
                                        context.sine(context.integer(2) * x) +
                                        context.power(x, context.integer(4));
