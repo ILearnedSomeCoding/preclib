@@ -15383,10 +15383,19 @@ risch_result exact_context::integrate_elementary_impl(
                 exact_expr rational_candidate;
                 exact_expr partial_candidate, partial_remainder;
                 bool partial_rde_limited = false;
-                if(integration_hyperexponential_rational_partial_expr(*this,
-                       formal_forcing, formal_exponent, formal_logarithm,
-                       options, partial_candidate, partial_remainder,
-                       &partial_rde_limited, &rational_conditions)){
+                bool partial_found =
+                    integration_hyperexponential_rational_partial_expr(*this,
+                        formal_forcing, formal_exponent, formal_logarithm,
+                        options, partial_candidate, partial_remainder,
+                        &partial_rde_limited, &rational_conditions);
+                if(!partial_found && !partial_rde_limited)
+                    partial_found =
+                        integration_hyperexponential_rational_partial_general_expr(
+                            *this, formal_forcing, formal_exponent,
+                            formal_logarithm, options, partial_candidate,
+                            partial_remainder, &partial_rde_limited,
+                            &rational_conditions);
+                if(partial_found){
                     rational_candidate = partial_candidate;
                     rational_reduction = std::move(partial_candidate);
                     rational_remainder = std::move(partial_remainder);

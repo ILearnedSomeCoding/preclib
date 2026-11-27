@@ -131,6 +131,30 @@ int main(){
         return 1;
     }
 
+    exact_expr shifted_repeated_pole_input = u * context.exponential(
+        context.power(t, context.integer(3))) /
+        (x * context.power(t + a, context.integer(2)));
+    risch_result shifted_repeated_pole_result = context.integrate_elementary(
+        shifted_repeated_pole_input, x, rational_options);
+    if((shifted_repeated_pole_result.status != risch_status::unsupported &&
+        shifted_repeated_pole_result.status !=
+            risch_status::proven_nonelementary) ||
+       shifted_repeated_pole_result.elementary_part == context.integer(0) ||
+       shifted_repeated_pole_result.remainder == context.integer(0) ||
+       context.simplify(context.expand(
+           context.differentiate(
+               shifted_repeated_pole_result.elementary_part, x) +
+           shifted_repeated_pole_result.remainder -
+               shifted_repeated_pole_input, 100000)) != context.integer(0)){
+        std::cerr << "partial shifted logarithmic pole reduction failed: "
+                  << shifted_repeated_pole_result.diagnostic << " status="
+                  << (int)shifted_repeated_pole_result.status << " part="
+                  << shifted_repeated_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << shifted_repeated_pole_result.remainder.to_string() << '\n';
+        return 1;
+    }
+
     exact_expr symbolic_rate_unresolved = context.exponential(
         a * context.power(t, context.integer(3))) / x;
     risch_result unresolved = context.integrate_elementary(
