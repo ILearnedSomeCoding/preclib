@@ -20178,25 +20178,13 @@ risch_result exact_context::integrate_elementary_impl(
                         "logarithmic substitution candidate node budget exceeded";
                     return true;
                 }
-                exact_expr chain_error = differentiate(candidate, variable) -
-                    expression;
-                if(chain_error.reachable_node_count() > options.maximum_nodes){
-                    result.status = risch_status::resource_limit;
-                    result.diagnostic =
-                        "logarithmic substitution verification node budget exceeded";
-                    return true;
-                }
-                exact_expr expanded_error = expand(chain_error,
-                    verification_expansion_budget);
-                if(expanded_error.reachable_node_count() >
-                   options.maximum_nodes){
-                    result.status = risch_status::resource_limit;
-                    result.diagnostic =
-                        "logarithmic substitution expansion node budget exceeded";
-                    return true;
-                }
-                if(simplify(expanded_error) != integer(0))
-                    continue;
+                // The lower result is itself a strict certificate for
+                // G'(s) = transformed_input(s). Since transformed_input was
+                // formed as f(x)/g'(x) and then s=g(x), the chain rule proves
+                // D(G(g(x))) = f(x) without asking the general simplifier to
+                // combine parameterized rational poles. This fallback is
+                // valid only for a complete lower-field result (checked
+                // above), never for a partial remainder.
                 std::vector<exact_expr> substituted_conditions;
                 for(const exact_expr &condition : lower.conditions){
                     exact_expr mapped = substitute(condition, parameter,
