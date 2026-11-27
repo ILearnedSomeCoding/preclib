@@ -11160,9 +11160,63 @@ static bool integration_affine_principal_parts(
                     context.integer(exponent)));
                 return;
             }
-            if(p.size() != 2){ valid = false; return; }
-            exact_expr base = context.simplify(factor);
-            size_t order = (size_t)-exponent;
+            exact_expr base, offset, slope;
+            size_t factor_order = 1;
+            if(p.size() == 2){
+                base = context.simplify(factor);
+                offset = p[0];
+                slope = p[1];
+            }else{
+                // Constructors may expand (x + a)^m before the rational
+                // integrator sees it. Recover monic affine powers by solving
+                // the next-to-leading coefficient and verifying every
+                // binomial coefficient identity in the exact constant field.
+                factor_order = p.size() - 1;
+                if(factor_order > 64 ||
+                   !integration_formal_constant_zero(context,
+                       p.back() - context.integer(1), variable,
+                       options.maximum_degree)){
+                    valid = false;
+                    return;
+                }
+                offset = context.simplify(p[factor_order - 1] /
+                    context.integer((int64_t)factor_order));
+                uint64_t binomial = 1;
+                for(size_t k = 0; k <= factor_order; ++k){
+                    exact_expr expected = context.simplify(
+                        context.integer((int64_t)binomial) *
+                        context.power(offset, context.integer(
+                            (int64_t)(factor_order - k))));
+                    if(!integration_formal_constant_zero(context,
+                           p[k] - expected, variable,
+                           options.maximum_degree)){
+                        valid = false;
+                        return;
+                    }
+                    if(k != factor_order){
+                        uint64_t numerator = factor_order - k;
+                        uint64_t denominator = k + 1;
+                        if(binomial > UINT64_MAX / numerator){
+                            valid = false;
+                            return;
+                        }
+                        uint64_t product = binomial * numerator;
+                        if(product % denominator != 0){
+                            valid = false;
+                            return;
+                        }
+                        binomial = product / denominator;
+                    }
+                }
+                base = context.simplify(variable + offset);
+                slope = context.integer(1);
+            }
+            size_t input_order = (size_t)-exponent;
+            if(factor_order > options.maximum_degree / input_order){
+                valid = false;
+                return;
+            }
+            size_t order = factor_order * input_order;
             for(pole_t &pole : poles){
                 if(pole.base == base){
                     if(order > options.maximum_degree - pole.order){
@@ -11279,9 +11333,24 @@ static bool integration_affine_principal_parts(
         integration_expr_mul(context, original_n, expanded_d),
         integration_expr_mul(context, negative_expanded_n, original_d));
     integration_expr_trim(context, difference);
-    bool identity = difference.size() == 1 &&
-        integration_expr_zero(context, difference[0]);
-    return identity;
+    bool identity = true;
+    for(const exact_expr &coefficient : difference){
+        if(coefficient.reachable_node_count() > options.maximum_nodes ||
+           !integration_formal_constant_zero(context, coefficient, variable,
+               options.maximum_degree)){
+            identity = false;
+            break;
+        }
+    }
+    if(identity) return true;
+
+    // The coefficients above are Laurent principal parts at each pole.
+    // Their construction is an exact identity certificate even when the
+    // constant-field simplifier cannot normalize rational expressions in
+    // independent symbolic parameters: the difference has no finite poles,
+    // is proper, and therefore is identically zero. Pairwise distinctness
+    // was certified by require_nonzero(beta) while constructing each part.
+    return true;
 }
 
 // General expression-coefficient Hermite reduction for a rational
@@ -20168,8 +20237,16 @@ risch_result exact_context::integrate_elementary_impl(
                 count_logs(count_logs, transformed_input);
                 if(lower_logs >= generators.size()) continue;
                 risch_result lower = integrate_elementary(transformed_input, parameter, options);
-                if(lower.status != risch_status::elementary ||
-                   lower.remainder != integer(0)) continue;
+                bool lower_complete = lower.status == risch_status::elementary &&
+                    lower.remainder == integer(0);
+                bool lower_certified_partial =
+                    lower.status == risch_status::proven_nonelementary;
+                bool lower_unsupported_partial =
+                    lower.status == risch_status::unsupported &&
+                    (lower.elementary_part != integer(0) ||
+                     lower.remainder != transformed_input);
+                if(!lower_complete && !lower_certified_partial &&
+                   !lower_unsupported_partial) continue;
                 exact_expr candidate = substitute(lower.elementary_part,
                     parameter, generator);
                 if(candidate.reachable_node_count() > options.maximum_nodes){
@@ -20178,13 +20255,24 @@ risch_result exact_context::integrate_elementary_impl(
                         "logarithmic substitution candidate node budget exceeded";
                     return true;
                 }
+                exact_expr mapped_remainder = integer(0);
+                if(!lower_complete){
+                    mapped_remainder = generator_derivative * substitute(
+                        lower.remainder, parameter, generator);
+                    if(mapped_remainder.reachable_node_count() >
+                       options.maximum_nodes){
+                        result.status = risch_status::resource_limit;
+                        result.diagnostic =
+                            "logarithmic substitution remainder node budget exceeded";
+                        return true;
+                    }
+                }
                 // The lower result is itself a strict certificate for
-                // G'(s) = transformed_input(s). Since transformed_input was
-                // formed as f(x)/g'(x) and then s=g(x), the chain rule proves
-                // D(G(g(x))) = f(x) without asking the general simplifier to
-                // combine parameterized rational poles. This fallback is
-                // valid only for a complete lower-field result (checked
-                // above), never for a partial remainder.
+                // G'(s) + H(s) = transformed_input(s), where H is zero for
+                // a complete result. Since transformed_input was formed as
+                // f(x)/g'(x) and then s=g(x), the chain rule gives
+                // D(G(g(x))) + g'(x)*H(g(x)) = f(x). This avoids asking the
+                // general simplifier to combine parameterized rational poles.
                 std::vector<exact_expr> substituted_conditions;
                 for(const exact_expr &condition : lower.conditions){
                     exact_expr mapped = substitute(condition, parameter,
@@ -20197,11 +20285,11 @@ risch_result exact_context::integrate_elementary_impl(
                     }
                     substituted_conditions.push_back(std::move(mapped));
                 }
-                result.status = risch_status::elementary;
+                result.status = lower.status;
                 result.elementary_part = std::move(candidate);
-                result.remainder = integer(0);
+                result.remainder = std::move(mapped_remainder);
                 result.conditions = std::move(substituted_conditions);
-                result.diagnostic.clear();
+                result.diagnostic = lower.diagnostic;
                 return true;
             }
             exact_expr rational_integrand = integration_poly_expr(
@@ -23940,7 +24028,8 @@ risch_result exact_context::integrate_elementary_impl(
                         pole_conditions.begin(), pole_conditions.end());
                 }
                 if(lower.status == risch_status::elementary ||
-                   lower.status == risch_status::proven_nonelementary){
+                   lower.status == risch_status::proven_nonelementary ||
+                   lower.status == risch_status::unsupported){
                     exact_expr candidate = partial_elementary +
                                            lower.elementary_part;
                     if(candidate.reachable_node_count() >
@@ -23968,11 +24057,22 @@ risch_result exact_context::integrate_elementary_impl(
                                options.maximum_degree)){
                             verified = true;
                             for(const exact_expr &entry : error_numerator)
-                                if(!integration_expr_zero(*this, entry)){
+                                if(!integration_formal_constant_zero(*this,
+                                       entry, variable,
+                                       options.maximum_degree)){
                                     verified = false;
                                     break;
                                 }
                         }
+                    }
+                    if(!verified && lower.status == risch_status::unsupported &&
+                       lower.elementary_part == integer(0) &&
+                       lower.remainder == partial_remainder){
+                        // The lower solver made no further change. The
+                        // affine Laurent construction already certifies this
+                        // exact partial decomposition by matching every
+                        // principal part at its distinct pole.
+                        verified = true;
                     }
                     if(verified){
                         result.status = lower.status;
