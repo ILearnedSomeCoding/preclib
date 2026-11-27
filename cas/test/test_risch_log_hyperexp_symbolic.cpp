@@ -110,6 +110,27 @@ int main(){
         context.differentiate(rational_result.elementary_part, x) -
         rational_input, 100000)) == context.integer(0));
 
+    exact_expr repeated_pole_input = u * context.exponential(
+        context.power(t, context.integer(3))) /
+        (x * context.power(t + context.integer(1), context.integer(2)));
+    risch_result repeated_pole_result = context.integrate_elementary(
+        repeated_pole_input, x, rational_options);
+    if(repeated_pole_result.status != risch_status::unsupported ||
+       repeated_pole_result.elementary_part == context.integer(0) ||
+       repeated_pole_result.remainder == context.integer(0) ||
+       context.simplify(context.expand(
+           context.differentiate(repeated_pole_result.elementary_part, x) +
+           repeated_pole_result.remainder - repeated_pole_input, 100000)) !=
+           context.integer(0)){
+        std::cerr << "partial logarithmic hyperexponential reduction failed: "
+                  << repeated_pole_result.diagnostic << " status="
+                  << (int)repeated_pole_result.status << " part="
+                  << repeated_pole_result.elementary_part.to_string()
+                  << " remainder="
+                  << repeated_pole_result.remainder.to_string() << '\n';
+        return 1;
+    }
+
     exact_expr symbolic_rate_unresolved = context.exponential(
         a * context.power(t, context.integer(3))) / x;
     risch_result unresolved = context.integrate_elementary(

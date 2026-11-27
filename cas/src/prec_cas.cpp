@@ -15380,12 +15380,27 @@ risch_result exact_context::integrate_elementary_impl(
                 bool no_rational_solution = false;
                 exact_expr rational_reduction, rational_remainder;
                 std::vector<exact_expr> rational_conditions;
-                exact_expr rational_candidate =
-                    integration_hyperexponential_rational(*this,
-                        formal_forcing, formal_exponent, formal_logarithm,
-                        true, options, &rational_rde_limited,
-                        &rational_conditions, &rational_reduction,
-                        &rational_remainder, true, &no_rational_solution);
+                exact_expr rational_candidate;
+                exact_expr partial_candidate, partial_remainder;
+                bool partial_rde_limited = false;
+                if(integration_hyperexponential_rational_partial_expr(*this,
+                       formal_forcing, formal_exponent, formal_logarithm,
+                       options, partial_candidate, partial_remainder,
+                       &partial_rde_limited, &rational_conditions)){
+                    rational_candidate = partial_candidate;
+                    rational_reduction = std::move(partial_candidate);
+                    rational_remainder = std::move(partial_remainder);
+                }else if(partial_rde_limited){
+                    rational_rde_limited = true;
+                }else{
+                    rational_candidate =
+                        integration_hyperexponential_rational(*this,
+                            formal_forcing, formal_exponent, formal_logarithm,
+                            true, options, &rational_rde_limited,
+                            &rational_conditions, &rational_reduction,
+                            &rational_remainder, true,
+                            &no_rational_solution);
+                }
                 if(rational_rde_limited){
                     result.status = risch_status::resource_limit;
                     result.diagnostic = "logarithmic rational RDE budget "
@@ -15393,10 +15408,119 @@ risch_result exact_context::integrate_elementary_impl(
                     return true;
                 }
                 if(rational_candidate.valid() && rational_reduction.valid() &&
-                   rational_remainder.valid() &&
-                   simplify(rational_remainder) == integer(0)){
+                   rational_remainder.valid()){
                     rational_candidate = substitute(rational_candidate,
                         formal_logarithm, logarithm);
+                    if(simplify(rational_remainder) != integer(0)){
+                        exact_expr partial = substitute(rational_reduction,
+                            formal_logarithm, logarithm);
+                        exact_expr residual = simplify(substitute(
+                            rational_remainder, formal_logarithm, logarithm) *
+                            logarithm_derivative);
+                        if(partial.reachable_node_count() >
+                               options.maximum_nodes ||
+                           residual.reachable_node_count() >
+                               options.maximum_nodes){
+                            result.status = risch_status::resource_limit;
+                            result.diagnostic =
+                                "logarithmic rational RDE partial result "
+                                "node budget exceeded";
+                            return true;
+                        }
+                        exact_expr partial_identity = simplify(expand(
+                            differentiate(partial, variable) + residual -
+                                expression,
+                            std::min(options.maximum_nodes, (size_t)100000)));
+                        if(partial_identity != integer(0)){
+                            exact_expr scaled_identity = simplify(
+                                partial_identity /
+                                    (exponential_factor *
+                                     logarithm_derivative));
+                            integration_expr_poly identity_numerator,
+                                identity_denominator;
+                            if(integration_parse_expr_rational(*this,
+                                   scaled_identity, logarithm,
+                                   identity_numerator, identity_denominator,
+                                   degree_budget)){
+                                partial_identity = integer(0);
+                                for(const exact_expr &coefficient :
+                                        identity_numerator)
+                                    if(!integration_expr_zero(*this,
+                                            coefficient)){
+                                        partial_identity = coefficient;
+                                        break;
+                                    }
+                            }
+                        }
+                        if(partial_identity == integer(0)){
+                            risch_result lower = integrate_elementary(
+                                residual, variable, options);
+                            if(lower.status == risch_status::resource_limit){
+                                result.status = risch_status::resource_limit;
+                                result.diagnostic = lower.diagnostic.empty()
+                                    ? "logarithmic RDE residual budget "
+                                      "exceeded"
+                                    : lower.diagnostic;
+                                return true;
+                            }
+                            if(lower.status == risch_status::elementary ||
+                               lower.status ==
+                                   risch_status::proven_nonelementary ||
+                               lower.status == risch_status::unsupported){
+                                exact_expr combined = simplify(partial +
+                                    lower.elementary_part);
+                                if(combined.reachable_node_count() >
+                                       options.maximum_nodes ||
+                                   lower.remainder.reachable_node_count() >
+                                       options.maximum_nodes){
+                                    result.status = risch_status::resource_limit;
+                                    result.diagnostic =
+                                        "logarithmic RDE residual result "
+                                        "node budget exceeded";
+                                    return true;
+                                }
+                                exact_expr reconstruction_error =
+                                    simplify(expand(differentiate(combined,
+                                        variable) + lower.remainder -
+                                            expression,
+                                        std::min(options.maximum_nodes,
+                                            (size_t)100000)));
+                                if(reconstruction_error == integer(0)){
+                                    result.status = lower.status;
+                                    result.elementary_part =
+                                        std::move(combined);
+                                    result.remainder =
+                                        std::move(lower.remainder);
+                                    result.conditions =
+                                        std::move(exponent_conditions);
+                                    for(const exact_expr &condition :
+                                            rational_conditions)
+                                        if(std::find(result.conditions.begin(),
+                                                result.conditions.end(),
+                                                condition) ==
+                                           result.conditions.end())
+                                            result.conditions.push_back(
+                                                condition);
+                                    for(const exact_expr &condition :
+                                            lower.conditions)
+                                        if(std::find(result.conditions.begin(),
+                                                result.conditions.end(),
+                                                condition) ==
+                                           result.conditions.end())
+                                            result.conditions.push_back(
+                                                condition);
+                                    result.diagnostic = lower.diagnostic.empty() &&
+                                        lower.status ==
+                                            risch_status::unsupported
+                                        ? "logarithmic rational RDE residual "
+                                          "remains unsupported"
+                                        : lower.diagnostic;
+                                    return true;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     exact_expr derivative_error = simplify(expand(
                         differentiate(rational_candidate, variable) - expression,
                         std::min(options.maximum_nodes, (size_t)100000)));
