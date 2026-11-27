@@ -15359,6 +15359,12 @@ risch_result exact_context::integrate_elementary_impl(
             }
             if(!integration_parse_expr_poly(*this, forcing_expression,
                     logarithm, forcing, degree_budget)){
+                integration_expr_poly rational_numerator,
+                    rational_denominator;
+                if(!integration_parse_expr_rational(*this,
+                        forcing_expression, logarithm, rational_numerator,
+                        rational_denominator, degree_budget))
+                    continue;
                 exact_expr formal_logarithm;
                 size_t formal_suffix = 0;
                 do{
