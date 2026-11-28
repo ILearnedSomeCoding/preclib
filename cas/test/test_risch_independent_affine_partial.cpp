@@ -9,6 +9,7 @@ int main(){
     exact_expr a = context.symbol("a");
     exact_expr b = context.symbol("b");
     exact_expr scale = context.symbol("scale");
+    exact_expr slope = context.symbol("slope");
     exact_expr input = context.exponential(context.power(x,
         context.integer(3))) /
         (context.power(x + a, context.integer(2)) *
@@ -108,6 +109,50 @@ int main(){
         return 1;
     }
     context.assume(scale, "none");
+
+    exact_expr merged_pole_input = context.exponential(context.power(x,
+        context.integer(3))) /
+        ((slope * x + slope * a) * (x + a) * (x + b));
+    risch_result merged_pole_result = context.integrate_elementary(
+        merged_pole_input, x, options);
+    if(merged_pole_result.status != risch_status::unsupported ||
+       merged_pole_result.elementary_part == context.integer(0) ||
+       merged_pole_result.remainder == context.integer(0) ||
+       !has_separation_condition(merged_pole_result.conditions) ||
+       std::find(merged_pole_result.conditions.begin(),
+           merged_pole_result.conditions.end(), slope) ==
+           merged_pole_result.conditions.end()){
+        std::cerr << "scaled identical affine poles did not merge: status="
+                  << (int)merged_pole_result.status << " diagnostic="
+                  << merged_pole_result.diagnostic << '\n';
+        return 1;
+    }
+    exact_expr merged_error = context.differentiate(
+        merged_pole_result.elementary_part, x) +
+        merged_pole_result.remainder - merged_pole_input;
+    merged_error = context.substitute(merged_error, slope,
+        context.integer(2));
+    merged_error = context.substitute(merged_error, a, context.integer(1));
+    merged_error = context.substitute(merged_error, b, context.integer(3));
+    for(int64_t sample : {-2, 0, 1, 4})
+        if(context.simplify(context.substitute(merged_error, x,
+                context.integer(sample))) != context.integer(0)){
+            std::cerr << "merged affine-pole identity failed at "
+                      << sample << '\n';
+            return 1;
+        }
+    context.assume(slope, "positive");
+    risch_result assumed_slope_result = context.integrate_elementary(
+        merged_pole_input, x, options);
+    if(assumed_slope_result.status != risch_status::unsupported ||
+       !has_separation_condition(assumed_slope_result.conditions) ||
+       std::find(assumed_slope_result.conditions.begin(),
+           assumed_slope_result.conditions.end(), slope) !=
+           assumed_slope_result.conditions.end()){
+        std::cerr << "positive slope assumption was not used\n";
+        return 1;
+    }
+    context.assume(slope, "none");
 
     exact_expr logarithm = context.natural_logarithm(x);
     exact_expr logarithmic_input = context.exponential(context.power(logarithm,

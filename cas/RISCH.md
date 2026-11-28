@@ -2286,5 +2286,7 @@ Taylor 主部构造给出证书：两边在每个互异极点有相同主部，�
 展开仿射幂的恢复结果必须使用重建得到的偏移与斜率；展开多项式的低阶系数不是极点参数。
 回归直接构造 `2*x^2+4*a*x+2*a^2` 和
 `lambda*x^2+2*lambda*b*x+lambda*b^2` 的加法 DAG，检查 `lambda!=0` 与极点间隔条件，
-并验证在 `a=1,b=3,lambda=3` 后 `D(elementary_part)+remainder=input`；
+并在 `a=1,b=3,lambda=3` 后精确验证
+`D(elementary_part)+remainder=input`；
 `assume(lambda,positive)` 会消去 `lambda!=0`，但不消去与 `a-b` 有关的独立条件。
+另以 `(slope*x+slope*a)*(x+a)*(x+b)` 验证符号斜率条件、正性假设传播、同根极点归并及参数特化恒等式。

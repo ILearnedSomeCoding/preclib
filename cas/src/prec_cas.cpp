@@ -11115,6 +11115,19 @@ static bool integration_affine_principal_parts(
     std::vector<pole_t> poles;
     std::vector<exact_expr> numerator_factors;
     bool valid = true;
+    auto require_nonzero = [&](const exact_expr &input){
+        exact_expr value = context.simplify(input);
+        if(value.is_value() && !value.value().is_approximate())
+            return !value.value().is_zero();
+        if(integration_strictly_positive_constant(value) ||
+           integration_strictly_positive_constant(-value)) return true;
+        if(!conditions || !integration_exact_expression_tree(value) ||
+           integration_depends_on(value, variable) ||
+           integration_expr_zero(context, value)) return false;
+        if(std::find(conditions->begin(), conditions->end(), value) ==
+           conditions->end()) conditions->push_back(value);
+        return true;
+    };
     auto collect = [&](auto &&self, const exact_expr &factor,
                        int64_t exponent) -> void{
         if(!valid || exponent == 0) return;
@@ -11163,9 +11176,16 @@ static bool integration_affine_principal_parts(
             exact_expr base, offset, slope;
             size_t factor_order = 1;
             if(p.size() == 2){
-                base = context.simplify(factor);
-                offset = p[0];
-                slope = p[1];
+                exact_expr original_slope = context.simplify(p[1]);
+                if(!require_nonzero(original_slope)){
+                    valid = false;
+                    return;
+                }
+                offset = context.simplify(p[0] / original_slope);
+                base = context.simplify(variable + offset);
+                slope = context.integer(1);
+                numerator_factors.push_back(context.power(original_slope,
+                    context.integer(exponent)));
             }else{
                 // Constructors may expand lambda*(x + a)^m before the
                 // rational integrator sees it. Recover the affine power by
@@ -11179,23 +11199,9 @@ static bool integration_affine_principal_parts(
                     valid = false;
                     return;
                 }
-                bool leading_nonzero = leading.is_value() &&
-                    !leading.value().is_approximate() &&
-                    !leading.value().is_zero();
-                leading_nonzero = leading_nonzero ||
-                    integration_strictly_positive_constant(leading) ||
-                    integration_strictly_positive_constant(-leading);
-                if(!leading_nonzero){
-                    if(!conditions ||
-                       !integration_exact_expression_tree(leading) ||
-                       integration_depends_on(leading, variable) ||
-                       integration_expr_zero(context, leading)){
-                        valid = false;
-                        return;
-                    }
-                    if(std::find(conditions->begin(), conditions->end(),
-                                 leading) == conditions->end())
-                        conditions->push_back(leading);
+                if(!require_nonzero(leading)){
+                    valid = false;
+                    return;
                 }
                 offset = context.simplify(p[factor_order - 1] /
                     (context.integer((int64_t)factor_order) * leading));
@@ -11259,20 +11265,6 @@ static bool integration_affine_principal_parts(
     };
     collect(collect, cofactor, 1);
     if(!valid || poles.size() < 2) return false;
-
-    auto require_nonzero = [&](const exact_expr &input){
-        exact_expr value = context.simplify(input);
-        if(value.is_value() && !value.value().is_approximate())
-            return !value.value().is_zero();
-        if(integration_strictly_positive_constant(value) ||
-           integration_strictly_positive_constant(-value)) return true;
-        if(!conditions || !integration_exact_expression_tree(value) ||
-           integration_depends_on(value, variable) ||
-           integration_expr_zero(context, value)) return false;
-        if(std::find(conditions->begin(), conditions->end(), value) ==
-           conditions->end()) conditions->push_back(value);
-        return true;
-    };
     for(const pole_t &pole : poles)
         if(!require_nonzero(pole.slope)) return false;
 
