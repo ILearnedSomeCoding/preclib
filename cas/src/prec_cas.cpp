@@ -11167,24 +11167,42 @@ static bool integration_affine_principal_parts(
                 offset = p[0];
                 slope = p[1];
             }else{
-                // Constructors may expand (x + a)^m before the rational
-                // integrator sees it. Recover monic affine powers by solving
-                // the next-to-leading coefficient and verifying every
+                // Constructors may expand lambda*(x + a)^m before the
+                // rational integrator sees it. Recover the affine power by
+                // solving its next-to-leading coefficient and verifying every
                 // binomial coefficient identity in the exact constant field.
                 factor_order = p.size() - 1;
+                exact_expr leading = context.simplify(p.back());
                 if(factor_order > 64 ||
-                   !integration_formal_constant_zero(context,
-                       p.back() - context.integer(1), variable,
-                       options.maximum_degree)){
+                   !integration_exact_expression_tree(leading) ||
+                   integration_depends_on(leading, variable)){
                     valid = false;
                     return;
                 }
+                bool leading_nonzero = leading.is_value() &&
+                    !leading.value().is_approximate() &&
+                    !leading.value().is_zero();
+                leading_nonzero = leading_nonzero ||
+                    integration_strictly_positive_constant(leading) ||
+                    integration_strictly_positive_constant(-leading);
+                if(!leading_nonzero){
+                    if(!conditions ||
+                       !integration_exact_expression_tree(leading) ||
+                       integration_depends_on(leading, variable) ||
+                       integration_expr_zero(context, leading)){
+                        valid = false;
+                        return;
+                    }
+                    if(std::find(conditions->begin(), conditions->end(),
+                                 leading) == conditions->end())
+                        conditions->push_back(leading);
+                }
                 offset = context.simplify(p[factor_order - 1] /
-                    context.integer((int64_t)factor_order));
+                    (context.integer((int64_t)factor_order) * leading));
                 uint64_t binomial = 1;
                 for(size_t k = 0; k <= factor_order; ++k){
                     exact_expr expected = context.simplify(
-                        context.integer((int64_t)binomial) *
+                        leading * context.integer((int64_t)binomial) *
                         context.power(offset, context.integer(
                             (int64_t)(factor_order - k))));
                     if(!integration_formal_constant_zero(context,
@@ -11210,6 +11228,8 @@ static bool integration_affine_principal_parts(
                 }
                 base = context.simplify(variable + offset);
                 slope = context.integer(1);
+                numerator_factors.push_back(context.power(leading,
+                    context.integer(exponent)));
             }
             size_t input_order = (size_t)-exponent;
             if(factor_order > options.maximum_degree / input_order){
@@ -11227,7 +11247,7 @@ static bool integration_affine_principal_parts(
                     return;
                 }
             }
-            poles.push_back({base, p[0], p[1], order});
+            poles.push_back({base, offset, slope, order});
             return;
         }
         if((uint64_t)exponent > options.maximum_degree){
